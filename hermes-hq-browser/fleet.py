@@ -199,6 +199,15 @@ def read_state(root: Path, profile: str) -> dict:
         return {}
 
 
+def update_state(root: Path, profile: str, changes: dict) -> dict:
+    """Merges ``changes`` into a bot's state under its lock, re-reading it first: the supervisor's pass holds a snapshot
+    taken before choice.py (the phone) may have changed the same file, and must not write that snapshot back."""
+    with Locked(state_folder(root) / f"{profile}.lock"):
+        state = {**read_state(root, profile), **changes}
+        write_state(root, profile, state)
+        return state
+
+
 def write_state(root: Path, profile: str, value: dict) -> None:
     path = state_folder(root) / f"{profile}.json"
     temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
@@ -347,6 +356,37 @@ def activate_in_hermes(profile: str) -> None:
 
 # ---------------------------------------------------------------------------------------------- which Chrome each bot gets
 
+def skip_reason(config: dict, state: dict) -> str | None:
+    """Why this plugin leaves a bot's browser alone, from its config and state file (``plan``'s checks, in its order;
+    choice.py reads the same): ``off`` (the plugin is disabled in that profile), ``real_profile`` (Hermes' own
+    ``browser.use_real_profile``), ``fixed`` / ``remote`` (a ``cdp_url`` naming one browser by id, or another
+    computer's), ``released`` (the plugin set ``cdp_url`` and the person removed it), ``camofox``. None: the plugin
+    runs it."""
+    settings = browser_settings(config)
+    enabled, disabled = plugin_lists(config)
+    url = str(settings.get("cdp_url") or "").strip()
+    if PLUGIN in disabled or (enabled is not None and PLUGIN not in enabled):
+        return "off"
+    if settings.get("use_real_profile") is True:
+        return "real_profile"
+    if url and port_of(url) is None:
+        return "fixed" if LOOPBACK_FIXED.match(url) else "remote"
+    if not url and state.get("url"):
+        return "released"  # the plugin set cdp_url and the person removed it
+    if not url and str(settings.get("cloud_provider") or "").lower() == "camofox":
+        return "camofox"
+    return None
+
+
+def browser_turned_off(config: dict) -> bool:
+    """The bot's browser tools are switched off in Hermes (``agent.disabled_toolsets`` names ``browser``; Hermes reads
+    a single name there as a one-item list)."""
+    agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+    names = agent.get("disabled_toolsets")
+    names = [names] if isinstance(names, str) else names if isinstance(names, list) else []
+    return any(str(name).strip().lower() == "browser" for name in names)
+
+
 def plan(bots: list[dict], states: dict, owners: dict, in_use) -> dict:
     """Decide each bot's browser. ``bots``: ``{profile, config}``; ``states``: profile -> state file; ``owners``:
     port -> the ``--user-data-dir`` of the Chrome on it; ``in_use(port)``: something else listens there.
@@ -364,19 +404,10 @@ def plan(bots: list[dict], states: dict, owners: dict, in_use) -> dict:
 
     for bot in sorted(bots, key=priority):
         profile, settings = bot["profile"], browser_settings(bot["config"])
-        state = states.get(profile) or {}
-        enabled, disabled = plugin_lists(bot["config"])
         url = str(settings.get("cdp_url") or "").strip()
-        if PLUGIN in disabled or (enabled is not None and PLUGIN not in enabled):
-            decisions[profile] = {"skip": "off"}
-        elif settings.get("use_real_profile") is True:
-            decisions[profile] = {"skip": "real_profile"}
-        elif url and port_of(url) is None:
-            decisions[profile] = {"skip": "fixed" if LOOPBACK_FIXED.match(url) else "remote"}
-        elif not url and state.get("url"):
-            decisions[profile] = {"skip": "released"}  # the plugin set cdp_url and the person removed it
-        elif not url and str(settings.get("cloud_provider") or "").lower() == "camofox":
-            decisions[profile] = {"skip": "camofox"}
+        reason = skip_reason(bot["config"], states.get(profile) or {})
+        if reason:
+            decisions[profile] = {"skip": reason}
         elif url and port_of(url) not in claimed:
             claimed[port_of(url)] = profile
             decisions[profile] = {"manage": port_of(url), "url": url, "write": False}
@@ -547,7 +578,38 @@ def reap() -> None:
     _children[:] = [child for child in _children if child.poll() is None]
 
 
-def launch(home: Path, port: int, binary: str) -> int:
+# A bot's Chrome shown as a normal window ("normal", choice.py) keeps painting and running its timers while other windows
+# cover it (the phone's live view is Chrome's screencast, which a backgrounded window stops sending).
+NORMAL_WINDOW_FLAGS = ("--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+                       "--disable-background-timer-throttling")
+
+
+def launch_arguments(binary: str, folder: Path, port: int, window: str = "hidden", copied: bool = False) -> list[str]:
+    """``hidden`` (the default): headless Chrome with a desktop user agent. ``normal``: an ordinary Chrome window (no
+    headless switches, its own user agent and client hints), kept painting while covered. It is the Chrome binary
+    started directly with the bot's own ``--user-data-dir`` (its own instance, so links the person clicks elsewhere keep
+    opening in their own Chrome); macOS may bring its first window forward once when it starts. A copy of the person's
+    profile (``copied``) never syncs: it would act as another device on their Google account."""
+    arguments = [] if window == "normal" else ["--headless=new"]
+    arguments += [f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
+                  f"--user-data-dir={folder}", "--no-first-run", "--no-default-browser-check", f"--window-size={WINDOW}"]
+    if window == "normal":
+        arguments += list(NORMAL_WINDOW_FLAGS)
+    else:
+        arguments.append(f"--user-agent={user_agent(binary)}")
+    if copied:
+        # A copy of the person's profile: never syncs (it would act as another device on their Google account) and
+        # runs no extensions (theirs aren't copied; some would act on their accounts).
+        arguments += ["--disable-sync", "--disable-extensions"]
+    if platform.system() == "Linux":
+        arguments.append("--disable-dev-shm-usage")
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            arguments.append("--no-sandbox")
+    arguments.append("about:blank")
+    return arguments
+
+
+def launch(home: Path, port: int, binary: str, window: str = "hidden", copied: bool = False) -> int:
     folder = home / "chrome-debug"
     seed(folder)
     stderr = folder / "launch-stderr.log"
@@ -556,14 +618,7 @@ def launch(home: Path, port: int, binary: str) -> int:
             stderr.unlink()
     except OSError:
         pass
-    arguments = [binary, "--headless=new", f"--remote-debugging-port={port}", "--remote-debugging-address=127.0.0.1",
-                 f"--user-data-dir={folder}", "--no-first-run", "--no-default-browser-check",
-                 f"--window-size={WINDOW}", f"--user-agent={user_agent(binary)}"]
-    if platform.system() == "Linux":
-        arguments.append("--disable-dev-shm-usage")
-        if hasattr(os, "geteuid") and os.geteuid() == 0:
-            arguments.append("--no-sandbox")
-    arguments.append("about:blank")
+    arguments = [binary, *launch_arguments(binary, folder, port, window, copied)]
     with open(stderr, "ab") as errors:
         child = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors,  # noqa: S603
                                  start_new_session=True, close_fds=True)
@@ -628,7 +683,9 @@ def start(root: Path, profile: str, home: Path, port: int, url: str, now: float 
             state.update(status="no_chrome", error="No Chrome or Chromium found on this computer.")
             write_state(root, profile, state)
             return state
-        state.update(pid=launch(home, port, binary), binary=binary, launched_at=now, status="starting", error=None)
+        window = "normal" if state.get("window") == "normal" else "hidden"
+        state.update(pid=launch(home, port, binary, window, bool(state.get("source"))), binary=binary, launched_at=now,
+                     status="starting", error=None)
         write_state(root, profile, state)
         log.info("hermes-hq-browser: started %s's Chrome on port %d", profile, port)
         return state
@@ -717,7 +774,7 @@ class Supervisor:
             if reason == "released" and state.get("status") != "released":
                 if state.get("pid") and state.get("folder"):
                     end(int(state["pid"]), state["folder"])
-                write_state(self.root, profile, {**state, "status": "released", "pid": None})
+                state = update_state(self.root, profile, {"status": "released", "pid": None})
                 log.info("hermes-hq-browser: %s's cdp_url was removed; its own Chrome is off", profile)
             return {"profile": profile, "status": reason}
         port, url = decision["manage"], decision["url"]
@@ -726,8 +783,8 @@ class Supervisor:
             point_at(home, url)
             log.info("hermes-hq-browser: %s now browses in its own Chrome (%s)", profile, url)
         if state.get("url") != url or state.get("port") != port or state.get("folder") != folder:
-            state = {**state, "profile": profile, "port": port, "url": url, "folder": folder, "status": "starting"}
-            write_state(self.root, profile, state)
+            state = update_state(self.root, profile, {"profile": profile, "port": port, "url": url, "folder": folder,
+                                                       "status": "starting"})
         mine = [pid for pid, data, p in processes if data == folder and p == port]
         for pid, data, other in processes:
             if data == folder and other != port and state.get("status") != "external":
@@ -737,8 +794,8 @@ class Supervisor:
             owner = next((data for _, data, p in processes if p == port), None)
             status = "ready" if owner in (None, folder) else "external"
             if state.get("status") != status or (mine and state.get("pid") != mine[0]):
-                state = {**state, "status": status, "pid": mine[0] if mine else state.get("pid"), "error": None}
-                write_state(self.root, profile, state)
+                state = update_state(self.root, profile, {"status": status, "pid": mine[0] if mine else state.get("pid"),
+                                                           "error": None})
             if status == "ready" and mine and self.stale(profile, mine[0], port, now):
                 end(mine[0], folder)
                 result = start(self.root, profile, home, port, url, now)
@@ -755,7 +812,7 @@ class Supervisor:
             end(mine[0], folder)
             self.misses[profile] = 0
         elif listening(port) and not answers(port, 1.0):
-            write_state(self.root, profile, {**state, "status": "port_taken", "error": f"Something else is using port {port}."})
+            update_state(self.root, profile, {"status": "port_taken", "error": f"Something else is using port {port}."})
             return {"profile": profile, "status": "port_taken", "port": port}
         if now < self.next_try.get(profile, 0):
             return {"profile": profile, "status": state.get("status") or "starting", "port": port, "error": state.get("error")}

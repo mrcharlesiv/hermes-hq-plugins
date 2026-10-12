@@ -5,6 +5,11 @@ GET  /sessions?owner=&session=a,b          live browsers, optionally one profile
 GET  /bots                                 each bot's own Chrome: ready, starting, not responding, or why it has none
 WS   /activity?owner=                      the same list, pushed when it changes (no page images)
 WS   /sessions/{id}/watch                  the live view and, while held, the person's input (stream.py)
+GET  /chrome-profiles                      the person's Chrome profiles a bot can use a copy of (choice.py)
+GET  /choice?profile=                      a bot's browser choice: its own profile or a copy, hidden or normal window;
+                                           for a browser the plugin doesn't run, why (blocked) and can_take_over
+POST /choice                               change it {profile, mode?, source?, window?, refresh?}, or hand the bot's
+                                           browser to the plugin {profile, take_over: true}
 """
 import asyncio
 import importlib.util
@@ -18,11 +23,11 @@ import time
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect
 
 log = logging.getLogger("hermes-hq-browser")
 _ROOT = Path(__file__).parents[1]
-VERSION = "3.5.0"
+VERSION = "3.6.2"
 RETAIN_ENDED = 120.0
 MAX_VIEWERS = 8
 VIEWER_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -43,6 +48,7 @@ cdp = _load("cdp")
 stream = _load("stream")
 fleet = _load("fleet")
 tabs = _load("tabs")
+choice = _load("choice")
 tracker = tabs.Tracker(cdp)
 router = APIRouter()
 _viewers = 0
@@ -362,7 +368,8 @@ def health():
     missing, drift = _missing(), _drift()
     return {"ok": True, "schema": "dispatch-browser.health.v3", "version": VERSION, "protocol": stream.PROTOCOL,
             "installed": not missing and not drift, "missing": missing, "drift": drift,
-            "features": {"watch": True, "control": True, "ask": True, "own_chrome": _own_chrome()}}
+            "features": {"watch": True, "control": True, "ask": True, "own_chrome": _own_chrome(),
+                         "choice": _own_chrome()}}
 
 
 def _own_chrome() -> bool:
@@ -379,6 +386,55 @@ def bots():  # sync: FastAPI runs it on a worker thread
     else:
         rows = fleet.statuses(fleet.hermes_root())
     return {"schema": "dispatch-browser.bots.v1", "own_chrome": _own_chrome(), "bots": rows}
+
+
+def _bot_home(profile: str):
+    for name, home in fleet.profiles(fleet.hermes_root()):
+        if name == profile:
+            return home
+    raise HTTPException(404, "No such bot")
+
+
+@router.get("/chrome-profiles")
+def chrome_profiles():  # sync: reads the person's Local State on a worker thread
+    return choice.chrome_profiles(fleet.chrome_binary())
+
+
+@router.get("/choice")
+def get_choice(profile: str = "default"):
+    if not fleet.SAFE_NAME.match(profile or ""):
+        raise HTTPException(404, "No such bot")
+    return choice.read_choice(fleet, fleet.hermes_root(), profile, _bot_home(profile))
+
+
+@router.post("/choice")
+def post_choice(body: dict = Body(...)):  # sync: a profile copy takes seconds, on a worker thread
+    profile = str(body.get("profile") or "default")
+    if not fleet.SAFE_NAME.match(profile):
+        raise HTTPException(404, "No such bot")
+    home = _bot_home(profile)
+    if body.get("take_over") is True:
+        if not _own_chrome():
+            raise HTTPException(409, "Hermes HQ isn’t running bots’ browsers on this computer.")
+        try:
+            result = choice.take_over(fleet, fleet.hermes_root(), profile, home)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from None
+        log.info("hermes-hq-browser: %s's browser handed to Hermes HQ (%s)", profile,
+                 "ready" if result["changeable"] else result["blocked"])
+        return result
+    mode, window = body.get("mode"), body.get("window")
+    source = body.get("source")
+    try:
+        result = choice.set_choice(fleet, fleet.hermes_root(), profile, home,
+                                   mode=mode if isinstance(mode, str) else None,
+                                   source=source if isinstance(source, str) else None,
+                                   window=window if isinstance(window, str) else None,
+                                   refresh=body.get("refresh") is True)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    log.info("hermes-hq-browser: %s's browser is now %s, %s window", profile, result["mode"], result["window"])
+    return result
 
 
 @router.get("/sessions")

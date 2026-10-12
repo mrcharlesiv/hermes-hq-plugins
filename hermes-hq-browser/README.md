@@ -50,6 +50,26 @@ Install the plugin once, for the main profile. The dashboard (`fleet.py`, one su
 `GET /bots` reports each bot's Chrome (`ready`, `starting`, `not_responding`, or why it has none) and Hermes HQ
 says so when there is no page to show. State lives in `<hermes root>/hermes-hq-browser/chromes/<profile>.json`.
 
+## A copy of your Chrome profile, a normal window (3.6)
+
+From the phone (Bot Info › Browser), each bot can browse with:
+
+- **Its own profile** (the default): signed in only where the bot signed in.
+- **A copy of one of your Chrome profiles**: opens sites already signed in, as you. The copy is made into the
+  bot's own folder; saved passwords, cards, extensions, passkeys and Chrome Sync are left out, and your own Chrome
+  is never opened or changed. "Refresh Sign-ins from My Chrome" copies again. Switching back to its own profile
+  restores the bot's original folder (it is kept aside, never deleted).
+- **Show as Normal Chrome**: the bot's Chrome runs as a regular window instead of a hidden one, which meets fewer
+  "are you human?" checks.
+
+On a Mac, reading your Chrome profiles needs Full Disk Access for the Python Hermes runs (System Settings ›
+Privacy & Security › Full Disk Access); the phone says so, and names it, when macOS blocks it.
+
+A bot whose browser this plugin doesn't run (for example `browser.use_real_profile: true`, or a `cdp_url` set by
+hand) can't be changed until it is handed over; the phone explains why and offers "Let Hermes HQ Run <Bot>'s
+Browser", which backs up that bot's config.yaml, turns `use_real_profile` off and gives the bot a Chrome of its own.
+A bot whose browser tools are disabled is never offered this.
+
 ## How it works
 
 - **Agent processes** (the messaging gateway, the dashboard's chat gateway, profile chats, cron) load
