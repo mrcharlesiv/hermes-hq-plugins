@@ -212,6 +212,18 @@ body {--conversation-turn-gap:6px;--turn-block-gap:8px;--tool-row-gap:4px}
   display:flex;width:100%;height:32px;padding:0 10px;border:0;border-radius:10px;background:var(--hq-fill-3);opacity:1}
 [data-slot='sidebar-wrapper'] .border-b:has(> input[placeholder^='Search']) > input {font-size:13px;field-sizing:fixed}
 
+/* Native glass (Settings › Appearance › Window Translucency › Glass, area Sidebar): macOS's own material behind the
+   sidebar, the chat solid, as Finder and HQ's iPad sidebar. Desktop splits the window at its classic sidebar, which
+   the pane layout doesn't have (the Bots list never counts), so there it painted the whole window solid. Here the
+   page carries the Tint setting's see-through mix and every pane but the sidebar's goes solid. On the glass, rows
+   are picked out in iOS's grey fill rather than desktop's blue tint. */
+:root[data-hermes-glass][data-hermes-glass-scope='sidebar'] body:has([data-tree-group]) {
+  background:color-mix(in srgb,var(--ui-bg-chrome) var(--translucency-glass-keep,100%),transparent)}
+:root[data-hermes-glass][data-hermes-glass-scope='sidebar'] [data-tree-group]:not(:has([data-slot='bots-roster'],[data-slot='sidebar'])) {
+  background-color:var(--ui-bg-chrome)}
+:root[data-hermes-glass][data-hermes-glass-scope='sidebar'] :is([data-slot='bots-roster'],[data-slot='sidebar']) {
+  --ui-row-active-background:var(--hq-fill-2);--chrome-action-hover:var(--hq-fill-3)}
+
 /* Tabs a size up, with room round the label. */
 :is([data-slot='pane-tab'],[role='tab'][data-tree-tab]) {font-size:13px}
 :is([data-slot='pane-tab'],[role='tab'][data-tree-tab]):not([data-vertical]) {height:24px;padding-inline:4px}
