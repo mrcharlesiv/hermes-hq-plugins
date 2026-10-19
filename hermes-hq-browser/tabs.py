@@ -9,6 +9,10 @@ When a bot's Chrome is restarted (it froze or quit), its tabs are gone: headless
 The tracker remembers each tab's address, and when it finds a new Chrome on that port holding only empty tabs, it
 opens the bot's pages again (the most recently used last, so the view lands on it). Sign-ins come back with the
 profile; what was typed into a page doesn't.
+
+The same connection listens on every tab for the boxes Chrome draws outside the page (an alert box, a "Sign in with…"
+account chooser). Chrome tells only a connection that was listening when one opened, and a page with an alert box open
+answers nothing else, so a phone that starts watching afterwards learns of it (``box``) and answers it (``answer``) here.
 """
 from __future__ import annotations
 
@@ -32,6 +36,8 @@ class Tracker:
         self.pages: dict[str, dict[str, str]] = {}   # Chrome -> tab id -> address, as last seen
         self.browser: dict[str, str] = {}            # Chrome -> the browser id last connected to
         self.touched: dict[str, float] = {}          # Chrome -> when a tab last opened or moved (seen, not guessed)
+        self.boxes: dict[str, dict[str, tuple]] = {}  # Chrome -> tab -> (event, params, session) of the box it has open
+        self.connections: dict[str, object] = {}     # Chrome -> this tracker's DevTools connection to it
         self.lock = threading.Lock()
         self.loop = None
 
@@ -51,6 +57,25 @@ class Tracker:
         with self.lock:
             used = dict(self.used.get(root(url), {}))
         return sorted(used, key=lambda tab: -used[tab])
+
+    def box(self, url: str, tab) -> tuple | None:
+        """``(event, params)`` of the box ``tab`` has open (Chrome's ``Page.javascriptDialogOpening`` or
+        ``FedCm.dialogShown``), or None."""
+        with self.lock:
+            found = self.boxes.get(root(url), {}).get(str(tab))
+        return (found[0], found[1]) if found else None
+
+    def answer(self, url: str, tab, method: str, params: dict):
+        """Answer ``tab``'s open box through this connection (the one Chrome told). A concurrent future."""
+        key = root(url)
+        with self.lock:
+            found, cdp = self.boxes.get(key, {}).get(str(tab)), self.connections.get(key)
+
+        async def call():
+            if not found or cdp is None:
+                raise self.cdp_module.CdpError("no box open")
+            return await cdp.call(method, params, found[2], timeout=5)
+        return asyncio.run_coroutine_threadsafe(call(), self.loop)
 
     def last_used(self, url: str) -> float:
         with self.lock:
@@ -90,11 +115,33 @@ class Tracker:
             self.pages[key] = urls
             self.browser[key] = browser
         cdp = await self.cdp_module.Cdp().connect(endpoint)
+        sessions: dict[str, str] = {}  # this connection's session on a tab -> the tab
 
-        def on_event(method, params, _session):
+        def on_box(method, params, session):
+            tab = sessions.get(session)
+            if not tab:
+                return
+            with self.lock:
+                boxes = self.boxes.setdefault(key, {})
+                if method in ("Page.javascriptDialogOpening", "FedCm.dialogShown"):
+                    boxes[tab] = (method, params, session)
+                elif tab in boxes and boxes[tab][0].split(".")[0] == method.split(".")[0]:
+                    boxes.pop(tab)  # Page.javascriptDialogClosed, FedCm.dialogClosed
+
+        def on_event(method, params, session):
             info = params.get("targetInfo") or {}
             tab = str(info.get("targetId") or params.get("targetId") or "")
-            if method == "Target.targetCreated" and info.get("type") == "page":
+            if method == "Target.attachedToTarget" and info.get("type") == "page":
+                sessions[params.get("sessionId")] = tab
+                for enable in ("Page.enable", "FedCm.enable"):  # a tab with an alert box open answers these later
+                    cdp.send(enable, {}, params.get("sessionId"))
+            elif method == "Target.detachedFromTarget":
+                gone = sessions.pop(params.get("sessionId"), None)
+                with self.lock:
+                    self.boxes.get(key, {}).pop(gone, None)
+            elif method.startswith(("Page.javascriptDialog", "FedCm.dialog")):
+                on_box(method, params, session)
+            elif method == "Target.targetCreated" and info.get("type") == "page":
                 if tab in urls:  # discovery replays every tab that was already open: not a use
                     return
                 urls[tab] = str(info.get("url") or "")
@@ -108,10 +155,19 @@ class Tracker:
                 urls.pop(tab, None)
                 with self.lock:
                     self.used.get(key, {}).pop(tab, None)
+                    self.boxes.get(key, {}).pop(tab, None)
 
         cdp.listeners.append(on_event)
+        with self.lock:
+            self.connections[key] = cdp
+            self.boxes[key] = {}
         try:
             await cdp.call("Target.setDiscoverTargets", {"discover": True})
+            try:  # every tab, now and later, quietly (pages only: no workers, no frames)
+                await cdp.call("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True,
+                                                        "filter": [{"type": "page", "exclude": False}, {"exclude": True}]})
+            except self.cdp_module.CdpError:
+                log.info("hermes-hq-browser: this Chrome at %s can't report alert boxes to a late viewer", key)
             for url in lost:
                 await cdp.call("Target.createTarget", {"url": url, "background": True})
                 await asyncio.sleep(0.2)
@@ -119,6 +175,10 @@ class Tracker:
                 log.info("hermes-hq-browser: reopened %d page(s) in the restarted Chrome at %s", len(lost), key)
             await cdp.closed.wait()
         finally:
+            with self.lock:
+                if self.connections.get(key) is cdp:
+                    self.connections.pop(key, None)
+                    self.boxes.pop(key, None)
             await cdp.close()
 
 

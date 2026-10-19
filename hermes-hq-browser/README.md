@@ -12,6 +12,14 @@ browser tool Hermes gives them; this plugin adds one, `browser_ask_user`, and ov
 - **Take Control**: the bot finishes the browser step it is in, then its browser tools wait (about 20 seconds,
   then are refused) until the person taps **Give Back**. Taps, scrolls, typing, Return/Tab/Delete, back/forward/reload and an address bar
   reach the page. Leaving the app to fetch a code keeps the browser held for two minutes.
+- **Popups** (3.7): the live view is Chrome's picture of one page, so anything Chrome draws outside the page is sent
+  separately. A window the page opens (a "Sign in with Google" window) is shown at once and the view goes back when
+  it closes. The page's alert, confirm, prompt and "Leave this page?" boxes and "Sign in with…" account choosers come
+  to the phone as an iPhone alert for the person holding the browser to answer (watching, the phone says one is open),
+  including one that was already open when the phone came (a `/browser connect` Chrome; the tab tracker listens on
+  every tab). An extension's popup page (1Password's) that opens while the person holds the browser is shown like a
+  tab. While held, the site in use may use the clipboard without Chrome's permission bubble. Still not shown: Chrome's
+  other bubbles (save password, other site permissions) and an extension popup that opened while nobody held it.
 - **The bot asks**: a bot that hits a sign-in, a code or a CAPTCHA calls `browser_ask_user(reason)`. The card in
   its chat and its row in Bots say what it needs; the call returns when the person gives the browser back
   (or after about six minutes).
@@ -49,26 +57,6 @@ Install the plugin once, for the main profile. The dashboard (`fleet.py`, one su
 
 `GET /bots` reports each bot's Chrome (`ready`, `starting`, `not_responding`, or why it has none) and Hermes HQ
 says so when there is no page to show. State lives in `<hermes root>/hermes-hq-browser/chromes/<profile>.json`.
-
-## A copy of your Chrome profile, a normal window (3.6)
-
-From the phone (Bot Info › Browser), each bot can browse with:
-
-- **Its own profile** (the default): signed in only where the bot signed in.
-- **A copy of one of your Chrome profiles**: opens sites already signed in, as you. The copy is made into the
-  bot's own folder; saved passwords, cards, extensions, passkeys and Chrome Sync are left out, and your own Chrome
-  is never opened or changed. "Refresh Sign-ins from My Chrome" copies again. Switching back to its own profile
-  restores the bot's original folder (it is kept aside, never deleted).
-- **Show as Normal Chrome**: the bot's Chrome runs as a regular window instead of a hidden one, which meets fewer
-  "are you human?" checks.
-
-On a Mac, reading your Chrome profiles needs Full Disk Access for the Python Hermes runs (System Settings ›
-Privacy & Security › Full Disk Access); the phone says so, and names it, when macOS blocks it.
-
-A bot whose browser this plugin doesn't run (for example `browser.use_real_profile: true`, or a `cdp_url` set by
-hand) can't be changed until it is handed over; the phone explains why and offers "Let Hermes HQ Run <Bot>'s
-Browser", which backs up that bot's config.yaml, turns `use_real_profile` off and gives the bot a Chrome of its own.
-A bot whose browser tools are disabled is never offered this.
 
 ## How it works
 

@@ -3,13 +3,19 @@
 Wire format (text JSON both ways, one websocket per viewer):
 
 server → phone
-- ``state``  ``{browser, tabs, tab, follow, control: {state, mine, epoch}, ask, field}`` on open and whenever any of it
+- ``state``  ``{browser, tabs, tab, follow, control: {state, mine, epoch}, ask, field, dialog}`` on open and whenever any of it
              changes. ``control.state`` is ``bot`` (the bot drives), ``waiting`` (a person asked; the bot's running
              browser call is finishing) or ``person``. ``ask`` is the bot's ``browser_ask_user`` reason, or null.
              ``field`` (while this viewer holds the browser) ``{under, focus}``: the kind of text field under the
              pointer and the one with the page's focus (``password``, ``username``, ``code``, ``email``, ``tel``,
              ``url``, ``number``, ``search``, ``text``, ``multiline``), or null: the phone raises a matching keyboard
              (a password field gets the phone's password AutoFill: Passwords, 1Password).
+             ``dialog`` is what the watched page has open that Chrome draws outside the page (so no frame shows it),
+             or null: ``{id, kind, site, message, default, title, accounts}``. ``kind`` is ``alert``, ``confirm``,
+             ``prompt`` or ``leave`` (the page's own alert boxes; the page is stopped until one is answered), or
+             ``accounts`` (a "Sign in with…" account chooser: ``accounts`` ``[{name, email}]``), ``signin`` (the
+             same, asking to continue to the identity provider) or ``signin_error``. Anyone may see it; the person
+             holding the browser answers it.
 - ``copied`` ``{text}`` the page's selected text, answering ``copy``.
 - ``frame``  ``{seq, tab, epoch, width, height, image: "data:image/jpeg;base64,…"}``; width/height are the page's
              CSS viewport the image shows, so the phone maps a tap to page coordinates as fractions.
@@ -28,6 +34,7 @@ phone → server
   ``epoch``): ``move {x, y}`` (the phone's pointer moved; hover), ``tap {x, y}`` (a click), ``down`` / ``up {x, y}``
   (a drag), ``scroll {x, y, dy, dx}`` (x, y as 0–1 fractions of the frame; dy, dx in page pixels), ``text {text}``,
   ``key {key}``, ``go {url}``, ``nav {action}``, ``copy`` (the selection, answered with ``copied``), ``select_all``,
+  ``answer {id, accept, text?, account?}`` (the open ``dialog``: OK/Cancel, a prompt's text, the account index),
   each with the ``epoch``. Only the newest pointer move waits. Taps close together are a double (or triple) click.
   Typing and scrolling that arrive faster than the page takes them are merged while they wait (consecutive ``text``
   into one insert, consecutive ``scroll`` into one wheel turn), and input that can't be queued is answered with an
@@ -38,6 +45,11 @@ phone → server
 Watching never changes which tab the bot's Chrome shows: a background tab is shown with stills. Only while the person
 holds the browser is the tab they work in brought to the front (the tab that was in front comes back when they hand
 it back). Following the bot means following the tab it brings forward, or the one it opens or loads a page in.
+
+Popups: a window the watched tab opens (a "Sign in with Google" window) is shown at once, held or not, and the view
+goes back to the tab that opened it when it closes. An extension's popup window (1Password's) opened while the person
+holds the browser is shown the same way. While the person holds it, the site they're on may read and write the
+clipboard without Chrome's permission bubble (which no frame shows); that ends when they hand the browser back.
 """
 from __future__ import annotations
 
@@ -65,6 +77,8 @@ RENEW_EVERY = 5.0
 # (longest side cap, JPEG quality), slow to sharp
 LEVELS = ((960, 50), (1280, 60), (1600, 70), (1920, 80))
 SLOW_ACK, QUICK_ACK = 0.6, 0.2
+JS_DIALOGS = ("alert", "confirm", "prompt", "leave")
+FEDCM_KINDS = {"AccountChooser": "accounts", "AutoReauthn": "accounts", "ConfirmIdpLogin": "signin", "Error": "signin_error"}
 KEYS = {  # key -> (code, windowsVirtualKeyCode, text)
     "Enter": ("Enter", 13, "\r"), "Backspace": ("Backspace", 8, ""), "Tab": ("Tab", 9, ""), "Escape": ("Escape", 27, ""),
     "Delete": ("Delete", 46, ""), "ArrowLeft": ("ArrowLeft", 37, ""), "ArrowRight": ("ArrowRight", 39, ""),
@@ -143,6 +157,44 @@ def blank(url) -> bool:
     return str(url or "") in ("", "about:blank") or str(url).startswith(("chrome://newtab", "chrome://new-tab-page"))
 
 
+def extension_popup(info: dict) -> bool:
+    """An extension's own popup window (1Password's, opened from its toolbar button or by the extension itself)."""
+    url = str(info.get("url") or "")
+    return info.get("type") in ("page", "other") and url.startswith("chrome-extension://") and "popup" in url.lower()
+
+
+def describe_box(method: str, params: dict) -> dict | None:
+    """The phone's ``dialog`` (without ``id``) for Chrome's ``Page.javascriptDialogOpening`` or ``FedCm.dialogShown``,
+    with ``handle`` (FedCM's dialog id, kept here)."""
+    if method == "Page.javascriptDialogOpening":
+        kind = {"beforeunload": "leave"}.get(params.get("type"), params.get("type"))
+        if kind not in JS_DIALOGS:
+            return None
+        return {"kind": kind, "site": site(params.get("url")), "message": str(params.get("message") or "")[:2000],
+                "default": str(params.get("defaultPrompt") or "")[:2000] if kind == "prompt" else None,
+                "title": None, "accounts": None, "handle": None}
+    if method == "FedCm.dialogShown":
+        kind = FEDCM_KINDS.get(params.get("dialogType"))
+        if kind is None:
+            return None
+        accounts = [{"name": str(a.get("name") or a.get("givenName") or "")[:200], "email": str(a.get("email") or "")[:200]}
+                    for a in (params.get("accounts") or [])[:20] if isinstance(a, dict)]
+        return {"kind": kind, "site": None, "message": str(params.get("subtitle") or "")[:2000], "default": None,
+                "title": str(params.get("title") or "")[:300], "accounts": accounts, "handle": params.get("dialogId")}
+    return None
+
+
+def site_origin(url) -> str | None:
+    found = re.match(r"^(https?://[^/?#]+)", str(url or ""))
+    return found.group(1).lower() if found else None
+
+
+def site(url) -> str | None:
+    """The host a box comes from ("example.com says…")."""
+    found = re.match(r"^https?://(?:[^@/?#]*@)?([^/:?#]+)", str(url or ""))
+    return found.group(1).lower()[:253] if found else None
+
+
 class Unresponsive(Exception):
     """The browser's Chrome didn't answer (busy, frozen or restarting)."""
 
@@ -150,9 +202,10 @@ class Unresponsive(Exception):
 class Viewer:
     """One phone watching one browser."""
 
-    def __init__(self, spool, cdp, record: dict, send_text, siblings=None, refresh=None, recent=None):
+    def __init__(self, spool, cdp, record: dict, send_text, siblings=None, refresh=None, recent=None, boxes=None):
         self.spool, self.cdp_module, self.record = spool, cdp, record
         self.recent = recent or (lambda: [])  # tab ids, the one the bot used most recently first (tabs.py)
+        self.boxes = boxes  # (box(tab), answer(tab, method, params)): boxes opened before this viewer came (tabs.py)
         self.send_text = send_text
         self.refresh = refresh or (lambda: None)  # keeps the dashboard's own (standing) records current
         self.siblings = siblings or (lambda record: [record["id"]])  # every published copy of this browser
@@ -196,6 +249,10 @@ class Viewer:
         self.field = {"under": None, "focus": None}  # text fields for the phone's keyboard (PROBE), while held
         self.last_click = (0.0, 0.0, 0.0, 0)  # (time, x, y, count): taps close together are a double click
         self.superseded = False  # the same phone opened a newer stream: this one ends quietly
+        self.openers: dict[str, str] = {}  # a popup shown in place of the tab that opened it -> that tab
+        self.dialogs: dict[str, dict] = {}  # tab -> what it has open outside the page (``dialog`` above, plus ``handle``)
+        self.dialog_ids = 0
+        self.granted: set[str] = set()  # sites given the clipboard while this viewer holds the browser
 
     # Chrome events (called from the CDP reader)
     def on_event(self, method, params, session_id):
@@ -206,22 +263,42 @@ class Viewer:
                 self.pending = (params.get("data") or "", params.get("metadata") or {}, params.get("sessionId"))
                 self.wake.set()
             return
+        if method.startswith(("Page.javascriptDialog", "FedCm.dialog")):
+            if session_id and session_id == self.session and self.attached:
+                self._on_dialog(method, params)
+            return
         info = params.get("targetInfo") or {}
-        if method == "Target.targetCreated" and info.get("type") == "page":
+        tab = str(info.get("targetId") or "")
+        if method == "Target.targetCreated" and extension_popup(info):
+            # An extension's popup window (1Password's): Chrome draws it outside every page, so it is shown as a tab of
+            # its own while the person holds the browser (watching, it belongs to whoever opened it on the Mac).
+            if self._holding() and self.attached:
+                self._upsert(info)
+                self.openers[tab] = self.attached
+                self.tab, self.switched_at = tab, time.monotonic()
+        elif method == "Target.targetCreated" and info.get("type") == "page":
             self._upsert(info)
-            if not blank(info.get("url")):
-                self._follow_to(str(info.get("targetId")))  # an empty new tab is followed once it opens a page
-        elif method == "Target.targetInfoChanged" and info.get("type") == "page":
-            before = next((t for t in self.tabs if t["id"] == info.get("targetId")), None)
+            opener = str(info.get("openerId") or "")
+            if opener and opener == self.attached and (self.follow or self._holding()):
+                # A window the watched tab opened (a "Sign in with…" popup) is shown now, even while it's still blank.
+                self.openers[tab] = opener
+                self.tab, self.switched_at = tab, time.monotonic()
+            elif not blank(info.get("url")):
+                self._follow_to(tab)  # an empty new tab is followed once it opens a page
+        elif method == "Target.targetInfoChanged" and (info.get("type") == "page" or tab in self.openers):
+            before = next((t for t in self.tabs if t["id"] == tab), None)
             self._upsert(info)
             if before is not None and before["url"] != info.get("url"):
-                self._follow_to(str(info.get("targetId")))
+                self._follow_to(tab)
         elif method == "Target.targetDestroyed":
             gone = params.get("targetId")
             self.tabs = [t for t in self.tabs if t["id"] != gone]
+            self.dialogs.pop(gone, None)
+            back = self.openers.pop(gone, None)
             self.changed = True
             if self.tab == gone:
-                self.tab = self._first_tab()
+                # A popup that closed hands the view back to the tab that opened it.
+                self.tab = back if back and any(t["id"] == back for t in self.tabs) else self._first_tab()
                 if self.tab is None:
                     self.ended = "closed"
         elif method in ("Inspector.detached", "Target.detachedFromTarget"):
@@ -242,8 +319,55 @@ class Viewer:
             return
         self.tab, self.switched_at = tab, now
 
+    def _on_dialog(self, method, params):
+        """The watched tab opened (or closed) something Chrome draws outside the page: an alert box, or a "Sign in
+        with…" account chooser. No frame shows it, so it travels in ``state`` for the phone to draw."""
+        tab = self.attached
+        if method in ("Page.javascriptDialogOpening", "FedCm.dialogShown"):
+            box = describe_box(method, params)
+            if box is None:
+                return
+            self.dialog_ids += 1
+            self.dialogs[tab] = {**box, "id": self.dialog_ids}
+        elif method == "Page.javascriptDialogClosed" or method == "FedCm.dialogClosed":
+            open_now = self.dialogs.get(tab)
+            if open_now is None or (open_now["kind"] in JS_DIALOGS) != (method == "Page.javascriptDialogClosed"):
+                return
+            self.dialogs.pop(tab, None)
+        else:
+            return
+        self.changed = True
+        self.wake.set()
+
+    def _adopt_box(self):
+        """A box the watched tab opened before this viewer came (Chrome told only the tab tracker): shown and answered
+        through the tracker; gone from here once the tracker sees it close."""
+        if self.boxes is None or not self.attached:
+            return
+        mine = self.dialogs.get(self.attached)
+        try:
+            seen = self.boxes[0](self.attached)
+        except Exception:  # noqa: BLE001
+            return
+        if mine is None and seen:
+            box = describe_box(*seen)
+            if box is not None:
+                self.dialog_ids += 1
+                self.dialogs[self.attached] = {**box, "id": self.dialog_ids, "via": "tracker"}
+                self.changed = True
+        elif mine is not None and mine.get("via") == "tracker" and not seen:
+            self.dialogs.pop(self.attached, None)
+            self.changed = True
+
+    def _stopped(self) -> bool:
+        """The watched page waits on an alert box: it answers nothing (no stills, no field checks) until one closes."""
+        return (self.dialogs.get(self.attached) or {}).get("kind") in JS_DIALOGS
+
     def _upsert(self, info):
         tab = self.cdp_module.page_tabs([info])
+        if not tab and extension_popup(info):
+            tab = [{"id": str(info.get("targetId")), "title": str(info.get("title") or "")[:300] or "Extension",
+                    "url": str(info.get("url") or "")[:2048]}]
         if not tab:
             return
         tab = tab[0]
@@ -323,9 +447,11 @@ class Viewer:
             if isinstance(reason, str):
                 break
         held = control["state"] == "person" and mine
+        dialog = self.dialogs.get(self.attached) if self.attached == self.tab else None
         return {"type": "state", "protocol": PROTOCOL, "browser": public(self.record), "tabs": [dict(t) for t in self.tabs], "tab": self.tab,
                 "follow": self.follow, "control": control, "ask": reason if isinstance(reason, str) else None,
-                "field": dict(self.field) if held else None}
+                "field": dict(self.field) if held else None,
+                "dialog": {k: v for k, v in dialog.items() if k not in ("handle", "via")} if dialog else None}
 
     # Phone messages
     def on_phone(self, message: dict):
@@ -360,7 +486,7 @@ class Viewer:
             self.next_move = message  # a pointer only needs its newest position
             if fresh and not self._queue({"type": "move"}, report=False):
                 self.next_move = None
-        elif kind in ("take", "give", "tap", "down", "up", "scroll", "text", "key", "go", "nav", "copy", "select_all"):
+        elif kind in ("take", "give", "tap", "down", "up", "scroll", "text", "key", "go", "nav", "copy", "select_all", "answer"):
             self._queue(message)
         self.wake.set()
 
@@ -467,6 +593,8 @@ class Viewer:
             await call("Input.dispatchKeyEvent", {"type": "rawKeyDown", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65,
                                                   "modifiers": 4, "commands": ["selectAll"]}, session)
             await call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "a", "code": "KeyA", "windowsVirtualKeyCode": 65, "modifiers": 4}, session)
+        elif kind == "answer":
+            await self._answer(message)
         elif kind == "copy":
             found = await self._probe("selection")
             text = found.get("text") if isinstance(found, dict) else None
@@ -481,6 +609,44 @@ class Viewer:
         elif kind == "text" and not typing_on and self.field["focus"] is None:
             await self._sense(focus=True, settle=False)  # typing doesn't move the focus: asked only when unknown
         self.wake.set()
+
+    async def _answer(self, message: dict):
+        """The person answered the box the page has open: OK or Cancel (a prompt's text), or an account to sign in with."""
+        tab = self.attached
+        dialog = self.dialogs.get(tab)
+        if dialog is None or message.get("id") != dialog["id"]:
+            await self.send_text({"type": "error", "message": "That box has already closed."})
+            return
+        accept = message.get("accept") is True
+
+        async def call(method, params, session, timeout):
+            if dialog.get("via") == "tracker":  # opened before this viewer came: only the tracker's connection may answer
+                return await asyncio.wait_for(asyncio.wrap_future(self.boxes[1](tab, method, params)), timeout)
+            return await self.cdp.call(method, params, session, timeout=timeout)
+        try:
+            if dialog["kind"] in JS_DIALOGS:
+                params = {"accept": accept}
+                if dialog["kind"] == "prompt" and accept and isinstance(message.get("text"), str):
+                    params["promptText"] = message["text"][:MAX_TEXT]
+                await call("Page.handleJavaScriptDialog", params, self.session, 5)
+            else:
+                account, handle = message.get("account"), {"dialogId": dialog["handle"]}
+                if not accept:
+                    await call("FedCm.dismissDialog", handle, self.session, 5)
+                elif dialog["kind"] == "accounts" and isinstance(account, int) and not isinstance(account, bool) \
+                        and 0 <= account < len(dialog["accounts"]):
+                    await call("FedCm.selectAccount", {**handle, "accountIndex": account}, self.session, 5)
+                elif dialog["kind"] in ("signin", "signin_error"):
+                    button = "ConfirmIdpLoginContinue" if dialog["kind"] == "signin" else "ErrorGotIt"
+                    await call("FedCm.clickDialogButton", {**handle, "dialogButton": button}, self.session, 5)
+                else:
+                    await self.send_text({"type": "error", "message": "Pick an account to sign in with."})
+                    return
+        except (self.cdp_module.CdpError, asyncio.TimeoutError):
+            await self.send_text({"type": "error", "message": "That box has already closed."})
+        if self.dialogs.get(tab) is dialog:
+            self.dialogs.pop(tab, None)
+        self.changed = True
 
     async def _probe(self, mode: str, at=None):
         """PROBE in the page, following a cross-origin frame into its own target (or an isolated world)."""
@@ -523,7 +689,7 @@ class Viewer:
 
     async def _sense(self, under=False, focus=False, settle=True):
         """Keeps ``field`` current: the text field under the pointer, the one with the focus."""
-        if not self.session:
+        if not self.session or self._stopped():
             return
         if focus and settle:
             await asyncio.sleep(0.12)  # the page's own focus handlers run first
@@ -588,6 +754,14 @@ class Viewer:
         result = await self.cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})
         self.session = result["sessionId"]
         self.params = self._params()
+        # Alert boxes and "Sign in with…" account choosers are drawn by Chrome outside the page: these report them. A page
+        # with an alert box already open answers nothing until it closes; the tab tracker knows about that one.
+        self._adopt_box()
+        for method in () if self._stopped() else ("Page.enable", "FedCm.enable"):
+            try:
+                await self.cdp.call(method, {}, self.session, timeout=3)
+            except Exception:  # noqa: BLE001 - an older Chrome without FedCm, or an extension page
+                pass
         self.hidden, self.seen_front = False, False
         # Chrome paints only its front tab: a background tab sends no screencast frames and is shown with stills.
         # Watching never brings a tab forward (that would hide the tab the bot or a subagent works in, and a hidden
@@ -596,6 +770,8 @@ class Viewer:
             await self._bring_forward(target)
         # One still first: a page that isn't changing sends no screencast frames.
         try:
+            if self._stopped():
+                raise asyncio.TimeoutError  # it would wait for the alert box
             metrics = await self.cdp.call("Page.getLayoutMetrics", session=self.session, timeout=3)
             view = metrics.get("cssVisualViewport") or metrics.get("visualViewport") or {}
             width, height = float(view.get("clientWidth") or 0), float(view.get("clientHeight") or 0)
@@ -606,6 +782,27 @@ class Viewer:
             pass
         await self.cdp.call("Page.startScreencast", self.params, self.session)
         self.wake.set()
+
+    async def _clipboard(self, holding: bool):
+        """While the person holds the browser, the site they're on may use the clipboard without asking: Chrome's
+        permission bubble is drawn outside the page, so they could never answer it. Handed back, Chrome asks again."""
+        if holding:
+            origin = site_origin(next((t["url"] for t in self.tabs if t["id"] == self.attached), ""))
+            if origin and origin not in self.granted:
+                self.granted.add(origin)
+                for name in ("clipboard-read", "clipboard-write"):
+                    try:
+                        await self.cdp.call("Browser.setPermission", {"permission": {"name": name, "allowWithoutSanitization": True}
+                                                                      if name == "clipboard-write" else {"name": name},
+                                                                      "setting": "granted", "origin": origin}, timeout=3)
+                    except Exception:  # noqa: BLE001 - an older Chrome: the bubble stays
+                        pass
+        elif self.granted:
+            self.granted.clear()
+            try:
+                await self.cdp.call("Browser.resetPermissions", {}, timeout=3)
+            except Exception:  # noqa: BLE001 - they also end with this connection
+                pass
 
     async def _bring_forward(self, target):
         """Show the person's tab while they hold the browser, remembering the tab that was in front."""
@@ -641,6 +838,8 @@ class Viewer:
     async def _check_front(self):
         """Whether the watched tab is in front. Following the bot, a tab it moved away from (a Browser Use tab
         switch) hands the view to the tab it brought forward."""
+        if self._stopped():
+            return
         try:
             found = await self.cdp.call("Runtime.evaluate", {"expression": "document.visibilityState", "returnByValue": True},
                                         self.session, timeout=2)
@@ -774,6 +973,8 @@ class Viewer:
                         await self._check_front()
                     if self.claim is not None and self._state()["field"] is not None:
                         await self._sense(focus=True, settle=False)  # the page moves its focus by itself too
+                    await self._clipboard(holding)
+                    self._adopt_box()
                     self.changed = True  # control files and asks change outside this socket
                 if self.ended:
                     await self.send_text({"type": "ended", "reason": self.ended})
@@ -796,7 +997,10 @@ class Viewer:
                     except self.cdp_module.CdpError:  # the tab went away first (a popup that closed)
                         gone = self.tab
                         self.tabs = [t for t in self.tabs if t["id"] != gone]
-                        self.tab, self.attached, self.session = (self.tabs[-1]["id"] if self.tabs else None), None, None
+                        back = self.openers.pop(gone, None)
+                        if not (back and any(t["id"] == back for t in self.tabs)):
+                            back = self.tabs[-1]["id"] if self.tabs else None
+                        self.tab, self.attached, self.session = back, None, None
                         self.changed = True
                         if self.tab is None:
                             self.ended = "closed"
@@ -815,7 +1019,7 @@ class Viewer:
                         self.sent_state = state
                         await self.send_text(state)
                 still_after = STILL_HIDDEN if self.hidden else STILL_AFTER
-                if (self.session and self.pending is None and not self.in_flight
+                if (self.session and self.pending is None and not self.in_flight and not self._stopped()
                         and now - self.framed_at > still_after and now - self.stilled_at > still_after):
                     # Chrome sent nothing for a while (a page it isn't painting): a still keeps the view honest.
                     self.stilled_at = now

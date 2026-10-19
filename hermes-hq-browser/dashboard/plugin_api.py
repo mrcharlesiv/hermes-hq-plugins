@@ -27,7 +27,7 @@ from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconne
 
 log = logging.getLogger("hermes-hq-browser")
 _ROOT = Path(__file__).parents[1]
-VERSION = "3.6.2"
+VERSION = "3.7.0"
 RETAIN_ENDED = 120.0
 MAX_VIEWERS = 8
 VIEWER_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -368,7 +368,7 @@ def health():
     missing, drift = _missing(), _drift()
     return {"ok": True, "schema": "dispatch-browser.health.v3", "version": VERSION, "protocol": stream.PROTOCOL,
             "installed": not missing and not drift, "missing": missing, "drift": drift,
-            "features": {"watch": True, "control": True, "ask": True, "own_chrome": _own_chrome(),
+            "features": {"watch": True, "control": True, "ask": True, "dialogs": True, "own_chrome": _own_chrome(),
                          "choice": _own_chrome()}}
 
 
@@ -530,7 +530,9 @@ async def watch(ws: WebSocket, ident: str):
     source = record.get("source") or []
     chrome = str(source[1]) if len(source) == 2 and source[0] == "cdp" and "/devtools/browser/" not in str(source[1]) else ""
     viewer = stream.Viewer(spool, cdp, record, ws.send_json, _siblings, _standing_async,
-                           recent=(lambda: tracker.recent(chrome)) if chrome else None)
+                           recent=(lambda: tracker.recent(chrome)) if chrome else None,
+                           boxes=((lambda tab: tracker.box(chrome, tab)),
+                                  (lambda tab, method, params: tracker.answer(chrome, tab, method, params))) if chrome else None)
     # Held across the reconnect: which tab goes back to the front when the person hands the browser back.
     viewer.fronted = next((v.fronted for v in replaced if v.fronted and v.record.get("id") == ident), None)
     watched = record.get("profile")
