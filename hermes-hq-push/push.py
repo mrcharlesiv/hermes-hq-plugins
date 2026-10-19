@@ -529,7 +529,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.8.0"
+PLUGIN_VERSION = "0.8.1"
 
 
 class Relay:
@@ -691,6 +691,15 @@ _OPEN_SQL = f"""SELECT m.id FROM messages m JOIN sessions s ON s.id = m.session_
   WHERE m.id > ? AND m.id <= ? AND m.finish_reason IS NULL AND {_APP_REPLY}"""
 
 
+# A reply that is only Hermes's "[SILENT]" (a bot that read a scheduled job's or another bot's message and has nothing
+# to add) says nothing, so it alerts nothing; the app draws no line for it either.
+_SILENT_REPLY = re.compile(r"\s*\[\s*SILENT\s*\]\s*", re.IGNORECASE)
+
+
+def silent_reply(content) -> bool:
+    return bool(_SILENT_REPLY.fullmatch(str(content or "")))
+
+
 class ReplyWatcher:
     """Reply alerts for every bot from one place. A hook runs only in processes whose profile loaded this plugin, and
     Hermes loads plugins per profile, so a bot's scheduled job (a `hermes chat -Q` child in its own profile posting
@@ -758,6 +767,8 @@ class ReplyWatcher:
                     self.health.record(f"replies:{ending}", count=count)
             last: dict[str, str] = {}
             for _, session, content in sorted(rows):
+                if silent_reply(content):
+                    continue
                 last[session] = content  # a burst of turns in one chat: its last reply
             for session, content in last.items():
                 self.submit(Push("turnDone", session=session, profile=profile, sender=self.sender(profile), text=str(content)[:4000]))
