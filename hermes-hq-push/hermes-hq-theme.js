@@ -18,28 +18,28 @@
 const SYSTEM_SANS = '-apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif, "Apple Color Emoji"'
 const SYSTEM_MONO = 'ui-monospace, "SF Mono", Menlo, monospace, "Apple Color Emoji"'
 
+// HQ's standard look (HermesKit/Theme/ThemeTokens.swift, ThemeResolver.base): the Nous ink and page, HQ's blue,
+// iOS's separators and fills. Not iOS's own white/black and #007aff: that is the separate "iOS System" skin.
 export const LIGHT = {
-  background: '#ffffff', foreground: '#000000', card: '#f2f2f7', cardForeground: '#000000',
-  muted: '#f2f2f7', mutedForeground: '#8a8a8e', popover: '#ffffff', popoverForeground: '#000000',
-  primary: '#007aff', primaryForeground: '#ffffff', secondary: '#e5f1ff', secondaryForeground: '#000000',
-  accent: '#e5f1ff', accentForeground: '#000000', border: '#c6c6c8', input: '#ffffff', ring: '#007aff',
-  midground: '#007aff', midgroundForeground: '#ffffff', composerRing: '#007aff',
-  destructive: '#ff3b30', destructiveForeground: '#ffffff',
-  sidebarBackground: '#f2f2f7', sidebarBorder: '#c6c6c8',
-  // Your bubble is the accent, as on the phone (--ios-bubble-me-fill).
-  userBubble: '#007aff', userBubbleBorder: '#007aff',
+  background: '#fefefe', foreground: '#1f2328', card: '#f2f2f7', cardForeground: '#1f2328',
+  muted: '#f6f8fa', mutedForeground: '#595c60', popover: '#ffffff', popoverForeground: '#1f2328',
+  primary: '#0053fd', primaryForeground: '#ffffff', secondary: '#e6eeff', secondaryForeground: '#1f2328',
+  accent: '#e6eeff', accentForeground: '#1f2328', border: '#c6c6c8', input: '#fefefe', ring: '#0053fd',
+  midground: '#0053fd', midgroundForeground: '#ffffff', composerRing: '#0053fd',
+  destructive: '#d70015', destructiveForeground: '#ffffff',
+  sidebarBackground: '#f6f8fa', sidebarBorder: '#c6c6c8',
+  userBubble: '#0053fd', userBubbleBorder: '#0053fd',
 }
 
 export const DARK = {
-  background: '#000000', foreground: '#ffffff', card: '#1c1c1e', cardForeground: '#ffffff',
-  muted: '#1c1c1e', mutedForeground: '#8d8d93', popover: '#1c1c1e', popoverForeground: '#ffffff',
-  primary: '#0a84ff', primaryForeground: '#ffffff', secondary: '#0b2545', secondaryForeground: '#ffffff',
-  accent: '#10233b', accentForeground: '#ffffff', border: '#38383a', input: '#1c1c1e', ring: '#0a84ff',
-  midground: '#0a84ff', midgroundForeground: '#ffffff', composerRing: '#0a84ff',
+  background: '#0d1015', foreground: '#e6edf3', card: '#1c1c1e', cardForeground: '#e6edf3',
+  muted: '#1c1c1e', mutedForeground: '#aeb4b9', popover: '#1c1c1e', popoverForeground: '#e6edf3',
+  primary: '#4a84fe', primaryForeground: '#ffffff', secondary: '#15254a', secondaryForeground: '#e6edf3',
+  accent: '#15254a', accentForeground: '#e6edf3', border: '#38393d', input: '#0d1015', ring: '#4a84fe',
+  midground: '#4a84fe', midgroundForeground: '#ffffff', composerRing: '#4a84fe',
   destructive: '#ff453a', destructiveForeground: '#ffffff',
-  sidebarBackground: '#1c1c1e', sidebarBorder: '#38383a',
-  // The accent a quarter darker, so white text keeps 4.5:1 (the phone's dark --ios-bubble-me-fill).
-  userBubble: '#0863bf', userBubbleBorder: '#0863bf',
+  sidebarBackground: '#010409', sidebarBorder: '#38393d',
+  userBubble: '#3863bf', userBubbleBorder: '#3863bf',
 }
 
 const USER = "[data-slot='aui_user-message-root'] .composer-human-message:not(.ui-prompt-input__container)"
@@ -55,11 +55,11 @@ html:root {--conversation-text-font-size:15px}
 
 /* Your messages: a filled bubble on the right, as wide as its text, white type. Painted here, not through the
    palette's userBubble, which desktop mixes toward the page (and the Message Bubble transparency setting). */
-html:root {--hq-bubble-me:#007aff}
-html:root.dark {--hq-bubble-me:#0863bf}
+html:root {--hq-bubble-me:#0053fd}
+html:root.dark {--hq-bubble-me:#3863bf}
 ${USER} {
-  width:fit-content;max-width:min(80%,36rem);margin-left:auto;
-  padding:7px 13px;border:0;border-radius:18px;
+  position:relative;width:fit-content;max-width:min(80%,36rem);margin-left:auto;
+  padding:8px 13px;border:0;border-radius:12px 12px 0 12px;
   background:var(--hq-bubble-me);color:#fff;box-shadow:none;backdrop-filter:none}
 ${USER} :is(*,a,.ref) {color:inherit}
 ${USER} a {text-decoration:underline;text-underline-offset:.15em}
@@ -70,36 +70,68 @@ ${USER} a {text-decoration:underline;text-underline-offset:.15em}
 html:root {--hq-bubble-bot:#e9e9eb}
 html:root.dark {--hq-bubble-bot:#26282c}
 ${BOT} {
-  width:fit-content;max-width:min(88%,44rem);box-sizing:border-box;
-  padding:7px 13px;border-radius:18px;background:var(--hq-bubble-bot)}
+  position:relative;width:fit-content;max-width:min(88%,44rem);box-sizing:border-box;
+  padding:8px 13px;border-radius:12px 12px 12px 0;background:var(--hq-bubble-bot)}
+/* HQ's Telegram tail: a flare off the bubble's outer bottom corner, curving from its side to a point on the
+   baseline. Filled outside an ellipse centred on the tail box's top inner corner. */
+:is(${USER},${BOT})::after {content:'';position:absolute;bottom:0;width:8px;height:15px;pointer-events:none}
+${USER}::after {right:-8px;background:radial-gradient(ellipse 100% 100% at 100% 0,transparent 98%,var(--hq-bubble-me) 100%)}
+${BOT}::after {left:-8px;background:radial-gradient(ellipse 100% 100% at 0 0,transparent 98%,var(--hq-bubble-bot) 100%)}
+/* The boxes round a bubble clip it; they clip 8 px out instead, so the tail shows and long text still can't spill. */
+:is([data-slot='aui_assistant-message-content'],[data-slot='aui_user-message-root']) .overflow-hidden:has(:is(.aui-md,.composer-human-message)),
+[data-slot='aui_assistant-message-content'].overflow-hidden, [data-slot='aui_assistant-message-root'].overflow-hidden,
+:is(${USER},${BOT}).overflow-hidden {overflow:clip;overflow-clip-margin:8px}
+${USER} {overflow:visible}   /* desktop's overflow-y:auto never scrolls (no max height) */
 ${BOT} > div > :first-child {margin-top:0}
 ${BOT} > div > :last-child {margin-bottom:0}
 
-/* The composer: one round field on the page colour with a hairline, as the phone's message box. */
-body {--composer-fill:var(--hq-cell)}
-[data-slot='composer-surface'] {border-radius:22px;border-color:var(--hq-sep)}
+/* The composer: HQ's message field, one grey capsule with no outline (fill 2 laid on the page, ChatPalette). */
+body {--hq-field:#e9e9ea}
+html:root.dark body {--hq-field:#2f3137}
+html:root body :is([data-slot='composer-root'],[data-slot='composer-root'][data-thread-scrolled-up]) {--composer-fill:var(--hq-field)}
+html:root body [data-slot='composer-surface'] {border-radius:22px;border-color:transparent !important}   /* desktop's is !important */
 [data-slot='composer-rich-input'] {font-size:15px;line-height:20px}
 
 /* Code and cards on the phone's card shape. */
-:is([data-slot='code-card'],[data-slot='file-diff-panel'],.aui-md pre) {border-radius:14px}
+:is([data-slot='code-card'],[data-slot='file-diff-panel'],.aui-md pre) {border-radius:10px}
 .aui-md :not(pre) > code {border-radius:6px}
+/* Chat cards (changed files, questions, artifacts) on HQ's card grey; diffs in iOS green and red. */
+html:root body {--ui-widget-surface-background:var(--hq-card);
+  --ui-diff-add-border:#34c759;--ui-diff-add-background:rgb(52 199 89/.12);--ui-diff-add-foreground:#248a3d;
+  --ui-diff-remove-border:#ff3b30;--ui-diff-remove-background:rgb(255 59 48/.1);--ui-diff-remove-foreground:#d70015}
+html:root.dark body {--ui-diff-add-border:#30d158;--ui-diff-add-background:rgb(48 209 88/.16);--ui-diff-add-foreground:#30db5b;
+  --ui-diff-remove-border:#ff453a;--ui-diff-remove-background:rgb(255 69 58/.16);--ui-diff-remove-foreground:#ff6961}
+.rounded-3xl[class*='bg-(--ui-widget-surface-background)'] {border-radius:var(--hq-card-r)}
 
 /* ---- The rest of the app: iOS's colours and shapes on desktop's shared parts. ---- */
 
-/* iOS's system values (phone-ios-tokens.css), on <body> so they sit under the palette desktop sets on <html>. */
+/* HQ's tokens (ThemeTokens.swift base, iOS's fills and separators), on <body> so they sit under the palette desktop
+   sets on <html>. */
 body {
-  --hq-cell:#fff;--hq-grouped:#f2f2f7;--hq-raised:#fff;
-  --hq-sep:rgb(60 60 67/.29);--hq-label-2:rgb(60 60 67/.6);
+  --hq-cell:#fff;--hq-grouped:#f2f2f7;--hq-raised:#fff;--hq-card:#f2f2f7;--hq-card-r:20px;
+  --hq-page:#fefefe;--hq-sidebar:#f6f8fa;--hq-ink:#1f2328;--hq-tint-text:#0040dd;
+  --hq-sep:rgb(60 60 67/.29);--hq-label-2:rgb(31 35 40/.74);--hq-fill-4:rgb(116 116 128/.08);
   --hq-fill:rgb(120 120 128/.2);--hq-fill-2:rgb(120 120 128/.16);--hq-fill-3:rgb(118 118 128/.12);
   --hq-green:#34c759;--hq-thumb-shadow:0 3px 8px rgb(0 0 0/.15),0 3px 1px rgb(0 0 0/.06);
-  --hq-material:rgb(250 250 250/.8);--hq-menu-shadow:0 12px 40px rgb(0 0 0/.16),0 0 0 .5px rgb(0 0 0/.08);
+  --hq-menu-shadow:0 12px 40px rgb(0 0 0/.16),0 0 0 .5px rgb(0 0 0/.08);
   --hq-tint:var(--theme-primary)}
 html:root.dark body {
-  --hq-cell:#1c1c1e;--hq-grouped:#000;--hq-raised:#2c2c2e;
-  --hq-sep:rgb(84 84 88/.6);--hq-label-2:rgb(235 235 245/.6);
+  --hq-cell:#1c1c1e;--hq-grouped:#000;--hq-raised:#2c2c2e;--hq-card:#1c1c1e;
+  --hq-page:#0d1015;--hq-sidebar:#010409;--hq-ink:#e6edf3;--hq-tint-text:#0a84ff;
+  --hq-sep:rgb(84 84 88/.6);--hq-label-2:rgb(230 237 243/.74);--hq-fill-4:rgb(118 118 128/.18);
   --hq-fill:rgb(120 120 128/.36);--hq-fill-2:rgb(120 120 128/.32);--hq-fill-3:rgb(118 118 128/.24);
   --hq-green:#30d158;--hq-thumb-shadow:0 3px 8px rgb(0 0 0/.3),0 3px 1px rgb(0 0 0/.1);
-  --hq-material:rgb(37 37 40/.82);--hq-menu-shadow:0 12px 40px rgb(0 0 0/.5),0 0 0 .5px rgb(255 255 255/.1)}
+  --hq-menu-shadow:0 12px 40px rgb(0 0 0/.5),0 0 0 .5px rgb(255 255 255/.1)}
+
+/* Desktop's surfaces and lines from HQ's tokens: the page and sidebar exactly (desktop pulls the palette's page toward
+   a neutral grey), neutral hairlines instead of accent-tinted ones, grey fills for the open and hovered row. */
+body {
+  --ui-bg-chrome:var(--hq-page);--ui-bg-sidebar:var(--hq-sidebar);
+  --ui-stroke-primary:var(--hq-sep);--ui-stroke-secondary:var(--hq-sep);
+  --ui-stroke-tertiary:color-mix(in srgb,var(--hq-sep) 60%,transparent);
+  --ui-stroke-quaternary:color-mix(in srgb,var(--hq-sep) 40%,transparent);
+  --ui-row-active-background:var(--hq-fill-2);--ui-row-hover-background:var(--hq-fill-4);
+  --ui-control-hover-background:var(--hq-fill-3);--ui-control-active-background:var(--hq-fill-2)}
 
 /* Sentence case everywhere: iOS never spaces out capitals for a heading or a tab. */
 html:root body .uppercase {text-transform:none;letter-spacing:normal}
@@ -110,8 +142,8 @@ html:root body .uppercase {text-transform:none;letter-spacing:normal}
 [data-slot='button']:is([data-variant='secondary'],[data-variant='outline']) {
   background:var(--hq-fill-3);color:var(--hq-tint);box-shadow:none}
 [data-slot='button']:is([data-variant='secondary'],[data-variant='outline']):hover {background:var(--hq-fill-2);color:var(--hq-tint)}
-[data-slot='button']:is([data-variant='link'],[data-variant='text'],[data-variant='textStrong']) {color:var(--hq-tint);text-decoration:none}
-[data-slot='button']:is([data-variant='link'],[data-variant='text'],[data-variant='textStrong']):hover {color:var(--hq-tint);opacity:.7;text-decoration:none}
+[data-slot='button']:is([data-variant='link'],[data-variant='text'],[data-variant='textStrong']) {color:var(--hq-tint-text);text-decoration:none}
+[data-slot='button']:is([data-variant='link'],[data-variant='text'],[data-variant='textStrong']):hover {color:var(--hq-tint-text);opacity:.7;text-decoration:none}
 
 /* Switches: iOS's green pill with a white thumb that throws a soft shadow. */
 [data-slot='switch'] {width:38px;height:23px;padding:2px;border:0;border-radius:999px;box-shadow:none}
@@ -141,36 +173,166 @@ html:root body .uppercase {text-transform:none;letter-spacing:normal}
 [data-slot='tabs-trigger'] {border-radius:7px;border:0;box-shadow:none}
 [data-slot='tabs-trigger'][data-state='active'] {background:var(--hq-raised);box-shadow:var(--hq-thumb-shadow)}
 
-/* Menus: iOS's frosted menu with round corners and rounded highlights. */
+/* Menus: iOS's menu shape, round corners and rounded highlights, on a solid surface (no CSS-faked frost). */
 :is([data-slot='dropdown-menu-content'],[data-slot='dropdown-menu-sub-content'],[data-slot='context-menu-content'],[data-slot='context-menu-sub-content'],[data-slot='select-content'],[data-slot='command']) {
-  border-radius:14px;border-color:transparent;background:var(--hq-material);
-  backdrop-filter:blur(30px) saturate(180%);box-shadow:var(--hq-menu-shadow)}
+  border-radius:14px;border-color:transparent;background:var(--hq-raised);box-shadow:var(--hq-menu-shadow)}
+:is([data-slot='dropdown-menu-content'],[data-slot='context-menu-content']) {min-width:200px}
+[data-slot='command'] {border-radius:16px}
+:has(> [data-slot='command']) {border-color:transparent;border-radius:16px;background:var(--hq-raised)}
+[data-slot='command'] [cmdk-group-heading] {padding:8px 10px 4px;font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--hq-label-2);background:var(--hq-raised)}
+[data-slot='command-item'] {min-height:34px;font-size:14px}
+[data-slot='command-item'][data-selected='true'] {background:var(--hq-fill-2);color:var(--foreground)}
 :is([data-slot='dropdown-menu-item'],[data-slot='dropdown-menu-checkbox-item'],[data-slot='dropdown-menu-radio-item'],[data-slot='dropdown-menu-sub-trigger'],[data-slot='context-menu-item'],[data-slot='context-menu-checkbox-item'],[data-slot='context-menu-sub-trigger'],[data-slot='select-item'],[data-slot='command-item']) {border-radius:8px}
 :is([data-slot='dropdown-menu-separator'],[data-slot='context-menu-separator'],[data-slot='select-separator'],[data-slot='command-separator']) {background:var(--hq-sep)}
 [data-slot='popover-content'] {border-radius:14px;border-color:transparent;background:var(--hq-raised);box-shadow:var(--hq-menu-shadow)}
+[data-slot='popover-content'] > [data-slot='command'] {border-radius:10px;background:transparent;box-shadow:none}
 [data-slot='tooltip-content'] {border-radius:8px}
+/* Toasts: HQ's banner, a solid raised card with round corners and the menu shadow, no outline and no CSS frost. */
+[role='region'] > [data-slot='card-stack'] :is([data-slot='card-stack-surface'],[data-slot='card-stack-edge']) {
+  border:0;border-radius:16px;background:var(--hq-raised);box-shadow:var(--hq-menu-shadow);-webkit-backdrop-filter:none;backdrop-filter:none}
+[role='region'] > [data-slot='card-stack'] [data-slot='alert'] {padding-block:12px;font-size:13px}
+[role='region'] > [data-slot='card-stack'] [data-slot='alert-title'] {font-size:14px;font-weight:600;letter-spacing:-.01em}
+[role='region'] > [data-slot='card-stack'] [data-slot='alert-description'] {font-size:13px;line-height:18px;color:var(--hq-label-2)}
+/* Tool approvals: an HQ card in the thread, raised with a shadow when it floats over the chat. */
+[data-slot='tool-approval-stack'] [data-slot='card-stack'] :is([data-slot='card-stack-surface'],[data-slot='card-stack-edge']) {border:0;border-radius:var(--hq-card-r);background:var(--hq-card);box-shadow:none}
+[data-slot='tool-approval-stack'][data-approval-placement='floating'] [data-slot='card-stack'] :is([data-slot='card-stack-surface'],[data-slot='card-stack-edge']) {background:var(--hq-raised);box-shadow:var(--hq-menu-shadow)}
+[data-slot='tool-approval-card'] > div:first-child {padding:12px 16px 0;font-size:13px;color:var(--hq-label-2)}
+[data-slot='tool-approval-card'] > pre {padding:8px 16px;font-size:13px;line-height:1.45}
+[data-slot='tool-approval-actions'] {gap:8px;padding:4px 12px 12px}
+[data-slot='tool-approval-actions'] [data-slot='button'][data-size='sm'] {padding:6px 14px;font-size:13px;line-height:18px}
+[data-approval-activity][data-glass-opaque] {border-radius:10px}
 :is([data-slot='badge'],[data-slot='kbd']) {border-radius:6px}
 
 /* Dialogs and the big pages that open over the chat (Settings, Jobs, Profiles…): a light dim, no blur, and a
    card with the phone's sheet corners. */
 :is([data-slot='dialog-overlay'],[data-slot='sheet-overlay'],[data-overlay-surface]) {background-color:rgb(0 0 0/.2);backdrop-filter:none}
 html:root.dark :is([data-slot='dialog-overlay'],[data-slot='sheet-overlay'],[data-overlay-surface]) {background-color:rgb(0 0 0/.48)}
-[data-slot='dialog-content'] {border-radius:22px;border-color:transparent;box-shadow:0 20px 60px rgb(0 0 0/.22)}
-[data-overlay-surface] [data-glass-raised] {border-radius:22px;border-color:transparent;background-color:var(--hq-cell);box-shadow:0 20px 60px rgb(0 0 0/.22)}
+[data-slot='dialog-content'] {border-radius:22px;border-color:transparent;background:var(--hq-raised);box-shadow:0 20px 60px rgb(0 0 0/.22)}
+[data-overlay-surface] [data-glass-raised] {border-radius:22px;border-color:transparent;background-color:var(--hq-grouped);box-shadow:0 20px 60px rgb(0 0 0/.22)}
+/* A sheet is iOS's elevated grouped list: grey page and white cards; in dark the page lifts to #1c1c1e and the cards to
+   #2c2c2e, so the sheet stands off the dimmed window. */
+[data-overlay-surface] {--hq-grouped:#f2f2f7;--hq-cell:#fff}
+html:root.dark [data-overlay-surface] {--hq-grouped:#1c1c1e;--hq-cell:#2c2c2e}
 
 /* Settings: iOS's grouped list. Grey page, each group of options a white card, hairlines between rows. */
 [data-overlay-surface] [data-glass-raised]:has([id^='setting-field-']) :is(main,div:has(> main)) {background:var(--hq-grouped)}
-:has(> [id^='setting-field-']) {gap:0;padding:0 16px;border-radius:12px;background:var(--hq-cell)}
-[id^='setting-field-'] {border-radius:0}
-[id^='setting-field-'] + [id^='setting-field-'] {box-shadow:0 -.5px 0 var(--hq-sep)}
+:is(:has(> [id^='setting-field-']):not(.overflow-y-auto),[data-overlay-surface] .grid.gap-1:has(> :is(.scroll-mt-6.rounded-lg,.\\@container) .grid.gap-3.py-3)) {
+  gap:0;padding:0 16px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+/* Loose rows (ListRow, or a field straight in the page) run together into one grouped card. */
+[data-overlay-surface] main :is(.overflow-y-auto,:not(:has(> [id^='setting-field-'])):not(.grid.gap-1,[id^='setting-field-'],.scroll-mt-6,.rounded-xl,.border-b,[class*='bg-('])) > :is([id^='setting-field-'],.\\@container:has(> .grid.gap-3.py-3)) {padding:0 16px;background:var(--hq-cell)}
+[data-overlay-surface] main :is(.overflow-y-auto,:not(:has(> [id^='setting-field-'])):not(.grid.gap-1,[id^='setting-field-'],.scroll-mt-6,.rounded-xl,.border-b,[class*='bg-('])) > :not(:is([id^='setting-field-'],.\\@container:has(> .grid.gap-3.py-3))) + :is([id^='setting-field-'],.\\@container:has(> .grid.gap-3.py-3)), [data-overlay-surface] main :is(.overflow-y-auto,:not(:has(> [id^='setting-field-'])):not(.grid.gap-1,[id^='setting-field-'],.scroll-mt-6,.rounded-xl,.border-b,[class*='bg-('])) > :is([id^='setting-field-'],.\\@container:has(> .grid.gap-3.py-3)):first-child {border-top-left-radius:var(--hq-card-r);border-top-right-radius:var(--hq-card-r)}
+[data-overlay-surface] main :is(.overflow-y-auto,:not(:has(> [id^='setting-field-'])):not(.grid.gap-1,[id^='setting-field-'],.scroll-mt-6,.rounded-xl,.border-b,[class*='bg-('])) > :is([id^='setting-field-'],.\\@container:has(> .grid.gap-3.py-3)):not(:has(+ [id^='setting-field-'], + .\\@container > .grid.gap-3.py-3)) {margin-bottom:20px;border-bottom-left-radius:var(--hq-card-r);border-bottom-right-radius:var(--hq-card-r)}
+[data-overlay-surface] main :is(.overflow-y-auto,:not(:has(> [id^='setting-field-'])):not(.grid.gap-1,[id^='setting-field-'],.scroll-mt-6,.rounded-xl,.border-b,[class*='bg-('])) > :is([id^='setting-field-'],.\\@container:has(> .grid.gap-3.py-3)) + :is([id^='setting-field-'],.\\@container:has(> .grid.gap-3.py-3)) {box-shadow:0 -.5px 0 var(--hq-sep)}
+/* A field that opens with its own intro (Pet): the intro reads as the group's header, the rest is the card. */
+[data-overlay-surface] main [id^='setting-field-']:has(> div > p.max-w-2xl:first-child + .mt-2) {padding:0!important;background:none!important;box-shadow:none!important}
+[data-overlay-surface] main [id^='setting-field-'] > div > p.max-w-2xl:first-child:has(+ .mt-2) {padding:0 16px 6px;font-size:13px;color:var(--hq-label-2)}
+[data-overlay-surface] main [id^='setting-field-'] > div > p.max-w-2xl:first-child + .mt-2 {margin-top:0;padding:0 16px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+/* Billing: the balance strip and the usage meters are cards too. */
+[data-overlay-surface] main .\\@container.mb-6:has(> .grid > .min-w-0 > .text-lg.font-semibold) {padding:12px 16px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main section > .\\@container:has(> .\\@container > .grid.gap-2.py-3) {padding:0 16px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main section > .\\@container > .\\@container + .\\@container {box-shadow:0 -.5px 0 var(--hq-sep)}
+/* About: the update checks are one card of plain rows, the build facts a second card; no boxes inside boxes. */
+[data-overlay-surface] main .mx-auto.max-w-2xl:has(> [id^='setting-field-about.']) {padding:0!important;background:none!important}
+[data-overlay-surface] main .mx-auto.max-w-2xl > .mb-2\\.5:first-child {padding:0 16px;font-size:13px;font-weight:400;color:var(--hq-label-2)}
+[data-overlay-surface] main [id^='setting-field-about.'].grid {gap:0;padding:0 16px;border-radius:var(--hq-card-r)!important;background:var(--hq-cell)}
+[id^='setting-field-about.'] > .rounded-xl.border {padding:12px 0;border:0;border-radius:0;background:none}
+[id^='setting-field-about.'] > .rounded-xl.border .mt-3 {margin-top:6px}
+[id^='setting-field-about.'] > * + * {box-shadow:0 -.5px 0 var(--hq-sep)}
+[data-overlay-surface] main .mx-auto.max-w-2xl > dl.rounded-lg.border {gap:0;margin-top:20px;padding:4px 16px;border:0;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main .mx-auto.max-w-2xl > dl.rounded-lg.border > div {padding:9px 0}
+[data-overlay-surface] main .mx-auto.max-w-2xl > dl.rounded-lg.border > div + div {box-shadow:0 -.5px 0 var(--hq-sep)}
+/* Keys (Providers › API keys, Tools & Keys): the list is one card; an opened key stays in its row, no ring. */
+[data-overlay-surface] main .grid.gap-2:has(> .scroll-mt-6.rounded-\\[6px\\]) {gap:0;padding:0 16px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main .scroll-mt-6.rounded-\\[6px\\] > .group\\/card {padding:10px 0;border-radius:0;background:none!important;--tw-ring-shadow:0 0 #0000;box-shadow:none}
+[data-overlay-surface] main .scroll-mt-6.rounded-\\[6px\\] + .scroll-mt-6.rounded-\\[6px\\] {box-shadow:0 -.5px 0 var(--hq-sep)}
+[data-overlay-surface] main button.group.grid.rounded-\\[6px\\]:has(> .flex-col > .font-semibold) {margin-bottom:20px;padding:12px 16px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+/* Providers › Accounts: each run of account rows is one card, iOS-inset hairlines. */
+[data-overlay-surface] main section.grid.gap-2:has(> :is(button.group.flex,div.group.grid).rounded-\\[6px\\]) {gap:0}
+[data-overlay-surface] main section.grid.gap-2:has(> :is(button.group.flex,div.group.grid).rounded-\\[6px\\]) > p {margin:20px 0 6px;padding:0 16px;font-size:13px;font-weight:400;color:var(--hq-label-2)}
+[data-overlay-surface] main section.grid.gap-2 > :is(button.group.flex,div.group.grid).rounded-\\[6px\\] {border-radius:0;background-color:var(--hq-cell)}
+[data-overlay-surface] main section.grid.gap-2 > :is(button.group.flex,div.group.grid).rounded-\\[6px\\] + :is(button.group.flex,div.group.grid).rounded-\\[6px\\] {background-image:linear-gradient(var(--hq-sep),var(--hq-sep));background-size:calc(100% - 32px) .5px;background-position:16px 0;background-repeat:no-repeat}
+[data-overlay-surface] main :not(:is(button.group.flex,div.group.grid).rounded-\\[6px\\]) + section.grid.gap-2 > :is(button.group.flex,div.group.grid).rounded-\\[6px\\] {border-top-left-radius:var(--hq-card-r);border-top-right-radius:var(--hq-card-r)}
+[data-overlay-surface] main section.grid.gap-2 > :is(button.group.flex,div.group.grid).rounded-\\[6px\\]:not(:has(+ :is(button.group.flex,div.group.grid).rounded-\\[6px\\])) {border-bottom-left-radius:var(--hq-card-r);border-bottom-right-radius:var(--hq-card-r)}
+[data-overlay-surface] main section.grid.gap-2 > :is(button.group.flex,div.group.grid).rounded-\\[6px\\] :is(button.min-w-0,&) {padding-inline:16px}
+[data-overlay-surface] main section.grid.gap-2 > :is(button.group.flex,div.group.grid).rounded-\\[6px\\]:is(div) {padding-inline:0}
+/* Keyboard Shortcuts: categories are footnote headers over a card of bindings. */
+[data-overlay-surface] main section:has(> button.group\\/kbd-cat) {margin-bottom:20px}
+[data-overlay-surface] main .px-2.py-1\\.5:has(> section > button.group\\/kbd-cat) {padding:0}
+[data-overlay-surface] main button.group\\/kbd-cat {padding:0 16px 6px}
+[data-overlay-surface] main button.group\\/kbd-cat > span {font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--hq-label-2)}
+[data-overlay-surface] main section:has(> button.group\\/kbd-cat) > .flex.rounded-lg {padding:8px 16px;border-radius:0;background-color:var(--hq-cell)}
+[data-overlay-surface] main section:has(> button.group\\/kbd-cat) > .flex.rounded-lg + .flex.rounded-lg {background-image:linear-gradient(var(--hq-sep),var(--hq-sep));background-size:calc(100% - 32px) .5px;background-position:16px 0;background-repeat:no-repeat}
+[data-overlay-surface] main section:has(> button.group\\/kbd-cat) > .flex.rounded-lg:first-of-type {border-top-left-radius:var(--hq-card-r);border-top-right-radius:var(--hq-card-r)}
+[data-overlay-surface] main section:has(> button.group\\/kbd-cat) > .flex.rounded-lg:last-child {border-bottom-left-radius:var(--hq-card-r);border-bottom-right-radius:var(--hq-card-r)}
+[data-overlay-surface] main section:has(> button.group\\/kbd-cat) > .flex.rounded-lg > span {font-size:14px}
+/* Two loose rows in a spaced grid still read as one card (Gateways › Remote URL + Authentication). */
+[data-overlay-surface] main .grid:has(> .\\@container + .\\@container > .grid.gap-3.py-3):not(.grid.gap-1) {row-gap:0}
+/* Custom endpoints: the saved list and the editor are cards, not outlined boxes. */
+[data-overlay-surface] main section > :is(.divide-y,.grid).rounded-md.border {border:0;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main section > .grid.rounded-md.border.p-3 {padding:16px}
+[data-overlay-surface] main section > .grid.rounded-md.border :is([data-slot='input'],[data-slot='select-trigger'],[data-slot='textarea'],.desktop-input-chrome) {background:var(--hq-fill-3)}
+/* Uninstall: a plain card; each choice is a row, hairline-separated, nothing outlined in red. */
+[data-overlay-surface] main .mx-auto.max-w-2xl > .rounded-xl.border {padding:12px 16px;border:0;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main .mx-auto.max-w-2xl > .rounded-xl.border .mt-1.flex-col.gap-2 {gap:0;margin-top:6px}
+[data-overlay-surface] main .mx-auto.max-w-2xl > .rounded-xl.border button.items-start.rounded-lg.border {padding:11px 0;border:0;border-radius:0;background:none}
+[data-overlay-surface] main .mx-auto.max-w-2xl > .rounded-xl.border button.items-start.rounded-lg.border + button {box-shadow:0 -.5px 0 var(--hq-sep)}
+[id^='setting-field-']:not(.overflow-y-auto > *), .grid.gap-1 > .scroll-mt-6.rounded-lg {border-radius:0}
+[data-overlay-surface] .grid.gap-1:has(> :is(.scroll-mt-6.rounded-lg,.\\@container) .grid.gap-3.py-3) + * {margin-top:20px}
+:is([id^='setting-field-'],.grid.gap-1 > .scroll-mt-6.rounded-lg,.grid.gap-1 > .\\@container) + :is([id^='setting-field-'],.scroll-mt-6.rounded-lg,.\\@container) {box-shadow:0 -.5px 0 var(--hq-sep)}
 
-/* The sidebar: round faces, list type a little larger, quiet section headings, no tree lines. */
-[data-slot='row-button'] {border-radius:10px}
-[data-slot='bots-roster'] img {border-radius:50% !important}   /* desktop sets 22% inline */
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] .font-medium {font-size:14px;font-weight:600}
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] .text-xs {font-size:12.5px}
-[data-slot='bots-roster'] button.text-\\[0\\.6875rem\\] {font-size:12px;font-weight:600;color:var(--hq-label-2)}
-[data-slot='bots-section'] {border-left-color:transparent}
+/* The Sessions list: section headings as the Bots tab's (quiet, sentence case, no dithered tint square); date groups
+   a step quieter; titles at HQ's list size. */
+button.group\\/section-label > span.tracking-\\[0\\.16em\\] {padding-left:4px;font-size:13px;line-height:16px;font-weight:600;letter-spacing:0;color:var(--hq-label-2)}
+.dither.size-2 {display:none}
+.group\\/workspace .tracking-\\[0\\.12em\\] {font-size:12px;font-weight:500;letter-spacing:0;color:var(--hq-label-2);opacity:.8}
+.row-hover .hover-marquee.text-\\[0\\.8125rem\\] {font-size:14px;color:var(--foreground)}
+
+/* ---- The Bots list: HQ's Bots tab. A large title, quiet sentence-case section headings with the count after a dot
+   and the chevron at the end, rows of round faces with the name over a two-line preview, hairlines inset to the
+   text, and the one signal that matters (unread, working, needs you) as a dot at the row's end. ---- */
+:has(> [data-slot='bots-roster']) > .justify-between:first-child {padding:14px 12px 4px 16px}
+:has(> [data-slot='bots-roster']) > .justify-between:first-child > span {
+  font-size:22px;line-height:28px;font-weight:700;letter-spacing:-.02em;color:var(--foreground);text-transform:none}
+[data-slot='sidebar-wrapper'] .border-b:has(> input[placeholder^='Search']) {
+  display:flex;width:100%;height:34px;padding:0 10px;border:0;border-radius:10px;background:var(--hq-fill-3);opacity:1}
+[data-slot='sidebar-wrapper'] .border-b:has(> input[placeholder^='Search']) > input {font-size:14px;field-sizing:fixed}
+
+[data-slot='bots-roster'] {--ui-row-active-background:var(--hq-fill-2)}
+[data-slot='bots-roster'] .grid:has(> [data-roster-key]) {gap:0}
+[data-slot='bots-section'] {margin-left:0;padding-left:0;border-left:0}
+
+[data-slot='bots-roster'] button.tracking-wider {
+  gap:5px;margin-top:12px;padding:5px 8px 5px 10px;font-size:13px;font-weight:600;letter-spacing:0;text-transform:none;
+  color:var(--hq-label-2)}
+[data-slot='bots-roster'] button.tracking-wider > .codicon:not(.codicon-chevron-right) {display:none}
+[data-slot='bots-roster'] button.tracking-wider > .codicon-chevron-right {order:3;font-size:11px !important;opacity:.6}
+[data-slot='bots-roster'] button.tracking-wider > .tabular-nums {order:1;color:inherit}
+[data-slot='bots-roster'] button.tracking-wider > .tabular-nums::before {content:'· '}
+[data-slot='bots-roster'] button.tracking-wider > .flex-1 {order:2}
+
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] {position:relative;gap:12px;min-height:66px;padding:9px 10px;border-radius:12px}
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] img {width:44px !important;height:44px !important;border-radius:50% !important}   /* sized inline */
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] > .shrink-0:has(> svg), [data-slot='bots-roster'] button[data-slot='context-menu-trigger'] > .shrink-0 > svg {width:44px;height:44px}   /* drawn faces */
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] :is(.w-\\[34px\\]) {width:44px}
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] .size-8 {width:44px;height:44px;border-radius:50%}
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] .font-medium {font-size:15px;line-height:20px;font-weight:600;letter-spacing:-.01em}
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] .items-baseline > .shrink-0 {font-size:12px;color:var(--hq-label-2)}
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] .codicon-pinned {display:none}
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] .text-xs {margin-top:1px;font-size:13px;line-height:17px;color:var(--hq-label-2)}
+[data-slot='bots-roster'] button[data-slot='context-menu-trigger'] .text-xs > .truncate {white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+[data-slot='bots-roster'] [data-roster-key] span.size-3\\.5 {display:none}
+[data-slot='bots-roster'] [data-roster-key] span.size-3\\.5:has([role='status']) {display:grid;position:absolute;right:12px;bottom:17px}
+[data-slot='bots-roster'] [data-roster-key]:has([role='status']) .text-xs {padding-right:18px}
+[data-slot='bots-roster'] [data-roster-key] [role='status'] {width:10px;height:10px}
+[data-slot='bots-roster'] [data-roster-key] [role='status'][class~='bg-(--ui-success)'] {background:var(--hq-tint)}
+
+[data-slot='bots-roster'] [data-roster-key] + [data-roster-key]::before {
+  content:'';position:absolute;top:0;left:66px;right:10px;border-top:1px solid var(--hq-sep);pointer-events:none}
+/* A group's move buttons wait for the pointer. */
+[data-slot='bots-roster'] .grid:has(> button[data-slot='context-menu-trigger']) > .flex-col {opacity:0;transition:opacity .15s}
+[data-slot='bots-roster'] .grid:has(> button[data-slot='context-menu-trigger']):hover > .flex-col {opacity:1}
+[data-slot='bots-roster'] :is([data-roster-key][class~='bg-(--ui-row-active-background)'],[data-roster-key]:hover)::before,
+[data-slot='bots-roster'] :is([data-roster-key][class~='bg-(--ui-row-active-background)'],[data-roster-key]:hover) + [data-roster-key]::before {border-color:transparent}
 
 /* Tabs (Sessions and Bots, the chats along the top): the open one a grey capsule, as a segmented control, instead
    of an underline; no rules between them. A closeable tab carries the context menu's data-slot, hence data-tree-tab. */
@@ -195,23 +357,6 @@ body {--conversation-turn-gap:6px;--turn-block-gap:8px;--tool-row-gap:4px}
 :has(> * > [data-slot='aui_msg-actions']) {min-height:0;height:18px}
 [data-slot='aui_msg-actions'] {padding-block:0}
 
-/* Bot rows: HQ's face, gap and padding (50 pt faces, 12 pt gap, 10 pt padding), names in the headline weight, a
-   larger preview. Group rows' icons take the same circle. */
-[data-slot='bots-roster'] [data-slot='context-menu-trigger']:has(> .shrink-0) {gap:12px;padding:8px 10px;min-height:62px}
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] img {width:44px !important;height:44px !important}   /* sized inline */
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] > .shrink-0:has(> svg), [data-slot='bots-roster'] [data-slot='context-menu-trigger'] > .shrink-0 > svg {width:44px;height:44px}   /* drawn faces */
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] .w-\\[34px\\] {width:44px}
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] .size-8 {width:44px;height:44px;border-radius:50%}
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] .font-medium {font-size:15px;font-weight:600}
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] .text-xs {font-size:13px;line-height:18px}
-[data-slot='bots-roster'] [data-slot='context-menu-trigger'] .text-\\[0\\.6875rem\\] {font-size:12px}
-[data-slot='bots-roster'] [data-slot='bots-section-heading'] {margin-top:8px}
-
-/* The sidebar's search: HQ's grey capsule field instead of an underlined line. */
-[data-slot='sidebar-wrapper'] .border-b:has(> input[placeholder^='Search']) {
-  display:flex;width:100%;height:32px;padding:0 10px;border:0;border-radius:10px;background:var(--hq-fill-3);opacity:1}
-[data-slot='sidebar-wrapper'] .border-b:has(> input[placeholder^='Search']) > input {font-size:13px;field-sizing:fixed}
-
 /* Native glass (Settings › Appearance › Window Translucency › Glass, area Sidebar): macOS's own material behind the
    sidebar, the chat solid, as Finder and HQ's iPad sidebar. Desktop splits the window at its classic sidebar, which
    the pane layout doesn't have (the Bots list never counts), so there it painted the whole window solid. Here the
@@ -228,12 +373,31 @@ body {--conversation-turn-gap:6px;--turn-block-gap:8px;--tool-row-gap:4px}
 :is([data-slot='pane-tab'],[role='tab'][data-tree-tab]) {font-size:13px}
 :is([data-slot='pane-tab'],[role='tab'][data-tree-tab]):not([data-vertical]) {height:24px;padding-inline:4px}
 
+/* A chat's tabs: HQ's title over the conversation. Centred, the open one a semibold capsule that shows the whole
+   name, the others plain grey names; the idle dot goes (a working or waiting tab keeps its signal). */
+[role='tablist']:has(> .contents > [data-tree-tab='workspace']) > .contents > :first-child {margin-left:auto}
+[role='tablist']:has(> .contents > [data-tree-tab='workspace']) > :last-child {margin-right:auto}
+[role='tab'][data-tree-tab='workspace'] {max-width:24rem;font-size:13px;color:var(--hq-label-2)}
+[role='tab'][data-tree-tab='workspace']:not([data-vertical]) {height:28px;padding-inline:6px}
+[role='tab'][data-tree-tab='workspace'][data-active='true'] {font-weight:600;color:var(--foreground)}
+[role='tab'][data-tree-tab='workspace'] .tab-key-hint-icon:has(> * > [class~='bg-(--ui-text-quaternary)']) {display:none}
+
 /* Settings: the options in a readable centred column, as iPad Settings, on cards with HQ's round corners; the list
    of sections down the side at iOS's row height. */
 [data-overlay-surface] [data-glass-raised]:has([id^='setting-field-']) main > * {width:100%;max-width:54rem;margin-inline:auto}
-:has(> [id^='setting-field-']) {border-radius:20px}
 [id^='setting-field-'] > * > * {min-height:44px}
 [data-overlay-surface] aside button:not([data-slot='button']) {height:auto;min-height:34px;font-size:14px;border-radius:10px;border-color:transparent}
+/* The section list is iPad Settings' sidebar: solid (under Glass desktop leaves it see-through, showing the dimmed
+   window behind the sheet), a hairline from the options, the open page in the tint with white text, the open
+   group's name in the headline weight instead of a boxed fill. */
+[data-overlay-surface] [data-glass-raised] aside {background:var(--hq-cell);box-shadow:inset -1px 0 0 var(--hq-sep)}
+[data-overlay-surface] aside button:not([data-slot='button']):not([aria-current='page']) {background:transparent}
+[data-overlay-surface] aside button:not([data-slot='button']):not([aria-current='page']):hover {background:var(--hq-fill-3)}
+[data-overlay-surface] aside button[class~='bg-(--ui-bg-tertiary)'] {font-weight:600}
+[data-overlay-surface] aside button[aria-current='page'] {background:var(--hq-tint);color:#fff;font-weight:500}
+[data-overlay-surface] aside button[aria-current='page'] :is(svg,i) {color:#fff}
+/* A field lying on the grey page, outside a card, is white, as iOS draws one; inside a card it keeps the grey fill. */
+[data-overlay-surface] main :is([data-slot='input'],[data-slot='select-trigger'],[data-slot='textarea']):not([id^='setting-field-'] *) {background:var(--hq-cell)}
 
 /* Controls at a size a pointer finds easily, iOS's proportions: buttons 30 px, fields 34 px, menu rows 30 px. */
 [data-slot='button'][data-size='default'] {padding:6px 14px;font-size:13px;line-height:18px}
@@ -255,6 +419,110 @@ body {--conversation-turn-gap:6px;--turn-block-gap:8px;--tool-row-gap:4px}
 }
 [data-overlay-surface] [data-glass-raised] h2.text-sm.font-semibold {font-size:17px}
 [data-overlay-surface] [data-glass-raised] h3.font-semibold.tracking-tight {font-size:17px}
+
+/* Scheduled jobs: a large title, the jobs in an inset card, and the open job's facts, script and runs as grouped
+   cards with hairlines between rows and sentence-case footnote headings over them. */
+[data-overlay-surface] header > .min-w-0 > h2.text-sm.font-semibold {font-size:22px;line-height:28px;font-weight:700;letter-spacing:-.02em}
+[data-overlay-surface] header > .min-w-0 > h2 + * {font-size:13px;color:var(--hq-label-2)}
+[data-overlay-surface] .inline-flex.border-b:has(> input) {height:32px;margin-bottom:8px;padding:0 10px;border:0;border-radius:10px;background:var(--hq-cell)}
+[data-overlay-surface] .inline-flex.border-b:has(> input) > input {font-size:13px}
+[data-overlay-surface] .overflow-y-auto:has(> .group\\/row > [data-slot='row-button']) {padding:4px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] .space-y-4 > header h3 {font-size:20px;line-height:26px;font-weight:700;letter-spacing:-.01em}
+[data-overlay-surface] .space-y-4 > header .rounded-full.capitalize {padding:2px 8px;font-size:11px}
+[data-overlay-surface] .space-y-4 > header > dl {grid-template-columns:8rem 1fr;gap:0;padding:0 16px;border-radius:var(--hq-card-r);background:var(--hq-cell);font-size:13px}
+[data-overlay-surface] .space-y-4 > header > dl :is(dt,dd) {padding:10px 0}
+[data-overlay-surface] .space-y-4 > header > dl dt {color:var(--hq-label-2)}
+[data-overlay-surface] .space-y-4 > header > dl .contents + .contents > * {box-shadow:inset 0 1px 0 var(--hq-sep)}
+[data-overlay-surface] .space-y-4 .text-\\[0\\.6rem\\].tracking-wider {margin-bottom:6px;padding-inline:16px;font-size:13px;color:var(--hq-label-2)}
+[data-overlay-surface] .space-y-4 section > pre {padding:12px 16px;border-radius:var(--hq-card-r);background:var(--hq-cell);font-size:12.5px}
+[data-overlay-surface] .space-y-4 .tracking-wider + .flex.flex-col.gap-px {gap:0;padding:0 4px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] .space-y-4 .tracking-wider + .flex.flex-col.gap-px > div {position:relative;padding:10px 12px;font-size:13px;border-radius:8px}
+[data-overlay-surface] .space-y-4 .tracking-wider + .flex.flex-col.gap-px > div + div::before {
+  content:'';position:absolute;top:0;left:12px;right:12px;border-top:1px solid var(--hq-sep)}
+[data-overlay-surface] .space-y-4 .tracking-wider + .flex.flex-col.gap-px > div > :last-child {font-size:12px;color:var(--hq-label-2)}
+
+/* Command Center's session list: one inset card, a hairline between sessions from the text's left edge. */
+[data-overlay-surface] main ul:has(> li.group.py-2) {margin-block:4px 24px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main ul > li.group.py-2 {position:relative;min-height:54px;padding:8px 12px 8px 16px}
+[data-overlay-surface] main ul > li.group.py-2 + li::before {content:'';position:absolute;top:0;left:16px;right:0;border-top:1px solid var(--hq-sep)}
+[data-overlay-surface] main ul > li.group.py-2 > button > :first-child {font-size:15px;font-weight:400}
+[data-overlay-surface] main ul > li.group.py-2 > button > :last-child {font-size:13px;color:var(--hq-label-2)}
+
+/* Command Center's Maintenance: each section's actions are cells of one card (rounded at the ends, hairlines between),
+   under a sentence-case footnote heading. */
+[data-overlay-surface] main section > .text-\\[0\\.625rem\\].uppercase {margin-bottom:6px;padding-inline:16px;font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--hq-label-2)}
+[data-overlay-surface] main section > div:not([class]) > :first-child:not(.py-2) {margin-bottom:6px;padding-inline:16px;font-size:13px;color:var(--hq-label-2)}
+[data-overlay-surface] main :is(section,section > div) > .flex.justify-between.gap-3.py-2 {position:relative;min-height:54px;padding:10px 16px;background:var(--hq-cell)}
+[data-overlay-surface] main :is(section,section > div) > :not(.py-2) + .flex.justify-between.gap-3.py-2 {border-radius:var(--hq-card-r) var(--hq-card-r) 0 0}
+[data-overlay-surface] main :is(section,section > div) > .flex.justify-between.gap-3.py-2:last-child {border-bottom-left-radius:var(--hq-card-r);border-bottom-right-radius:var(--hq-card-r)}
+[data-overlay-surface] main :is(section,section > div) > .py-2 + .flex.justify-between.gap-3.py-2::before {content:'';position:absolute;top:0;left:16px;right:0;border-top:1px solid var(--hq-sep)}
+[data-overlay-surface] main :is(section,section > div) > .flex.justify-between.gap-3.py-2 .min-w-0 > :first-child {font-size:15px;font-weight:400}
+[data-overlay-surface] main :is(section,section > div) > .flex.justify-between.gap-3.py-2 .min-w-0 > :last-child:not(:first-child) {font-size:13px;color:var(--hq-label-2)}
+
+/* Command Center's Usage: the three totals as tiles, the chart and the top lists as cards. */
+[data-overlay-surface] main .grid.grid-cols-2.py-2:has(> .min-w-0 > .tracking-\\[0\\.12em\\]) {gap:12px}
+[data-overlay-surface] main .grid.grid-cols-2.py-2 > .min-w-0:has(> .tracking-\\[0\\.12em\\]) {padding:12px 16px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main .tracking-\\[0\\.12em\\].uppercase {font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--hq-label-2)}
+[data-overlay-surface] main .tracking-\\[0\\.12em\\] + * {font-size:22px;font-weight:700;letter-spacing:-.01em}
+[data-overlay-surface] main section:has(> .mb-2 > .tracking-\\[0\\.08em\\]) {padding:12px 16px 14px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main :is(section > .mb-2,section) > .tracking-\\[0\\.08em\\].uppercase {font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--hq-label-2)}
+[data-overlay-surface] main section > .mb-1\\.5.tracking-\\[0\\.08em\\] {padding-inline:16px}
+[data-overlay-surface] main section > ul:has(> li.py-1\\.5) {border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] main section > ul > li.py-1\\.5 {position:relative;min-height:44px;padding:8px 16px}
+[data-overlay-surface] main section > ul > li.py-1\\.5 + li::before {content:'';position:absolute;top:0;left:16px;right:0;border-top:1px solid var(--hq-sep)}
+[data-overlay-surface] main section > ul > li.py-1\\.5 > :first-child {font-size:13px}
+[data-overlay-surface] main section > ul > li.py-1\\.5 > :last-child {font-size:12px;color:var(--hq-label-2)}
+
+/* Page tabs (Capabilities, Artifacts, Messaging) are iOS's segmented control; boxes on a page are filled cards, not
+   outlines. */
+div:has(> button.group\\/text-tab) {gap:0;padding:2px;border-radius:9px;background:var(--hq-fill-3)}
+button.group\\/text-tab {height:26px;padding-inline:12px;border-radius:7px;font-size:13px;color:var(--foreground)}
+button.group\\/text-tab > span {text-decoration:none !important}
+button.group\\/text-tab > span + span {color:var(--hq-label-2)}
+button.group\\/text-tab[data-active='true'] {background:var(--hq-cell) !important;font-weight:600;box-shadow:0 3px 8px rgb(0 0 0/.12),0 1px 1px rgb(0 0 0/.04)}
+html:root.dark button.group\\/text-tab[data-active='true'] {background:#636366 !important}
+/* The small segmented control (Settings choices): same iOS track and raised segment. */
+.inline-grid.grid-flow-col.rounded-\\[5px\\]:has(> button[aria-pressed]) {gap:0;padding:2px;border-radius:9px;background:var(--hq-fill-3)}
+.inline-grid.grid-flow-col.rounded-\\[5px\\] > button[aria-pressed] {padding:3px 12px;border-radius:7px;font-size:12px}
+.inline-grid.grid-flow-col.rounded-\\[5px\\] > button[aria-pressed='true'] {background:#fff;color:#000;box-shadow:var(--hq-thumb-shadow)}
+html:root.dark .inline-grid.grid-flow-col.rounded-\\[5px\\] > button[aria-pressed='true'] {background:#636366;color:#fff}
+:is([class~='border-(--ui-stroke-tertiary)'][class~='bg-(--ui-bg-quinary)'],.rounded-xl.border[class~='bg-(--ui-surface-secondary,transparent)'],article.group\\/artifact) {
+  border-color:transparent;border-radius:var(--hq-card-r);background:var(--hq-card)}
+
+/* Inside a sheet the page is already grey, so a filled box is a white (dark: raised) cell instead. */
+[data-overlay-surface] :is([class~='border-(--ui-stroke-tertiary)'][class~='bg-(--ui-bg-quinary)'],.rounded-xl.border[class~='bg-(--ui-surface-secondary,transparent)']) {background:var(--hq-cell)}
+/* Command Center's System: a title-sized status, sentence-case labels, the log in a cell at 12px. */
+[data-overlay-surface] main .flex.items-center.gap-2 > .size-2.rounded-full + span, [data-overlay-surface] main .flex.items-center.gap-2:has(> .rounded-full) > span.font-medium {font-size:17px;font-weight:600}
+[data-overlay-surface] main .group\\/logs {padding:4px}
+[data-overlay-surface] main .group\\/logs .font-mono {font-size:12px;line-height:1.55}
+[data-overlay-surface] main .pt-2 > .mb-2 > .tracking-\\[0\\.08em\\].uppercase {padding-inline:16px;font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--hq-label-2)}
+/* Usage chart: input in HQ's tint, output in its green, bars with soft tops. */
+[data-overlay-surface] main [class*='bg-[color:var(--dt-primary)]'] {background:var(--hq-tint);opacity:.85}
+[data-overlay-surface] main [class*='bg-emerald-500'] {background:var(--hq-green)}
+[data-overlay-surface] main .flex.h-24.items-end {gap:3px}
+[data-overlay-surface] main .flex.h-24.items-end > * > :first-child {border-radius:3px 3px 0 0}
+
+/* Profiles: roomier rows, the path as a caption, SOUL.md's heading as a footnote and its editor in a cell with no
+   dotted focus box. */
+.cm-editor.cm-focused {outline:none}
+[data-overlay-surface] .group\\/row.h-7 {height:34px;font-size:14px}
+[data-overlay-surface] p.font-mono.text-\\[0\\.66rem\\] {font-size:12px;color:var(--hq-label-2)}
+[data-overlay-surface] .tracking-\\[0\\.14em\\].uppercase {padding-inline:16px;font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--hq-label-2)}
+[data-overlay-surface] .tracking-\\[0\\.14em\\] + * {padding-inline:16px;font-size:13px;color:var(--hq-label-2)}
+[data-overlay-surface] .flex.h-full.flex-col.overflow-hidden.rounded-md.border[class~='border-(--ui-stroke-tertiary)'] {border-color:transparent;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+
+/* Spawn tree (Agents): each parent's workers in a cell, a footnote heading, 15pt goals; the empty state at title size. */
+[data-overlay-surface] .grid.place-items-center:is(.py-12,.py-10) p.text-sm {font-size:17px;font-weight:600}
+[data-overlay-surface] .grid.place-items-center:is(.py-12,.py-10) p:is(.text-xs,.text-sm + p) {font-size:13px;color:var(--hq-label-2)}
+[data-overlay-surface] .flex-col.gap-4 > p.shrink-0.text-\\[0\\.7rem\\] {padding-inline:16px;font-size:13px;color:var(--hq-label-2)}
+[data-overlay-surface] section.grid.min-w-0.gap-3:has(> p.tracking-wider) {gap:10px}
+[data-overlay-surface] section.grid.min-w-0.gap-3 > p.tracking-wider {padding-inline:16px;font-size:13px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--hq-label-2)}
+[data-overlay-surface] section.grid.min-w-0.gap-3 > p.tracking-wider + .grid {gap:0;padding:4px 16px;border-radius:var(--hq-card-r);background:var(--hq-cell)}
+[data-overlay-surface] section.grid.min-w-0.gap-3 > p.tracking-wider + .grid > [data-slot='tool-block'] {padding-block:10px}
+[data-overlay-surface] section.grid.min-w-0.gap-3 > p.tracking-wider + .grid > [data-slot='tool-block'] + [data-slot='tool-block'] {box-shadow:inset 0 1px 0 var(--hq-sep)}
+[data-overlay-surface] [data-slot='tool-block'] .text-\\[0\\.82rem\\] {font-size:15px;line-height:20px}
+[data-overlay-surface] [data-slot='tool-block'] .text-\\[0\\.66rem\\] {font-size:12px;line-height:16px;color:var(--hq-label-2)}
+[data-overlay-surface] [data-slot='tool-block'] .text-\\[0\\.72rem\\] {font-size:13px}
 
 /* Group chats: HQ's room. Each bot's words in a grey bubble under its name and face, yours in blue on the right,
    at the chat's 15 px instead of desktop's 12 px log lines. */
@@ -360,7 +628,7 @@ export const NOUS_HIGH_CONTRAST = {
 // and a look that is malformed or whose CSS would load anything from elsewhere is ignored. The last good look is kept in
 // this computer's storage, so the next launch paints it at once, offline too. A published version at or below this
 // copy's (a rollback, or a newer copy installed here) drops the kept one. Bump VERSION with every change to the look.
-export const VERSION = 3
+export const VERSION = 4
 export const LATEST_URL = 'https://raw.githubusercontent.com/mrcharlesiv/hermes-hq/main/desktop-plugin/hermes-hq-theme/latest.json'
 const KEPT = 'hermes-hq-theme.latest'
 const IDS = new Set([THEME.name, NOUS_HIGH_CONTRAST.name])
