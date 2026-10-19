@@ -354,12 +354,91 @@ export const NOUS_HIGH_CONTRAST = {
   customCSS: CONTRAST_CSS,
 }
 
+// Newer looks without reinstalling. This copy paints first; then, once per launch, the theme reads the newest published
+// look (latest.json beside this file on GitHub, written from this file by scripts/desktop-theme-latest.mjs) and
+// switches to it when its version is above this copy's. Only data is taken (palette values, fonts and CSS, never code),
+// and a look that is malformed or whose CSS would load anything from elsewhere is ignored. The last good look is kept in
+// this computer's storage, so the next launch paints it at once, offline too. A published version at or below this
+// copy's (a rollback, or a newer copy installed here) drops the kept one. Bump VERSION with every change to the look.
+export const VERSION = 3
+export const LATEST_URL = 'https://raw.githubusercontent.com/mrcharlesiv/hermes-hq/main/desktop-plugin/hermes-hq-theme/latest.json'
+const KEPT = 'hermes-hq-theme.latest'
+const IDS = new Set([THEME.name, NOUS_HIGH_CONTRAST.name])
+const MAX_CSS = 192 * 1024
+// Anything in the CSS that could fetch from elsewhere: url(), @import, image-set(), @font-face, src().
+const LOADS = /url\s*\(|@import|image-set\s*\(|@font-face|\bsrc\s*\(/i
+const plainText = (value, max) => typeof value === 'string' && value.length <= max && !/[;{}<>]/.test(value)
+
+const palette = value => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const entries = Object.entries(value)
+  if (entries.length > 64 || !entries.every(([key, v]) => /^\w{1,40}$/.test(key) && plainText(v, 64))) return null
+  return Object.fromEntries(entries)
+}
+
+const theme = value => {
+  if (!value || typeof value !== 'object' || !IDS.has(value.name) || !plainText(value.label, 80)) return null
+  if (value.description != null && !plainText(value.description, 300)) return null
+  const colors = palette(value.colors), darkColors = palette(value.darkColors)
+  if (!colors || !darkColors) return null
+  const typography = value.typography ?? {}
+  if (!['fontSans', 'fontMono'].every(key => typography[key] == null || plainText(typography[key], 400))) return null
+  const css = value.customCSS ?? ''
+  if (typeof css !== 'string' || css.length > MAX_CSS || LOADS.test(css)) return null
+  return {
+    name: value.name, label: value.label, description: value.description ?? '',
+    typography: { fontSans: typography.fontSans, fontMono: typography.fontMono },
+    colors, darkColors, customCSS: css,
+  }
+}
+
+/** A published look as `{version, themes}`, rebuilt from the allowed fields only; null when anything is off. */
+export function readLook(value) {
+  if (!value || typeof value !== 'object' || !Number.isInteger(value.version) || value.version < 1) return null
+  if (!Array.isArray(value.themes) || value.themes.length < 1 || value.themes.length > IDS.size) return null
+  const themes = value.themes.map(theme)
+  if (themes.some(t => !t) || new Set(themes.map(t => t.name)).size !== themes.length) return null
+  return { version: value.version, themes }
+}
+
+const kept = () => {
+  try { return readLook(JSON.parse(localStorage.getItem(KEPT) ?? 'null')) } catch { return null }
+}
+const keep = look => {
+  try { look ? localStorage.setItem(KEPT, JSON.stringify(look)) : localStorage.removeItem(KEPT) } catch {}
+}
+
 export default {
   id: 'hermes-hq-theme',
   name: 'Hermes HQ theme',
   description: 'Adds the Hermes HQ themes: the iPhone app’s look, and Nous with its High Contrast option.',
   register(ctx) {
-    ctx.register({ id: 'hermes-hq', area: 'themes', title: THEME.label, data: THEME })
-    ctx.register({ id: 'nous-high-contrast', area: 'themes', title: NOUS_HIGH_CONTRAST.label, data: NOUS_HIGH_CONTRAST })
+    const paint = themes => { for (const t of themes) ctx.register({ id: t.name, area: 'themes', title: t.label, data: t }) }
+    const bundled = [THEME, NOUS_HIGH_CONTRAST]
+    paint(bundled)
+    let shown = kept()
+    if (shown && shown.version > VERSION) paint(shown.themes)
+    else { keep(null); shown = null }
+
+    if (typeof fetch !== 'function') return
+    const abort = new AbortController()
+    let gone = false
+    ctx.onDispose(() => { gone = true; abort.abort() })
+    const stop = setTimeout(() => abort.abort(), 15000)
+    fetch(LATEST_URL, { cache: 'no-store', signal: abort.signal })
+      .then(response => (response.ok ? response.json() : null))
+      .then(value => {
+        const look = readLook(value)
+        if (gone || !look) return
+        if (look.version > VERSION) {
+          if (JSON.stringify(look) !== JSON.stringify(shown)) paint(look.themes)
+          keep(look)
+        } else if (shown) {
+          paint(bundled)
+          keep(null)
+        }
+      })
+      .catch(() => {})
+      .finally(() => clearTimeout(stop))
   },
 }
