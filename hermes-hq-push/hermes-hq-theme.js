@@ -580,7 +580,7 @@ html.dark :is([data-slot='sidebar'],:has(> [data-slot='bots-roster'])){--hq-labe
 }
 :is([data-slot='sidebar'],:has(> [data-slot='bots-roster'])){anchor-name:--hq-side}
 [data-titlebar-cluster='left']:has(> button[aria-label^='Hide sidebar']){position-anchor:--hq-side;position-visibility:always;left:calc(anchor(right,calc(var(--titlebar-controls-left) + 44px)) - 44px)}
-[data-slot='sidebar'] [data-slot='sidebar-content'] > [data-sidebar='group']:first-child{container-type:inline-size;flex-direction:row;align-items:center;gap:8px;padding:8px 6px 2px;> [data-sidebar='group-content']{width:auto;flex:none;margin-left:auto}
+[data-slot='sidebar'] [data-slot='sidebar-content'] > [data-sidebar='group']:first-child{container-type:inline-size;flex-direction:row;align-items:center;gap:8px;padding:16px 6px 2px;> [data-sidebar='group-content']{width:auto;flex:none;margin-left:auto}
 &::before{content:'Sessions' / '';flex:1 1 auto;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:clamp(22px,calc((100cqi - 116px) / 4),28px);line-height:34px;font-weight:700;letter-spacing:.2px;color:var(--foreground)}
 }
 [data-slot='sidebar'] [data-sidebar='menu']{flex-direction:row;gap:0;width:auto;height:32px;align-items:center;padding:0 3px}
@@ -657,12 +657,12 @@ button[data-slot='popover-anchor'][aria-pressed='true']{box-shadow:0 0 0 2px var
 [data-slot='profile-status-dot']{display:block;width:5px;height:5px;background:var(--hq-tint);box-shadow:0 0 0 1.5px var(--background)}
 button > span.absolute:has(> [data-slot='profile-status-dot']){top:-1px;right:-1px;bottom:auto;line-height:0}
 }
-:has(> [data-slot='bots-roster']){position:relative;> .justify-between:first-child{container-type:inline-size;gap:8px;padding:8px 16px 2px;> span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:clamp(22px,calc((100cqi - 116px) / 4),28px);color:var(--foreground);text-transform:none;line-height:34px;font-weight:700;letter-spacing:.2px}
+:has(> [data-slot='bots-roster']){position:relative;> .justify-between:first-child{container-type:inline-size;gap:8px;padding:16px 16px 2px;> span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:clamp(22px,calc((100cqi - 116px) / 4),28px);color:var(--foreground);text-transform:none;line-height:34px;font-weight:700;letter-spacing:.2px}
 > .flex{anchor-name:--hq-bots-tools;flex:none;gap:0;height:32px;align-items:center;padding:0 3px 0 31px}
 > .flex > button{width:28px;height:28px;border-radius:999px;color:var(--foreground)}
 > .flex .codicon{font-size:17px !important}
 }
-> :nth-child(2){gap:0;padding:2px 16px 4px;> button[aria-label='Filter roster']{position:absolute;top:anchor(--hq-bots-tools top,9px);left:anchor(--hq-bots-tools left,calc(100% - 106px));margin:2px 0 0 3px;width:28px !important;height:28px !important;border-radius:999px;color:var(--foreground);.codicon{font-size:17px !important}
+> :nth-child(2){gap:0;padding:2px 16px 4px;> button[aria-label='Filter roster']{position:absolute;top:anchor(--hq-bots-tools top,17px);left:anchor(--hq-bots-tools left,calc(100% - 106px));margin:2px 0 0 3px;width:28px !important;height:28px !important;border-radius:999px;color:var(--foreground);.codicon{font-size:17px !important}
 }
 }
 }
@@ -1756,7 +1756,7 @@ export const NOUS_HIGH_CONTRAST = {
 // and a look that is malformed or whose CSS would load anything from elsewhere is ignored. The last good look is kept in
 // this computer's storage, so the next launch paints it at once, offline too. A published version at or below this
 // copy's (a rollback, or a newer copy installed here) drops the kept one. Bump VERSION with every change to the look.
-export const VERSION = 5
+export const VERSION = 6
 export const LATEST_URL = 'https://raw.githubusercontent.com/mrcharlesiv/hermes-hq/main/desktop-plugin/hermes-hq-theme/latest.json'
 const KEPT = 'hermes-hq-theme.latest'
 const IDS = new Set([THEME.name, NOUS_HIGH_CONTRAST.name])
