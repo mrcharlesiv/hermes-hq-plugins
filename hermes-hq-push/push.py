@@ -52,13 +52,21 @@ _copy_spec = importlib.util.spec_from_file_location("hermes_hq_push_copy", Path(
 alert_copy = importlib.util.module_from_spec(_copy_spec)
 _copy_spec.loader.exec_module(alert_copy)
 
-KINDS = ("turnDone", "approval")
+KINDS = ("turnDone", "approval", "outside")
 TOPIC = "com.charlesmcdowell.dispatch"
 APPROVAL_CATEGORY = "DISPATCH_APPROVAL"
 CHOICES = ("once", "deny")
 # Notification Center order, as the app's local alerts: what needs an answer first.
 RELEVANCE = {"approval": 1.0, "turnDone": 0.6}
 APP_PLATFORMS = {"desktop", "tui"}
+# Chats people have with a bot through another app (the desktop app's messaging sources). Their replies and approvals
+# alert only a device that turned Outside Chats on (kind "outside", off unless the app says so), titled with the app.
+OUTSIDE_LABELS = {
+    "telegram": "Telegram", "discord": "Discord", "slack": "Slack", "whatsapp": "WhatsApp", "signal": "Signal",
+    "matrix": "Matrix", "mattermost": "Mattermost", "email": "Email", "sms": "SMS", "bluebubbles": "iMessage",
+    "homeassistant": "Home Assistant", "weixin": "WeChat", "wecom": "WeCom", "dingtalk": "DingTalk",
+    "feishu": "Feishu", "qqbot": "QQ", "yuanbao": "Yuanbao", "webhook": "Webhook", "api_server": "API",
+}
 # Sealed alerts: what shows if the phone can't open one, and the associated data both sides bind the box to.
 SEALED_ALERT = {"title": "Hermes HQ", "body": "New notification"}
 # Unchanged by the rename: the phone opens boxes bound to it (DispatchSeal.aad).
@@ -146,6 +154,8 @@ class Device:
     account: str = ""  # the app's opaque account tag, echoed in alerts so it knows which gateway sent them
 
     def wants(self, kind: str) -> bool:
+        if kind == "outside":  # opt-in: a registration from before 0.9 never asked for these
+            return self.kinds.get(kind) is True
         return self.kinds.get(kind, True) is not False
 
 
@@ -243,11 +253,12 @@ def status_body(root: Path, sender) -> dict:
     `desktopThemes` (0.6): it puts the Hermes HQ themes in the desktop app (desktop_theme.py); the app offers an update
     to a plugin without it. `restartGuard` (0.7): it blocks `launchctl submit` and removes a restart job that loops
     (restart_guard.py); the app offers an update to a plugin without it. `perfLogs` (0.8): it keeps the app's performance
-    log on this computer (perf_logs.py), and `moments` (0.8): a marked moment's content-free bundle too (POST /logs/moment)."""
+    log on this computer (perf_logs.py), and `moments` (0.8): a marked moment's content-free bundle too (POST /logs/moment).
+    `outside` (0.9): a device that registers kind "outside" also gets replies and approvals from chats in other apps."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -299,6 +310,7 @@ class Push:
     sender: str = ""  # the bot's display name
     text: str = ""    # the reply, or the command awaiting approval
     about: str = ""   # an approval's description
+    outside: str = ""  # the other app a chat runs in (OUTSIDE_LABELS key): only devices that asked for "outside"
     queued: float = 0.0  # when the Dispatcher took it (its clock): a reply alert too late to matter isn't retried
 
     def payload(self, previews: bool = True, account: str = "") -> dict:
@@ -309,7 +321,10 @@ class Push:
         if self.settled:
             # Background update: the app removes the delivered approval alert.
             return {"aps": {"content-available": 1}, "dispatch": {**dispatch, "settled": True}}
-        alert = alert_copy.alert(self.kind, self.sender or alert_copy.readable_profile(self.profile), self.text, previews, self.about)
+        sender = self.sender or alert_copy.readable_profile(self.profile)
+        if self.outside:
+            sender = f"{sender} · {OUTSIDE_LABELS.get(self.outside, alert_copy.readable_profile(self.outside))}"
+        alert = alert_copy.alert(self.kind, sender, self.text, previews, self.about)
         # Time Sensitive needs an entitlement the app doesn't have: every alert is a normal (active) one.
         aps: dict = {"alert": alert, "sound": "default", "interruption-level": "active",
                      "relevance-score": RELEVANCE.get(self.kind, 0.5)}
@@ -317,7 +332,10 @@ class Push:
             aps["thread-id"] = self.session
         # Approve/Deny only while the alert shows the whole command being approved: one line, not clipped (the app's
         # local rule). A command with more lines, or one cut short, only opens the chat.
-        if self.kind == "approval" and previews and alert_copy.approvable(alert_copy.command_summary(self.text)):
+        # An outside chat's approval waits in the messaging gateway, which this server can't answer for: no buttons,
+        # the alert only says it is waiting (answer it in that app).
+        if (self.kind == "approval" and previews and self.token
+                and alert_copy.approvable(alert_copy.command_summary(self.text))):
             aps["category"] = APPROVAL_CATEGORY
         return {"aps": aps, "dispatch": dispatch}
 
@@ -391,8 +409,17 @@ def turn_push(kwargs: dict, profile: str, sender: str = "", text: str = "") -> P
     return Push("turnDone", session=str(kwargs["session_id"]), profile=profile, sender=sender, text=str(text or "")[:4000])
 
 
-def approval_push(kwargs: dict, pending: Iterable[dict], root: Path, profile: str, sender: str = "") -> Push | None:
-    """``pre_approval_request`` has no request id; the queued entry does (queued before the hook fires)."""
+def outside_platform(session_key: str) -> str:
+    """The messaging app a gateway session key names (``agent:<profile>:<platform>:...``), or ""."""
+    parts = str(session_key or "").split(":")
+    return next((part for part in parts[:3] if part in OUTSIDE_LABELS), "")
+
+
+def approval_push(kwargs: dict, pending: Iterable[dict], root: Path, profile: str, sender: str = "",
+                  outside: str = "") -> Push | None:
+    """``pre_approval_request`` has no request id; the queued entry does (queued before the hook fires). ``outside``:
+    the messaging app of a chat the messaging gateway runs; its alert carries no action token (nothing here can
+    answer it)."""
     if kwargs.get("surface") != "gateway" or kwargs.get("coalesced"):
         return None
     session_key = str(kwargs.get("session_key") or "")
@@ -405,8 +432,9 @@ def approval_push(kwargs: dict, pending: Iterable[dict], root: Path, profile: st
         return None
     request_id = str(match[-1]["request_id"])
     return Push("approval", session=str(kwargs.get("session_id") or ""), request=request_id,
-                session_key=session_key, token=action_token(root, request_id, session_key), profile=profile,
-                sender=sender, text=str(kwargs.get("command") or ""), about=str(kwargs.get("description") or ""))
+                session_key=session_key, token="" if outside else action_token(root, request_id, session_key),
+                profile=profile, sender=sender, text=str(kwargs.get("command") or ""),
+                about=str(kwargs.get("description") or ""), outside=outside)
 
 
 def approval_signature(kwargs: dict) -> tuple:
@@ -430,7 +458,7 @@ def settled_push(kwargs: dict, sent: dict[str, tuple[tuple, Push]]) -> Push | No
         return None
     push = sent.pop(request)[1]
     return Push("approval", session=push.session, request=push.request, session_key=push.session_key,
-                profile=push.profile, settled=True)
+                profile=push.profile, settled=True, outside=push.outside)
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +557,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.8.1"
+PLUGIN_VERSION = "0.9.0"
 
 
 class Relay:
@@ -677,11 +705,12 @@ def profile_sender(profile: str) -> str:
 
 
 # A finished reply: the turn's last assistant message, in a chat people have with a bot in an app (Hermes HQ, the
-# desktop app, the TUI), never a subagent's working session (Hermes marks those `_delegate_from`), a cron job's own
-# run, a tool session or a messaging platform's chat.
-_APP_REPLY = """m.role = 'assistant' AND COALESCE(m.content, '') != ''
-    AND s.source IN ('desktop', 'tui') AND json_extract(s.model_config, '$._delegate_from') IS NULL"""
-_REPLIES_SQL = f"""SELECT m.id, m.session_id, m.content FROM messages m JOIN sessions s ON s.id = m.session_id
+# desktop app, the TUI) or through another app (Telegram, Discord…: sent only to devices that asked, see Dispatcher),
+# never a subagent's working session (Hermes marks those `_delegate_from`), a cron job's own run or a tool session.
+_CHAT_SOURCES = ", ".join(f"'{source}'" for source in sorted(APP_PLATFORMS | set(OUTSIDE_LABELS)))
+_APP_REPLY = f"""m.role = 'assistant' AND COALESCE(m.content, '') != ''
+    AND s.source IN ({_CHAT_SOURCES}) AND json_extract(s.model_config, '$._delegate_from') IS NULL"""
+_REPLIES_SQL = f"""SELECT m.id, m.session_id, m.content, s.source FROM messages m JOIN sessions s ON s.id = m.session_id
   WHERE m.id > ? AND m.id <= ? AND m.finish_reason = 'stop' AND {_APP_REPLY}
   ORDER BY m.id"""
 # The same rows by how they ended (Health's replyRows), and the ones not ended yet (rechecked: see ReplyWatcher).
@@ -748,12 +777,13 @@ class ReplyWatcher:
                         unended = [row[0] for row in db.execute(_OPEN_SQL, (since, newest))]
                     if pending:
                         marks = ",".join("?" * len(pending))
-                        rows += db.execute(f"SELECT id, session_id, content FROM messages WHERE id IN ({marks})"
-                                           " AND finish_reason = 'stop' ORDER BY id", tuple(pending)).fetchall()
+                        rows += db.execute(f"SELECT m.id, m.session_id, m.content, s.source FROM messages m"
+                                           f" JOIN sessions s ON s.id = m.session_id WHERE m.id IN ({marks})"
+                                           " AND m.finish_reason = 'stop' ORDER BY m.id", tuple(pending)).fetchall()
                     self.seen[path] = max(since, newest)
             except sqlite3.Error:
                 continue  # busy, or not a Hermes database yet: next pass
-            for row_id, _, _ in rows:
+            for row_id, *_ in rows:
                 pending.pop(row_id, None)
             for row_id in unended:
                 pending[row_id] = now
@@ -765,13 +795,14 @@ class ReplyWatcher:
             if self.health:
                 for ending, count in endings:
                     self.health.record(f"replies:{ending}", count=count)
-            last: dict[str, str] = {}
-            for _, session, content in sorted(rows):
+            last: dict[str, tuple[str, str]] = {}
+            for _, session, content, source in sorted(rows):
                 if silent_reply(content):
                     continue
-                last[session] = content  # a burst of turns in one chat: its last reply
-            for session, content in last.items():
-                self.submit(Push("turnDone", session=session, profile=profile, sender=self.sender(profile), text=str(content)[:4000]))
+                last[session] = (content, source)  # a burst of turns in one chat: its last reply
+            for session, (content, source) in last.items():
+                self.submit(Push("turnDone", session=session, profile=profile, sender=self.sender(profile),
+                                 text=str(content)[:4000], outside=source if source in OUTSIDE_LABELS else ""))
                 sent += 1
         return sent
 
@@ -881,7 +912,8 @@ class Dispatcher:
         sent = 0
         for device in self.store.devices():
             if (device.topic != TOPIC or device.profile not in ("*", push.profile)
-                    or not device.wants(push.kind) or (only and device.device_id != only)):
+                    or not device.wants(push.kind) or (push.outside and not device.wants("outside"))
+                    or (only and device.device_id != only)):
                 continue
             # Registered before relay mode, without a key: the relay takes only sealed alerts.
             if isinstance(sender, Relay) and not device.seal:

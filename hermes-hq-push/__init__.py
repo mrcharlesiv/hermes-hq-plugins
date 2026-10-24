@@ -2,7 +2,8 @@
 
 Hooks run wherever an agent turn runs; they only enqueue. App sessions (platform desktop/tui) live in
 ``hermes serve``, which also mounts ``dashboard/plugin_api.py``, so an approval pushed from here can be
-answered from the lock screen through that route. Messaging-platform sessions are ignored. Reply alerts don't come from hooks: ``push.ReplyWatcher`` (started by
+answered from the lock screen through that route. A messaging-platform session's approval alerts only devices that
+turned Outside Chats on, without buttons. Reply alerts don't come from hooks: ``push.ReplyWatcher`` (started by
 ``dashboard/plugin_api.py`` in the server) reads every profile's replies, so one install covers every bot.
 On load it also puts the Hermes HQ theme in the desktop app's plugin folder (desktop_theme.py), and
 restart_guard.py keeps a bot's one-time restart from looping and locking the app out.
@@ -52,12 +53,15 @@ def _serves_app_sessions() -> bool:
 
 def pre_approval_request(**kwargs):
     try:
-        if not _serves_app_sessions():
+        # The messaging gateway's approvals are answered in their own app; they alert (without buttons) only a
+        # device that turned Outside Chats on.
+        outside = "" if _serves_app_sessions() else push.outside_platform(str(kwargs.get("session_key") or ""))
+        if not _serves_app_sessions() and not outside:
             return
         from tools.approval import list_gateway_approvals
         profile = _profile()
         item = push.approval_push(kwargs, list_gateway_approvals(str(kwargs.get("session_key") or "")),
-                                  push.data_dir(), profile, _sender(profile))
+                                  push.data_dir(), profile, _sender(profile), outside)
         if item is not None:
             push.remember_approval(_sent_approvals, kwargs, item)
             _dispatcher_for().submit(item)
