@@ -29,6 +29,11 @@ or an approval a bot is waiting on. It's off until you ask for it. In Hermes HQ,
 and turn on **Show › Outside Chats**, then check that **Settings › Notifications › Outside Chats** is on. These alerts
 have no Approve or Deny buttons, so answer those approvals in the app the chat is in.
 
+From version 0.9.1 it also fixes **Delete, Archive and Rename** when you sign in to Hermes with your Nous account. Hermes
+stamps each chat you start with your sign-in but leaves out where the sign-in came from, then refuses your own edits
+(`permission_denied`). The plugin lets your Nous sign-in, and only that sign-in, change the chats it made. It stops
+itself once Hermes fixes this. It works only after the **messaging gateway** restarts (`hermes gateway restart`).
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -50,7 +55,8 @@ If a messaging gateway runs too (for Telegram, Discord and other apps), restart 
 alert only once it has loaded the plugin. Open Hermes HQ and make sure **Settings › Notifications** is on. Hermes HQ
 registers for push the next time it opens.
 
-To update an older copy, run the same install command with `--force` added, then restart the same way. Your registered
+To update an older copy, run the same install command with `--force` added, then restart the same way. From 0.9.1, also
+run `hermes gateway restart`, or Delete keeps failing. Your registered
 devices are kept. If the old `dispatch-push` is still installed beside it, only `hermes-hq-push` sends alerts, so you
 never get two.
 
