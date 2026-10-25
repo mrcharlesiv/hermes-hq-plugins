@@ -24,6 +24,11 @@ screen that stopped taking taps) and logs what it finds, still without any conte
 Moment** (or shake the phone), it adds the minute's frame times and the screen's layout as plain boxes (no text) in
 `hq-logs/<phone>/moments/`. Turn it off in Hermes HQ under **Settings › About › Send Performance Logs to Your Computer**.
 
+From version 0.9 it can also alert you about your bots' chats in **Telegram, Discord and other apps**: a reply there,
+or an approval a bot is waiting on. It's off until you ask for it. In Hermes HQ, open the Sessions tab's Filter menu
+and turn on **Show › Outside Chats**, then check that **Settings › Notifications › Outside Chats** is on. These alerts
+have no Approve or Deny buttons, so answer those approvals in the app the chat is in.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -41,10 +46,13 @@ hermes plugins remove dispatch-push   # only if you had the old plugin
 ```
 
 Then restart `hermes serve` or `hermes dashboard` (or the Hermes app). The plugin's routes appear only after a restart.
-Open Hermes HQ and make sure **Settings › Notifications** is on. Hermes HQ registers for push the next time it opens.
+If a messaging gateway runs too (for Telegram, Discord and other apps), restart it as well: approvals in those apps
+alert only once it has loaded the plugin. Open Hermes HQ and make sure **Settings › Notifications** is on. Hermes HQ
+registers for push the next time it opens.
 
-To update an older copy, run the same install command with `--force` added. Your registered devices are kept. If the
-old `dispatch-push` is still installed beside it, only `hermes-hq-push` sends alerts, so you never get two.
+To update an older copy, run the same install command with `--force` added, then restart the same way. Your registered
+devices are kept. If the old `dispatch-push` is still installed beside it, only `hermes-hq-push` sends alerts, so you
+never get two.
 
 ### What it sends, and who can read it
 
@@ -73,7 +81,8 @@ All optional, in `~/.hermes/.env` (the old `DISPATCH_PUSH_RELAY_URL` and `DISPAT
 
 ### Limits
 
-- Only Hermes HQ's own chats alert (not Telegram, Discord or other messaging platforms).
+- Chats in Telegram, Discord and other apps alert only with version 0.9 or newer, and only once Outside Chats is on in
+  Hermes HQ. A question a bot asks in its reply alerts; one it asks with its clarify tool doesn't.
 - Approvals time out after 60 seconds by default. To answer from the lock screen, raise `approvals.timeout` in
   Hermes' `config.yaml` (300 works well).
 - Approvals from the lock screen need Hermes' default, unisolated turns (`dashboard.turn_isolation` off).
