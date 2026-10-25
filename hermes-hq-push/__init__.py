@@ -6,7 +6,8 @@ answered from the lock screen through that route. A messaging-platform session's
 turned Outside Chats on, without buttons. Reply alerts don't come from hooks: ``push.ReplyWatcher`` (started by
 ``dashboard/plugin_api.py`` in the server) reads every profile's replies, so one install covers every bot.
 On load it also puts the Hermes HQ theme in the desktop app's plugin folder (desktop_theme.py), and
-restart_guard.py keeps a bot's one-time restart from looping and locking the app out.
+restart_guard.py keeps a bot's one-time restart from looping and locking the app out. own_chats.py lets a Nous
+sign-in delete, archive and rename the chats it made, which Hermes otherwise refuses (``permission_denied``).
 """
 import importlib.util
 import logging
@@ -21,6 +22,9 @@ _spec.loader.exec_module(push)
 _guard_spec = importlib.util.spec_from_file_location("hermes_hq_push_restart_guard", Path(__file__).with_name("restart_guard.py"))
 restart_guard = importlib.util.module_from_spec(_guard_spec)
 _guard_spec.loader.exec_module(restart_guard)
+_own_spec = importlib.util.spec_from_file_location("hermes_hq_push_own_chats", Path(__file__).with_name("own_chats.py"))
+own_chats = importlib.util.module_from_spec(_own_spec)
+_own_spec.loader.exec_module(own_chats)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
@@ -109,9 +113,17 @@ def _restart_guard():
         log.debug("hermes-hq-push: restart guard not started", exc_info=True)
 
 
+def _own_chats():
+    try:
+        log.info("hermes-hq-push: own chats %s", own_chats.install())
+    except Exception:
+        log.debug("hermes-hq-push: own chats not installed", exc_info=True)
+
+
 def register(ctx):
     ctx.register_hook("pre_approval_request", pre_approval_request)
     ctx.register_hook("post_approval_response", post_approval_response)
     ctx.register_hook("pre_tool_call", pre_tool_call)
     _desktop_theme()
     _restart_guard()
+    _own_chats()
