@@ -254,11 +254,13 @@ def status_body(root: Path, sender) -> dict:
     to a plugin without it. `restartGuard` (0.7): it blocks `launchctl submit` and removes a restart job that loops
     (restart_guard.py); the app offers an update to a plugin without it. `perfLogs` (0.8): it keeps the app's performance
     log on this computer (perf_logs.py), and `moments` (0.8): a marked moment's content-free bundle too (POST /logs/moment).
-    `outside` (0.9): a device that registers kind "outside" also gets replies and approvals from chats in other apps."""
+    `outside` (0.9): a device that registers kind "outside" also gets replies and approvals from chats in other apps.
+    `ownChats` (0.9.1): a Nous sign-in can delete, archive and rename the chats it made (own_chats.py, loaded by the
+    gateway); the app offers an update to a plugin without it."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -557,7 +559,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.0"
+PLUGIN_VERSION = "0.9.1"
 
 
 class Relay:
