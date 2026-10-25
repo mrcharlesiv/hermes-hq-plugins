@@ -21,6 +21,13 @@ else:
     perf_logs = importlib.util.module_from_spec(_logs_spec)
     sys.modules["hermes_hq_perf_logs"] = perf_logs
     _logs_spec.loader.exec_module(perf_logs)
+if "hermes_hq_cron_working" in sys.modules:
+    cron_working = sys.modules["hermes_hq_cron_working"]
+else:
+    _cron_spec = importlib.util.spec_from_file_location("hermes_hq_cron_working", Path(__file__).parents[1] / "cron_working.py")
+    cron_working = importlib.util.module_from_spec(_cron_spec)
+    sys.modules["hermes_hq_cron_working"] = cron_working
+    _cron_spec.loader.exec_module(cron_working)
 
 router = APIRouter()
 # Reply alerts for every bot, from this server (push.ReplyWatcher).
@@ -119,3 +126,13 @@ def upload_moment(body: MomentIn):
         return perf_logs.write_moment(perf_logs.log_dir(), body.device, body.marker, body.bundle, app=body.app)
     except perf_logs.LogError as error:
         raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.get("/cron/working")
+def cron_jobs_working():
+    """0.9.2 (`cronWorking` in status): the scheduled jobs whose output a bot is still working on, across every profile
+    (cron_working.py). A job's own run closes when it hands its output to Bot Chat; this is the rest of it."""
+    try:
+        return {"jobs": cron_working.hermes_working()}
+    except Exception as error:
+        raise HTTPException(503, f"couldn't read the jobs: {type(error).__name__}") from None

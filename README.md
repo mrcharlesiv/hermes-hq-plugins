@@ -34,6 +34,12 @@ stamps each chat you start with your sign-in but leaves out where the sign-in ca
 (`permission_denied`). The plugin lets your Nous sign-in, and only that sign-in, change the chats it made. It stops
 itself once Hermes fixes this. It works only after the **messaging gateway** restarts (`hermes gateway restart`).
 
+From version 0.9.2 it also tells Hermes HQ which **scheduled jobs a bot is still working on**. A job that sends its
+output to a bot's Bot Chat finishes its own run as soon as it hands the output over, while the bot goes on reading it
+and acting on it, often for minutes. With 0.9.2 the Jobs page says **Running** until the bot is done. It reads the
+handoff receipts Hermes already keeps in each bot's `runtime/bot_live_delivery` folder and changes nothing. It works
+after `hermes serve` or `hermes dashboard` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -98,6 +104,9 @@ All optional, in `~/.hermes/.env` (the old `DISPATCH_PUSH_RELAY_URL` and `DISPAT
 ```bash
 python3 -m unittest hermes-hq-push/test_push.py
 ```
+
+`test_own_chats.py` and `test_cron_working.py` run against a Hermes checkout, with its own python, from the
+plugin folder: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_cron_working.py`.
 
 Tests that need `cryptography` or `fastapi` skip without them.
 
