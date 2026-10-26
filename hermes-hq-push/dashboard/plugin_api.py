@@ -28,6 +28,13 @@ else:
     cron_working = importlib.util.module_from_spec(_cron_spec)
     sys.modules["hermes_hq_cron_working"] = cron_working
     _cron_spec.loader.exec_module(cron_working)
+if "hermes_hq_reply_back" in sys.modules:
+    reply_back = sys.modules["hermes_hq_reply_back"]
+else:
+    _reply_spec = importlib.util.spec_from_file_location("hermes_hq_reply_back", Path(__file__).parents[1] / "reply_back.py")
+    reply_back = importlib.util.module_from_spec(_reply_spec)
+    sys.modules["hermes_hq_reply_back"] = reply_back
+    _reply_spec.loader.exec_module(reply_back)
 
 router = APIRouter()
 # Reply alerts for every bot, from this server (push.ReplyWatcher).
@@ -136,3 +143,23 @@ def cron_jobs_working():
         return {"jobs": cron_working.hermes_working()}
     except Exception as error:
         raise HTTPException(503, f"couldn't read the jobs: {type(error).__name__}") from None
+
+
+@router.get("/outside/{profile}/{session_id}")
+def outside_chat(profile: str, session_id: str):
+    """0.9.4 (`replyBack` in status): the Telegram or Discord chat one of a bot's chats came from, as the app names it
+    before the first send (platform, group or not, its name), and whether this bot can post there (reply_back.py)."""
+    try:
+        return reply_back.hermes_describe(profile, session_id)
+    except reply_back.ReplyError as error:
+        raise HTTPException(error.status_code, {"message": error.detail, "reason": error.reason}) from None
+
+
+@router.post("/outside/{profile}/{session_id}/answer")
+def outside_answer(profile: str, session_id: str):
+    """0.9.4: post that chat's newest answer into the Telegram or Discord chat it came from, as the bot, once. The
+    request names only the bot and the chat; what is posted and where comes from Hermes's own record (reply_back.py)."""
+    try:
+        return reply_back.hermes_answer(profile, session_id, push.data_dir())
+    except reply_back.ReplyError as error:
+        raise HTTPException(error.status_code, {"message": error.detail, "reason": error.reason}) from None

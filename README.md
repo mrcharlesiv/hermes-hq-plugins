@@ -58,6 +58,14 @@ chat becomes its own, as Hermes does with any old chat, so the old password sign
 the setting, nothing changes. Turning the password sign-in back on (`dashboard.basic_auth`) and signing in with it
 also works, with no plugin at all.
 
+From version 0.9.4 Hermes HQ can send a bot's **answer back to the Telegram or Discord chat** a conversation came
+from. A chat under Sessions › Other Apps continues in the app when you write in it, so until now the bot answered in
+the app only. Turn on **Also Send Answers to Telegram** (or Discord) in that chat's ⋯ menu, and after each answer the
+plugin posts it in the chat, as the bot, with the bot's own token. Only the answer goes: your own message stays in the
+app. It never posts on its own: it's off for every chat until you turn it on, a group asks you first and names the
+group, and the plugin posts only the newest answer of that one chat, only once, and only when the message it answers
+was written in the app. Files in an answer aren't sent. It works after `hermes serve` or `hermes dashboard` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

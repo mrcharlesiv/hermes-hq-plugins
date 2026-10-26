@@ -259,11 +259,13 @@ def status_body(root: Path, sender) -> dict:
     gateway); the app offers an update to a plugin without it. `cronWorking` (0.9.2): GET /cron/working lists the scheduled
     jobs whose output a bot is still working on (cron_working.py), so the Jobs page can say Running until the bot is done. `passwordChats` (0.9.3): the
     login the computer's owner names (`hermes_hq.password_chats_owner`) can delete, archive and rename the chats the old
-    password login made (own_chats.py); the app offers an update to a plugin without it."""
+    password login made (own_chats.py); the app offers an update to a plugin without it. `replyBack` (0.9.4): GET
+    /outside/<bot>/<chat> names the Telegram or Discord chat one of a bot's chats came from, and POST .../answer posts that
+    chat's newest answer there as the bot (reply_back.py); the app shows Also Send Answers only when this says so."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -562,7 +564,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.3"
+PLUGIN_VERSION = "0.9.4"
 
 
 class Relay:
