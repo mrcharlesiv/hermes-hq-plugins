@@ -115,3 +115,152 @@ def test_a_reworked_hermes_is_left_alone(monkeypatch):
     monkeypatch.delattr(binding, "_login_label")
     assert own_chats.install() == "absent"
     assert not hasattr(binding, "_login_label")
+
+
+# ---- Chats the old password login made (0.9.3) ----
+
+FLEET = 'auth:v1:["basic","","fleet"]'           # the old password login, were it turned on again
+OWNER = "nous:u1"
+
+
+@pytest.fixture(autouse=True)
+def stock_authorize(monkeypatch):
+    monkeypatch.setattr(binding, "authorize_history",
+                        getattr(binding.authorize_history, "__wrapped__", binding.authorize_history))
+    monkeypatch.delenv("HERMES_HQ_PASSWORD_CHATS_OWNER", raising=False)
+
+
+def _name(monkeypatch, owner):
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"hermes_hq": {"password_chats_owner": owner}})
+
+
+def _claim(db, subject, row_id):
+    actor = Principal(subject, str(db.db_path.parent), frozenset({"session:read", "session:create"}), "native-http:x")
+    return db._execute_write(lambda conn: binding.authorize_history(conn, actor, row_id, claim=True))
+
+
+def test_hermes_test_home_is_not_the_real_one():
+    assert os.path.realpath(os.environ["HERMES_HOME"]) != os.path.realpath(os.path.expanduser("~/.hermes"))
+
+
+def test_stock_hermes_refuses_every_current_login_a_password_chat(db):
+    """The bug: only the old password login owns these, and it is turned off."""
+    assert own_chats.install() == "installed"
+    db.create_session("bot-chat", source="tui", user_id="basic:fleet")
+    assert _refused(db, NOUS, "bot-chat")
+    assert _auth(db, FLEET, "bot-chat") is True   # Hermes's own rule: the password login, were it on again
+
+
+def test_nobody_named_changes_nothing(db):
+    assert own_chats.install() == "installed"
+    assert own_chats.install_password_chats() == "off"
+    db.create_session("bot-chat", source="tui", user_id="basic:fleet")
+    assert _refused(db, NOUS, "bot-chat")
+
+
+@pytest.mark.parametrize("value", ["", "  ", "fleet", ":u1", "nous:", "nous:  ", 'auth:v1:["nous","","u1"]', 7])
+def test_a_malformed_owner_is_nobody(monkeypatch, value):
+    _name(monkeypatch, value)
+    assert own_chats.password_chats_owner() is None
+    assert own_chats.install_password_chats() == "off"
+
+
+def test_the_named_login_owns_the_password_chats(monkeypatch, db):
+    _name(monkeypatch, OWNER)
+    assert own_chats.install() == "installed"
+    assert own_chats.install_password_chats() == "installed"
+    db.create_session("bot-chat", source="tui", user_id="basic:fleet")
+    db.create_session("desktop-chat", source="desktop", user_id="basic:fleet")
+    db.create_session("older-name", source="tui", user_id="basic:admin")
+    for row in ("bot-chat", "desktop-chat", "older-name"):
+        assert _auth(db, NOUS, row) is True
+    # Its own chats still answer as before.
+    db.create_session("own", source="tui", user_id="nous:u1")
+    assert _auth(db, NOUS, "own") is True
+
+
+def test_the_env_names_the_owner_over_config(monkeypatch, db):
+    _name(monkeypatch, "nous:someone-else")
+    monkeypatch.setenv("HERMES_HQ_PASSWORD_CHATS_OWNER", " nous:u1 ")
+    assert own_chats.password_chats_owner() == "nous:u1"
+    assert own_chats.install() == "installed"
+    assert own_chats.install_password_chats() == "installed"
+    db.create_session("bot-chat", source="tui", user_id="basic:fleet")
+    assert _auth(db, NOUS, "bot-chat") is True
+
+
+@pytest.mark.parametrize("subject", [
+    'auth:v1:["nous","https://portal.nousresearch.com","u2"]',   # another Nous user on the same gateway
+    'auth:v1:["nous","https://evil.example","u1"]',               # the owner's id from an issuer this computer doesn't trust
+    'auth:v1:["basic","","other"]',                               # another password login
+    'auth:v1:["self_hosted","","u1"]',                            # the same id from another provider
+    "uid:501",
+])
+def test_only_the_named_login_gets_them(subject, monkeypatch, db):
+    _name(monkeypatch, OWNER)
+    own_chats.install()
+    assert own_chats.install_password_chats() == "installed"
+    db.create_session("bot-chat", source="tui", user_id="basic:fleet")
+    assert _refused(db, subject, "bot-chat")
+
+
+def test_the_hand_over_covers_only_password_chats(monkeypatch, db):
+    _name(monkeypatch, OWNER)
+    own_chats.install()
+    own_chats.install_password_chats()
+    db.create_session("theirs", source="tui", user_id="nous:u2")
+    db.create_session("blank-user", source="tui", user_id="basic:  ")
+    db.create_session("cron-run", source="cron", user_id="basic:fleet")       # not owner history: Hermes's False stands
+    assert _refused(db, NOUS, "theirs")
+    assert _refused(db, NOUS, "blank-user")
+    assert _auth(db, NOUS, "cron-run") is False
+
+
+def test_a_claim_hands_the_chat_over_for_good(monkeypatch, db):
+    """The first edit binds the chat to the named login, in Hermes's own format: stock Hermes then agrees."""
+    _name(monkeypatch, OWNER)
+    own_chats.install()
+    own_chats.install_password_chats()
+    db.create_session("bot-chat", source="tui", user_id="basic:fleet")
+    assert _claim(db, NOUS, "bot-chat") is True
+    original = binding.authorize_history.__wrapped__
+    actor = Principal(NOUS, str(db.db_path.parent), frozenset({"session:read", "session:create"}), "native-http:x")
+    with db._read_ctx() as conn:
+        assert original(conn, actor, "bot-chat") is True
+    assert _refused(db, FLEET, "bot-chat")      # the password login, turned on again, no longer owns it
+    assert _refused(db, 'auth:v1:["nous","https://portal.nousresearch.com","u2"]', "bot-chat")
+
+
+def test_a_chat_claimed_by_someone_else_stays_theirs(monkeypatch, db):
+    _name(monkeypatch, OWNER)
+    own_chats.install()
+    own_chats.install_password_chats()
+    db.create_session("bot-chat", source="tui", user_id="basic:fleet")
+    assert _claim(db, FLEET, "bot-chat") is True     # the password login edited it first
+    assert _refused(db, NOUS, "bot-chat")
+
+
+def test_the_named_login_still_needs_create(monkeypatch, db):
+    _name(monkeypatch, OWNER)
+    own_chats.install()
+    own_chats.install_password_chats()
+    db.create_session("bot-chat", source="tui", user_id="basic:fleet")
+    actor = Principal(NOUS, str(db.db_path.parent), frozenset({"session:read"}), "native-http:x")
+    with db._read_ctx() as conn, pytest.raises(Exception) as raised:
+        binding.authorize_history(conn, actor, "bot-chat")
+    assert getattr(raised.value, "reason", None) == "permission_denied"
+
+
+def test_installing_the_hand_over_twice_wraps_once(monkeypatch):
+    _name(monkeypatch, OWNER)
+    assert own_chats.install_password_chats() == "installed"
+    first = binding.authorize_history
+    assert own_chats.install_password_chats() == "installed"
+    assert binding.authorize_history is first
+
+
+def test_a_reworked_hermes_keeps_its_own_answer(monkeypatch):
+    _name(monkeypatch, OWNER)
+    monkeypatch.delattr(binding, "authorize_history")
+    assert own_chats.install_password_chats() == "absent"
+    assert not hasattr(binding, "authorize_history")

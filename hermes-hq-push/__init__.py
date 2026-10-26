@@ -7,7 +7,8 @@ turned Outside Chats on, without buttons. Reply alerts don't come from hooks: ``
 ``dashboard/plugin_api.py`` in the server) reads every profile's replies, so one install covers every bot.
 On load it also puts the Hermes HQ theme in the desktop app's plugin folder (desktop_theme.py), and
 restart_guard.py keeps a bot's one-time restart from looping and locking the app out. own_chats.py lets a Nous
-sign-in delete, archive and rename the chats it made, which Hermes otherwise refuses (``permission_denied``).
+sign-in delete, archive and rename the chats it made, which Hermes otherwise refuses (``permission_denied``), and
+hands the old password login's chats to the one login the computer's owner names (0.9.3).
 """
 import importlib.util
 import logging
@@ -118,6 +119,10 @@ def _own_chats():
         log.info("hermes-hq-push: own chats %s", own_chats.install())
     except Exception:
         log.debug("hermes-hq-push: own chats not installed", exc_info=True)
+    try:
+        log.info("hermes-hq-push: password chats %s", own_chats.install_password_chats())
+    except Exception:
+        log.debug("hermes-hq-push: password chats not installed", exc_info=True)
 
 
 def register(ctx):
