@@ -28,6 +28,13 @@ else:
     cron_working = importlib.util.module_from_spec(_cron_spec)
     sys.modules["hermes_hq_cron_working"] = cron_working
     _cron_spec.loader.exec_module(cron_working)
+if "hermes_hq_session_working" in sys.modules:
+    session_working = sys.modules["hermes_hq_session_working"]
+else:
+    _working_spec = importlib.util.spec_from_file_location("hermes_hq_session_working", Path(__file__).parents[1] / "session_working.py")
+    session_working = importlib.util.module_from_spec(_working_spec)
+    sys.modules["hermes_hq_session_working"] = session_working
+    _working_spec.loader.exec_module(session_working)
 if "hermes_hq_reply_back" in sys.modules:
     reply_back = sys.modules["hermes_hq_reply_back"]
 else:
@@ -143,6 +150,17 @@ def cron_jobs_working():
         return {"jobs": cron_working.hermes_working()}
     except Exception as error:
         raise HTTPException(503, f"couldn't read the jobs: {type(error).__name__}") from None
+
+
+@router.get("/sessions/working")
+def sessions_working(profile: str = "", session: str = ""):
+    """0.9.6 (`sessionWorking` in status): the chats the gateway is running a turn in right now, from Hermes's own
+    ledger (session_working.py): a message from another bot or a messaging app runs there, not in this server, so the
+    app's chat would otherwise look idle. `profile` and `session` narrow it to one bot or one chat."""
+    try:
+        return {"sessions": session_working.hermes_working(profile or None, session or None)}
+    except Exception as error:
+        raise HTTPException(503, f"couldn't read the ledger: {type(error).__name__}") from None
 
 
 @router.get("/outside/{profile}/{session_id}")

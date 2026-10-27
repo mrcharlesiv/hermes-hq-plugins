@@ -266,11 +266,12 @@ def status_body(root: Path, sender) -> dict:
     chat's newest answer there as the bot (reply_back.py); the app shows Also Send Answers only when this says so.
     `input` (0.9.5): kind "input" alerts when a bot in an app chat waits for a password, login, code, secret or answer
     (on_human_input_request; Hermes fires it for vault and secret prompts from feat/prompt-request-hook on), and
-    withdraws the alert when the prompt ends."""
+    withdraws the alert when the prompt ends. `sessionWorking` (0.9.6): GET /sessions/working lists the chats the gateway
+    is running a turn in (session_working.py), so a chat shows Working… while another bot's message runs there."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -608,7 +609,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.5"
+PLUGIN_VERSION = "0.9.6"
 
 
 class Relay:
