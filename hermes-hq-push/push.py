@@ -257,11 +257,13 @@ def status_body(root: Path, sender) -> dict:
     `outside` (0.9): a device that registers kind "outside" also gets replies and approvals from chats in other apps.
     `ownChats` (0.9.1): a Nous sign-in can delete, archive and rename the chats it made (own_chats.py, loaded by the
     gateway); the app offers an update to a plugin without it. `cronWorking` (0.9.2): GET /cron/working lists the scheduled
-    jobs whose output a bot is still working on (cron_working.py), so the Jobs page can say Running until the bot is done."""
+    jobs whose output a bot is still working on (cron_working.py), so the Jobs page can say Running until the bot is done. `passwordChats` (0.9.3): the
+    login the computer's owner names (`hermes_hq.password_chats_owner`) can delete, archive and rename the chats the old
+    password login made (own_chats.py); the app offers an update to a plugin without it."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -560,7 +562,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.2"
+PLUGIN_VERSION = "0.9.3"
 
 
 class Relay:

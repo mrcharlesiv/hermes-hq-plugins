@@ -40,6 +40,24 @@ and acting on it, often for minutes. With 0.9.2 the Jobs page says **Running** u
 handoff receipts Hermes already keeps in each bot's `runtime/bot_live_delivery` folder and changes nothing. It works
 after `hermes serve` or `hermes dashboard` restarts.
 
+From version 0.9.3 it can also hand over the chats made with the old **password sign-in** (Hermes stamps them
+`basic:<username>`, often each bot's Bot Chat). Only that password sign-in owns them, so once it's turned off nothing
+can delete, archive or rename them. The plugin never guesses who typed that password: on a gateway several people sign
+in to, that would give the chats to all of them. Instead you name the one sign-in that takes them over, in your
+`~/.hermes/config.yaml`:
+
+```yaml
+hermes_hq:
+  password_chats_owner: nous:<your Nous user id>
+```
+
+(or set `HERMES_HQ_PASSWORD_CHATS_OWNER`). Your Nous user id is on every chat you've made since you switched to Nous
+(the `user_id` column of a bot's `state.db` reads `nous:<id>`); your Hermes bot can look it up for you. Then run
+`hermes gateway restart`. The first time that sign-in changes one of those chats, the
+chat becomes its own, as Hermes does with any old chat, so the old password sign-in can't change it after that. Without
+the setting, nothing changes. Turning the password sign-in back on (`dashboard.basic_auth`) and signing in with it
+also works, with no plugin at all.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
