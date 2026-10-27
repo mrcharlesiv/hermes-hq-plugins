@@ -9,6 +9,8 @@ On load it also puts the Hermes HQ theme in the desktop app's plugin folder (des
 restart_guard.py keeps a bot's one-time restart from looping and locking the app out. own_chats.py lets a Nous
 sign-in delete, archive and rename the chats it made, which Hermes otherwise refuses (``permission_denied``), and
 hands the old password login's chats to the one login the computer's owner names (0.9.3).
+reply_back.py (loaded by the dashboard routes) posts a bot's answer back into the Telegram or Discord chat it came
+from when the app asks, once per answer, only when the prompt was typed in the app (0.9.4).
 """
 import importlib.util
 import logging
