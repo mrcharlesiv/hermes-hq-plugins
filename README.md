@@ -40,6 +40,13 @@ and acting on it, often for minutes. With 0.9.2 the Jobs page says **Running** u
 handoff receipts Hermes already keeps in each bot's `runtime/bot_live_delivery` folder and changes nothing. It works
 after `hermes serve` or `hermes dashboard` restarts.
 
+From version 0.9.5 it also alerts your phone when a bot **waits for you to type something**: a login to save, a
+one-time code, a password manager's master password, a skill's API key, your computer password for `sudo`, or a
+question it asked. The alert names the bot and what it needs ("Wants you to save a login for online.adp.com"), never
+the value, and goes away once the prompt is answered, skipped or times out. Tap it to open the chat and answer. Hermes
+announces logins, codes, unlocks and API keys to plugins only from the `feat/prompt-request-hook` change on;
+an older Hermes alerts for `sudo` and questions only. It works after `hermes serve` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -105,6 +112,7 @@ All optional, in `~/.hermes/.env` (the old `DISPATCH_PUSH_RELAY_URL` and `DISPAT
 python3 -m unittest hermes-hq-push/test_push.py
 ```
 
+`test_input_alerts.py` needs only Python: `python3 -m unittest test_input_alerts.py` from the plugin folder.
 `test_own_chats.py` and `test_cron_working.py` run against a Hermes checkout, with its own python, from the
 plugin folder: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_cron_working.py`.
 

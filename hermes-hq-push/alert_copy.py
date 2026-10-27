@@ -301,14 +301,46 @@ def readable_profile(name: str) -> str:
     return re.sub(r"\b\w", lambda m: m.group(0).upper(), re.sub(r"[-_]+", " ", text))
 
 
-def alert(kind: str, sender: str, text: str = "", previews: bool = True, about: str = "") -> dict:
+def _named(text: str, max_len: int = 80) -> str:
+    """A site, manager or variable name for an alert: one line, masked, clipped."""
+    return clip(redact(re.sub(r"\s+", " ", str(text or "")).strip()), max_len)
+
+
+def ask_line(ask: str, detail: str = "") -> str:
+    """What a bot waiting on the person asks for (``on_human_input_request``'s kind), in one line that never holds the
+    answer: the site for a login or code, the manager for an unlock, the variable for a secret, the question for
+    clarify, the command for sudo."""
+    if ask == "clarify":
+        question = preview(detail)
+        return f"Asks: {question}" if question else "Has a question for you"
+    if ask == "sudo":
+        command = command_summary(detail)
+        return f"Needs your computer password to run: {command}" if command else "Needs your computer password"
+    name = _named(detail)
+    if ask == "vault_save_login":
+        return f"Wants you to save a login for {name}" if name else "Wants you to save a login"
+    if ask == "vault_code":
+        return f"Needs a code for {name}" if name else "Needs a sign-in code"
+    if ask == "vault_unlock":
+        return f"Needs your {name} master password" if name else "Needs your password manager unlocked"
+    if ask == "secret":
+        return f"Needs a secret: {name}" if name else "Needs a secret"
+    return "Is waiting for your answer"
+
+
+def alert(kind: str, sender: str, text: str = "", previews: bool = True, about: str = "", ask: str = "") -> dict:
     """``{title, body}`` for an APNs alert. ``text`` is the reply or the command awaiting approval; ``about`` an
-    approval's description. Off, previews name only the sender."""
+    approval's description. An ``input`` alert (a bot waiting for a password, login, code, secret or answer) says what
+    ``ask`` is for, ``text`` naming the site or question. Off, previews name only the sender."""
     who = clip(redact(re.sub(r"\s+", " ", sender or "").strip()), 60)
     if not previews:
         if kind == "approval":
             return {"body": f"{who} needs your approval" if who else "A request needs your approval"}
+        if kind == "input":
+            return {"body": f"{who} is waiting for your answer" if who else "A question is waiting for your answer"}
         return {"body": f"New reply from {who}" if who else "New reply"}
+    if kind == "input":
+        return {"title": who or "Question", "body": ask_line(ask, text)}
     if kind == "approval":
         command = command_summary(text)
         described = preview(about)
