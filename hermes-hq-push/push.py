@@ -52,12 +52,14 @@ _copy_spec = importlib.util.spec_from_file_location("hermes_hq_push_copy", Path(
 alert_copy = importlib.util.module_from_spec(_copy_spec)
 _copy_spec.loader.exec_module(alert_copy)
 
-KINDS = ("turnDone", "approval", "outside")
+KINDS = ("turnDone", "approval", "outside", "input")
 TOPIC = "com.charlesmcdowell.dispatch"
 APPROVAL_CATEGORY = "DISPATCH_APPROVAL"
 CHOICES = ("once", "deny")
 # Notification Center order, as the app's local alerts: what needs an answer first.
-RELEVANCE = {"approval": 1.0, "turnDone": 0.6}
+RELEVANCE = {"approval": 1.0, "input": 1.0, "turnDone": 0.6}
+# on_human_input_request kinds an "input" alert covers: a bot waiting on a value (approvals have their own alert).
+ASKS = ("sudo", "clarify", "secret", "vault_unlock", "vault_save_login", "vault_code")
 APP_PLATFORMS = {"desktop", "tui"}
 # Chats people have with a bot through another app (the desktop app's messaging sources). Their replies and approvals
 # alert only a device that turned Outside Chats on (kind "outside", off unless the app says so), titled with the app.
@@ -261,11 +263,14 @@ def status_body(root: Path, sender) -> dict:
     login the computer's owner names (`hermes_hq.password_chats_owner`) can delete, archive and rename the chats the old
     password login made (own_chats.py); the app offers an update to a plugin without it. `replyBack` (0.9.4): GET
     /outside/<bot>/<chat> names the Telegram or Discord chat one of a bot's chats came from, and POST .../answer posts that
-    chat's newest answer there as the bot (reply_back.py); the app shows Also Send Answers only when this says so."""
+    chat's newest answer there as the bot (reply_back.py); the app shows Also Send Answers only when this says so.
+    `input` (0.9.5): kind "input" alerts when a bot in an app chat waits for a password, login, code, secret or answer
+    (on_human_input_request; Hermes fires it for vault and secret prompts from feat/prompt-request-hook on), and
+    withdraws the alert when the prompt ends."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -318,6 +323,7 @@ class Push:
     text: str = ""    # the reply, or the command awaiting approval
     about: str = ""   # an approval's description
     outside: str = ""  # the other app a chat runs in (OUTSIDE_LABELS key): only devices that asked for "outside"
+    ask: str = ""      # an "input" alert's prompt (ASKS): what the bot is waiting for
     queued: float = 0.0  # when the Dispatcher took it (its clock): a reply alert too late to matter isn't retried
 
     def payload(self, previews: bool = True, account: str = "") -> dict:
@@ -331,7 +337,7 @@ class Push:
         sender = self.sender or alert_copy.readable_profile(self.profile)
         if self.outside:
             sender = f"{sender} · {OUTSIDE_LABELS.get(self.outside, alert_copy.readable_profile(self.outside))}"
-        alert = alert_copy.alert(self.kind, sender, self.text, previews, self.about)
+        alert = alert_copy.alert(self.kind, sender, self.text, previews, self.about, self.ask)
         # Time Sensitive needs an entitlement the app doesn't have: every alert is a normal (active) one.
         aps: dict = {"alert": alert, "sound": "default", "interruption-level": "active",
                      "relevance-score": RELEVANCE.get(self.kind, 0.5)}
@@ -442,6 +448,44 @@ def approval_push(kwargs: dict, pending: Iterable[dict], root: Path, profile: st
                 session_key=session_key, token="" if outside else action_token(root, request_id, session_key),
                 profile=profile, sender=sender, text=str(kwargs.get("command") or ""),
                 about=str(kwargs.get("description") or ""), outside=outside)
+
+
+def input_push(kwargs: dict, profile: str, sender: str = "") -> Push | None:
+    """``on_human_input_request`` in an app chat: the bot is waiting for a password, login, code, secret or answer
+    (an approval has its own alert). The request id (shared with ``on_human_input_resolved``) names the alert so its
+    settle can withdraw it. Only names reach the alert (the site, manager, variable or question): Hermes never passes
+    the value typed, and the copy masks anything that looks like one."""
+    ask = str(kwargs.get("kind") or "")
+    session = str(kwargs.get("session_id") or "")
+    request = str(kwargs.get("request_id") or "")
+    if ask not in ASKS or kwargs.get("platform") not in APP_PLATFORMS or not session \
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", request):
+        return None
+    if ask in ("vault_save_login", "vault_code"):
+        detail = kwargs.get("site") or kwargs.get("prompt")
+    elif ask == "vault_unlock":
+        detail = kwargs.get("manager") or kwargs.get("prompt")
+    elif ask == "secret":
+        detail = kwargs.get("env_var")
+    else:
+        detail = kwargs.get("prompt")
+    return Push("input", session=session, request=request, session_key=str(kwargs.get("session_key") or ""),
+                profile=profile, sender=sender, text=str(detail or "")[:4000], ask=ask)
+
+
+def remember_input(sent: dict, push: Push, limit: int = 256) -> None:
+    sent[push.request] = push
+    while len(sent) > limit:
+        sent.pop(next(iter(sent)))
+
+
+def settled_input(kwargs: dict, sent: dict[str, Push]) -> Push | None:
+    """``on_human_input_resolved`` (answered, skipped, timed out or withdrawn): withdraw the alert sent for it."""
+    push = sent.pop(str(kwargs.get("request_id") or ""), None)
+    if push is None:
+        return None
+    return Push("input", session=push.session, request=push.request, session_key=push.session_key,
+                profile=push.profile, settled=True)
 
 
 def approval_signature(kwargs: dict) -> tuple:
@@ -564,7 +608,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.4"
+PLUGIN_VERSION = "0.9.5"
 
 
 class Relay:
@@ -859,8 +903,8 @@ REPLY_MAX_AGE = 120.0
 
 
 def priority(push: Push) -> int:
-    """Approvals (and their withdrawals) before replies: an agent is waiting on them."""
-    return 0 if push.kind == "approval" else 1
+    """Approvals and questions (and their withdrawals) before replies: an agent is waiting on them."""
+    return 0 if push.kind in ("approval", "input") else 1
 
 
 class Dispatcher:

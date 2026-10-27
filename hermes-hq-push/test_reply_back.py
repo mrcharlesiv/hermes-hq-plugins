@@ -267,7 +267,8 @@ def client(bots, tmp_path, monkeypatch):
 def test_routes(client, bots):
     chat(profile_home("cro"), "s-route", chat_id="-100900", name="Route club")
     status = client.get("/api/plugins/hermes-hq-push/status").json()
-    assert status["replyBack"] is True and status["pluginVersion"] == "0.9.4"
+    assert status["replyBack"] is True
+    assert tuple(map(int, status["pluginVersion"].split("."))) >= (0, 9, 4)
     info = client.get("/api/plugins/hermes-hq-push/outside/cro/s-route")
     assert info.status_code == 200 and info.json()["name"] == "Route club"
     sent = client.post("/api/plugins/hermes-hq-push/outside/cro/s-route/answer")

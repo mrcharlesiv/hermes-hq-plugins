@@ -2,7 +2,8 @@
 
 Hooks run wherever an agent turn runs; they only enqueue. App sessions (platform desktop/tui) live in
 ``hermes serve``, which also mounts ``dashboard/plugin_api.py``, so an approval pushed from here can be
-answered from the lock screen through that route. A messaging-platform session's approval alerts only devices that
+answered from the lock screen through that route. A bot waiting for a password, login, code, secret or answer
+(``on_human_input_request``) alerts too (kind "input"), and the alert goes when the prompt ends. A messaging-platform session's approval alerts only devices that
 turned Outside Chats on, without buttons. Reply alerts don't come from hooks: ``push.ReplyWatcher`` (started by
 ``dashboard/plugin_api.py`` in the server) reads every profile's replies, so one install covers every bot.
 On load it also puts the Hermes HQ theme in the desktop app's plugin folder (desktop_theme.py), and
@@ -32,6 +33,7 @@ _own_spec.loader.exec_module(own_chats)
 log = logging.getLogger(push.NAME)
 _dispatcher = None
 _sent_approvals: dict = {}
+_sent_inputs: dict = {}
 
 
 def _profile() -> str:
@@ -83,6 +85,28 @@ def post_approval_response(**kwargs):
         log.debug("hermes-hq-push settle hook failed", exc_info=True)
 
 
+def on_human_input_request(**kwargs):
+    """A bot in an app chat waits for a password, login, code, secret or answer: alert the phone, as an approval does,
+    so the prompt isn't missed while the app is in the background (its socket closed, nothing shows the card)."""
+    try:
+        if not _serves_app_sessions():
+            return
+        profile = _profile()
+        item = push.input_push(kwargs, profile, _sender(profile))
+        if item is not None:
+            push.remember_input(_sent_inputs, item)
+            _dispatcher_for().submit(item)
+    except Exception:
+        log.debug("hermes-hq-push input hook failed", exc_info=True)
+
+
+def on_human_input_resolved(**kwargs):
+    try:
+        _dispatcher_for().submit(push.settled_input(kwargs, _sent_inputs))
+    except Exception:
+        log.debug("hermes-hq-push input settle hook failed", exc_info=True)
+
+
 def _desktop_theme():
     """The Hermes HQ theme for the desktop app (desktop_theme.py): a nicety, so nothing here ever stops the plugin."""
     try:
@@ -131,6 +155,8 @@ def register(ctx):
     ctx.register_hook("pre_approval_request", pre_approval_request)
     ctx.register_hook("post_approval_response", post_approval_response)
     ctx.register_hook("pre_tool_call", pre_tool_call)
+    ctx.register_hook("on_human_input_request", on_human_input_request)
+    ctx.register_hook("on_human_input_resolved", on_human_input_resolved)
     _desktop_theme()
     _restart_guard()
     _own_chats()
