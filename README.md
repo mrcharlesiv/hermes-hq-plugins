@@ -79,6 +79,9 @@ ledger says are queued or running (`GET /api/plugins/hermes-hq-push/sessions/wor
 session database and returns chat ids and a status, never message text. Without it, Hermes HQ build 412 and later
 guess from the chat's saved steps instead. It works after `hermes serve` restarts.
 
+Version 0.9.7 keeps the app's log lines whole: 0.9.6 and older cut any line holding a `/` at its first `?` or `#`, so
+most request and turn lines in `~/.hermes/hq-logs` lost their ends. Now only a path's own query is dropped.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

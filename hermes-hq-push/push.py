@@ -609,7 +609,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.6"
+PLUGIN_VERSION = "0.9.7"
 
 
 class Relay:

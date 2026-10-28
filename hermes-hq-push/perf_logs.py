@@ -57,9 +57,24 @@ def log_dir() -> Path:
     return get_default_hermes_root() / "hq-logs"
 
 
+# Where a path's query starts (`?`), or a fragment that carries values (`#access_token=…`); a bare `#2a93d2` is the
+# app's short tag for a chat or row and stays.
+_QUERY = re.compile(r"\?|#(?=\S*=)")
+
+
+def _drop_query(word: str) -> str:
+    slash = word.find("/")
+    if slash < 0:
+        return word
+    found = _QUERY.search(word, slash)
+    return word[:found.start()] if found else word
+
+
 def short(text: str) -> str:
-    if "/" in text:
-        text = re.split(r"[?#]", text, maxsplit=1)[0]
+    """A string field as written: any path or URL loses its query (word by word, so the rest of the line stays; 0.9.6
+    and older cut the whole field at the first `?` or `#` once it held a `/`, so `complete on #d484ac … 62/63` kept
+    only "complete on "), control characters become spaces, at most MAX_STRING characters."""
+    text = "".join(_drop_query(part) for part in re.split(r"(\s+)", text))
     return re.sub(r"[\x00-\x1f\x7f]", " ", text)[:MAX_STRING]
 
 
