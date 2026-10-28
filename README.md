@@ -73,6 +73,12 @@ the value, and goes away once the prompt is answered, skipped or times out. Tap 
 announces logins, codes, unlocks and API keys to plugins only from the `feat/prompt-request-hook` change on;
 an older Hermes alerts for `sudo` and questions only. It works after `hermes serve` restarts.
 
+From version 0.9.6 the app can show **Working…** in a chat while the gateway runs a turn there that the app didn't
+start: another bot's message, a job's hand-off, or a Telegram message. It asks the plugin which chats Hermes's own
+ledger says are queued or running (`GET /api/plugins/hermes-hq-push/sessions/working`); the plugin only reads Hermes's
+session database and returns chat ids and a status, never message text. Without it, Hermes HQ build 412 and later
+guess from the chat's saved steps instead. It works after `hermes serve` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
