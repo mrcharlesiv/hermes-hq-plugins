@@ -429,11 +429,19 @@ def outside_platform(session_key: str) -> str:
     return next((part for part in parts[:3] if part in OUTSIDE_LABELS), "")
 
 
+def bot_chat(session_key: str) -> bool:
+    """A message another bot sent this one (Bot Chat), run in the messaging gateway
+    (``agent:<profile>:local:dm:<chat>``): nobody watches that chat, so an approval asked there waited unseen until it
+    timed out (owner, 2026-10-28: Harry's command sat 5 minutes while the voice kept saying "still checking")."""
+    parts = str(session_key or "").split(":")
+    return len(parts) >= 5 and parts[0] == "agent" and parts[2] == "local" and parts[3] == "dm"
+
+
 def approval_push(kwargs: dict, pending: Iterable[dict], root: Path, profile: str, sender: str = "",
-                  outside: str = "") -> Push | None:
+                  outside: str = "", answerable: bool = True) -> Push | None:
     """``pre_approval_request`` has no request id; the queued entry does (queued before the hook fires). ``outside``:
     the messaging app of a chat the messaging gateway runs; its alert carries no action token (nothing here can
-    answer it)."""
+    answer it), nor does one that isn't ``answerable`` (a Bot Chat approval, waiting in the messaging gateway)."""
     if kwargs.get("surface") != "gateway" or kwargs.get("coalesced"):
         return None
     session_key = str(kwargs.get("session_key") or "")
@@ -446,7 +454,8 @@ def approval_push(kwargs: dict, pending: Iterable[dict], root: Path, profile: st
         return None
     request_id = str(match[-1]["request_id"])
     return Push("approval", session=str(kwargs.get("session_id") or ""), request=request_id,
-                session_key=session_key, token="" if outside else action_token(root, request_id, session_key),
+                session_key=session_key,
+                token="" if outside or not answerable else action_token(root, request_id, session_key),
                 profile=profile, sender=sender, text=str(kwargs.get("command") or ""),
                 about=str(kwargs.get("description") or ""), outside=outside)
 
@@ -609,7 +618,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.7"
+PLUGIN_VERSION = "0.9.8"
 
 
 class Relay:

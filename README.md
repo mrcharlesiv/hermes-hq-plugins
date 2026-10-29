@@ -82,6 +82,11 @@ guess from the chat's saved steps instead. It works after `hermes serve` restart
 Version 0.9.7 keeps the app's log lines whole: 0.9.6 and older cut any line holding a `/` at its first `?` or `#`, so
 most request and turn lines in `~/.hermes/hq-logs` lost their ends. Now only a path's own query is dropped.
 
+Version 0.9.8 alerts your phone when a bot waits for your approval in a Bot Chat (a message another bot sent it). That
+approval waits in the messaging gateway, where nobody was watching, so it used to sit unseen until it timed out. The
+alert names the bot and the command; it has no Approve or Deny buttons. Like every alert, it only comes from a bot that
+has the plugin turned on (`plugins.enabled` in that bot's `config.yaml`). It works after `hermes gateway restart`.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

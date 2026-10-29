@@ -63,14 +63,18 @@ def _serves_app_sessions() -> bool:
 def pre_approval_request(**kwargs):
     try:
         # The messaging gateway's approvals are answered in their own app; they alert (without buttons) only a
-        # device that turned Outside Chats on.
-        outside = "" if _serves_app_sessions() else push.outside_platform(str(kwargs.get("session_key") or ""))
-        if not _serves_app_sessions() and not outside:
+        # device that turned Outside Chats on. One in a Bot Chat (another bot's message) has no app of its own and no
+        # one watching it: it alerts every device, also without buttons (the approval waits in the messaging gateway).
+        serves = _serves_app_sessions()
+        key = str(kwargs.get("session_key") or "")
+        outside = "" if serves else push.outside_platform(key)
+        bot_chat = not serves and not outside and push.bot_chat(key)
+        if not serves and not outside and not bot_chat:
             return
         from tools.approval import list_gateway_approvals
         profile = _profile()
-        item = push.approval_push(kwargs, list_gateway_approvals(str(kwargs.get("session_key") or "")),
-                                  push.data_dir(), profile, _sender(profile), outside)
+        item = push.approval_push(kwargs, list_gateway_approvals(key), push.data_dir(), profile, _sender(profile),
+                                  outside, answerable=serves)
         if item is not None:
             push.remember_approval(_sent_approvals, kwargs, item)
             _dispatcher_for().submit(item)
