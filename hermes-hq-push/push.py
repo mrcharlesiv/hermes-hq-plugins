@@ -267,11 +267,13 @@ def status_body(root: Path, sender) -> dict:
     `input` (0.9.5): kind "input" alerts when a bot in an app chat waits for a password, login, code, secret or answer
     (on_human_input_request; Hermes fires it for vault and secret prompts from feat/prompt-request-hook on), and
     withdraws the alert when the prompt ends. `sessionWorking` (0.9.6): GET /sessions/working lists the chats the gateway
-    is running a turn in (session_working.py), so a chat shows Working… while another bot's message runs there."""
+    is running a turn in (session_working.py), so a chat shows Working… while another bot's message runs there. `quietStandIns`
+    (0.9.9): a bot's bracketed stand-in for [SILENT] sends no alert (silent_reply); the app offers an update to a plugin
+    without it."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
