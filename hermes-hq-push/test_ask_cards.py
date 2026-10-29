@@ -79,6 +79,11 @@ def test_plugin_hook_returns_context(tmp_path, monkeypatch):
         import pytest
         pytest.skip("data dir override is named differently")
     plugin.ask_cards._clarify_cache.update(value=True, at=1e18)
+    (tmp_path / ask_cards.SWITCH).write_text("")
+    monkeypatch.setattr(plugin, "_serves_app_sessions", lambda: False)
+    assert plugin.pre_llm_call(platform="desktop", user_message="hi", conversation_history=[]) is None
+    monkeypatch.setattr(plugin, "_serves_app_sessions", lambda: True)
+    (tmp_path / ask_cards.SWITCH).unlink()
     assert plugin.pre_llm_call(platform="desktop", user_message="hi", conversation_history=[]) is None
     (tmp_path / ask_cards.SWITCH).write_text("")
     assert plugin.pre_llm_call(platform="desktop", user_message="hi", conversation_history=[]) == {"context": ask_cards.NOTE}

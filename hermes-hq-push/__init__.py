@@ -117,6 +117,10 @@ def on_human_input_resolved(**kwargs):
 
 
 def pre_llm_call(platform="", parent_session_id="", user_message=None, conversation_history=None, **kwargs):
+    # Only turns ``hermes serve`` runs: a card asked from a turn the messaging gateway runs in an app chat (another
+    # bot's message, a job's hand-off) can't reach the app and comes back undelivered.
+    if not _serves_app_sessions():
+        return None
     try:
         note = ask_cards.context_for(data_dir=push.data_dir(), platform=platform, parent_session_id=parent_session_id,
                                      user_message=user_message, conversation_history=conversation_history)

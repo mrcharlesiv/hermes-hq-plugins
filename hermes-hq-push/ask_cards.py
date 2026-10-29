@@ -6,9 +6,10 @@ a line of text, and low-stakes calls stay the bot's own.
 On only while ``<plugin-data>/hermes-hq-push/ask-cards.on`` exists (one switch for every bot on the computer; delete
 the file to stop). The note rides ``pre_llm_call``, which Hermes adds to the person's message for the model only:
 the chat shows what the person typed. It goes on the first turn and again once it has scrolled out of the last
-``RESEND_AFTER`` messages, so a long chat isn't paying for it every turn. Never for a bot without ``clarify`` in app
-chats (a Finance-style bot), a helper (subagent) run, or a message with pictures (Hermes keeps that note as part of
-the message itself).
+``RESEND_AFTER`` messages, so a long chat isn't paying for it every turn. Only in turns ``hermes serve`` runs (the
+plugin checks): a card from a turn the messaging gateway runs comes back undelivered. Never for a bot without
+``clarify`` in app chats (a Finance-style bot), a helper (subagent) run, or a message with pictures (Hermes keeps
+that note as part of the message itself).
 """
 import time
 from pathlib import Path
