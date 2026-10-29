@@ -48,16 +48,26 @@ def _clarify_in_app_chats() -> bool:
     return any("clarify" in resolve_toolset(name) for name in _get_platform_tools(cfg, "cli", include_default_mcp_servers=False))
 
 
-def has_clarify(now=None, probe=_clarify_in_app_chats) -> bool:
+def _home() -> str:
+    try:
+        from hermes_constants import get_hermes_home
+        return str(get_hermes_home())
+    except Exception:
+        return ""
+
+
+def has_clarify(now=None, probe=_clarify_in_app_chats, home=None) -> bool:
+    """Cached per bot folder: one ``hermes serve`` can run several bots."""
     now = time.monotonic() if now is None else now
-    cached = _clarify_cache.get("value")
-    if cached is not None and now - _clarify_cache.get("at", 0.0) < _TTL:
-        return cached
+    key = _home() if home is None else home
+    cached = _clarify_cache.get(key)
+    if cached is not None and now - cached[1] < _TTL:
+        return cached[0]
     try:
         value = bool(probe())
     except Exception:
         value = False
-    _clarify_cache.update(value=value, at=now)
+    _clarify_cache[key] = (value, now)
     return value
 
 

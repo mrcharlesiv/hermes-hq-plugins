@@ -58,10 +58,11 @@ def test_finds_the_note_in_a_picture_message_too(tmp_path):
 def test_clarify_lookup_is_cached_and_fails_closed():
     ask_cards._clarify_cache.clear()
     calls = []
-    assert ask_cards.has_clarify(now=0.0, probe=lambda: calls.append(1) or True)
-    assert ask_cards.has_clarify(now=10.0, probe=lambda: calls.append(1) or False)
+    assert ask_cards.has_clarify(now=0.0, probe=lambda: calls.append(1) or True, home="/a")
+    assert ask_cards.has_clarify(now=10.0, probe=lambda: calls.append(1) or False, home="/a")
     assert len(calls) == 1
-    assert ask_cards.has_clarify(now=10.0 + ask_cards._TTL, probe=lambda: 1 / 0) is False
+    assert ask_cards.has_clarify(now=10.0, probe=lambda: False, home="/finance") is False  # each bot its own answer
+    assert ask_cards.has_clarify(now=10.0 + ask_cards._TTL, probe=lambda: 1 / 0, home="/a") is False
     ask_cards._clarify_cache.clear()
 
 
@@ -78,7 +79,7 @@ def test_plugin_hook_returns_context(tmp_path, monkeypatch):
     if plugin.push.data_dir() != tmp_path:
         import pytest
         pytest.skip("data dir override is named differently")
-    plugin.ask_cards._clarify_cache.update(value=True, at=1e18)
+    plugin.ask_cards._clarify_cache[plugin.ask_cards._home()] = (True, 1e18)
     (tmp_path / ask_cards.SWITCH).write_text("")
     monkeypatch.setattr(plugin, "_serves_app_sessions", lambda: False)
     assert plugin.pre_llm_call(platform="desktop", user_message="hi", conversation_history=[]) is None
