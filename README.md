@@ -87,6 +87,10 @@ approval waits in the messaging gateway, where nobody was watching, so it used t
 alert names the bot and the command; it has no Approve or Deny buttons. Like every alert, it only comes from a bot that
 has the plugin turned on (`plugins.enabled` in that bot's `config.yaml`). It works after `hermes gateway restart`.
 
+Version 0.9.9 sends no alert for a bot's own way of saying nothing, such as "[Notification processed; no additional
+user-facing response.]" or "(no user-facing response)", the same as a bare `[SILENT]`. Hermes HQ already hid these
+lines in the chat. It works after `hermes gateway restart`.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

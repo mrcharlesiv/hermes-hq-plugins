@@ -618,7 +618,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.8"
+PLUGIN_VERSION = "0.9.9"
 
 
 class Relay:
@@ -782,12 +782,31 @@ _OPEN_SQL = f"""SELECT m.id FROM messages m JOIN sessions s ON s.id = m.session_
 
 
 # A reply that is only Hermes's "[SILENT]" (a bot that read a scheduled job's or another bot's message and has nothing
-# to add) says nothing, so it alerts nothing; the app draws no line for it either.
+# to add) says nothing, so it alerts nothing; the app draws no line for it either. Models also write their own one-line
+# bracketed stand-in for it ("[Notification processed; no additional user-facing response.]", "(no user-facing
+# response)", "*[No reply needed]*"): the same rule as the app's Hydration.isSilentWords, so neither draws nor alerts.
 _SILENT_REPLY = re.compile(r"\s*\[\s*SILENT\s*\]\s*", re.IGNORECASE)
+_SILENT_STAND_IN = re.compile(
+    r"\b(?:no (?:additional|further) (?:\S+ ){0,2}(?:response|reply)|no (?:user[-\u2010\u2011 ]facing|visible) "
+    r"(?:response|reply)|no (?:response|reply) (?:is )?(?:needed|required|necessary)|nothing (?:further |more )?to "
+    r"(?:report|add|say))\b", re.IGNORECASE)
+_CLOSERS = {"[": "]", "(": ")"}
 
 
 def silent_reply(content) -> bool:
-    return bool(_SILENT_REPLY.fullmatch(str(content or "")))
+    text = str(content or "")
+    if _SILENT_REPLY.fullmatch(text):
+        return True
+    text = text.strip()
+    while len(text) > 2 and text[0] in "*_" and text[-1] == text[0]:  # "*(no reply needed)*" is the same stand-in
+        text = text[1:-1]
+    close = _CLOSERS.get(text[:1])
+    if len(text) > 200 or not close or text[-1] != close:
+        return False
+    inside = text[1:-1]
+    if text[0] in inside or close in inside or "\n" in inside:
+        return False
+    return bool(_SILENT_STAND_IN.search(text))
 
 
 class ReplyWatcher:
