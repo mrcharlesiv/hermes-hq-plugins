@@ -9,7 +9,8 @@ turned Outside Chats on, without buttons. Reply alerts don't come from hooks: ``
 On load it also puts the Hermes HQ theme in the desktop app's plugin folder (desktop_theme.py), and
 restart_guard.py keeps a bot's one-time restart from looping and locking the app out. own_chats.py lets a Nous
 sign-in delete, archive and rename the chats it made, which Hermes otherwise refuses (``permission_denied``), and
-hands the old password login's chats to the one login the computer's owner names (0.9.3).
+hands the old password login's chats to the one login the computer's owner names (0.9.3). It also lets the desktop app
+on this computer open the chats the app made, which Hermes refused as not_found (0.9.11).
 reply_back.py (loaded by the dashboard routes) posts a bot's answer back into the Telegram or Discord chat it came
 from when the app asks, once per answer, only when the prompt was typed in the app (0.9.4).
 """
@@ -153,6 +154,10 @@ def _own_chats():
         log.info("hermes-hq-push: password chats %s", own_chats.install_password_chats())
     except Exception:
         log.debug("hermes-hq-push: password chats not installed", exc_info=True)
+    try:
+        log.info("hermes-hq-push: desktop opens app chats %s", own_chats.install_desktop_opens())
+    except Exception:
+        log.debug("hermes-hq-push: desktop opens app chats not installed", exc_info=True)
 
 
 def register(ctx):

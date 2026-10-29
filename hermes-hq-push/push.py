@@ -269,11 +269,12 @@ def status_body(root: Path, sender) -> dict:
     withdraws the alert when the prompt ends. `sessionWorking` (0.9.6): GET /sessions/working lists the chats the gateway
     is running a turn in (session_working.py), so a chat shows Working… while another bot's message runs there. `quietStandIns`
     (0.9.9): a bot's bracketed stand-in for [SILENT] sends no alert (silent_reply); the app offers an update to a plugin
-    without it."""
+    without it. `desktopOpens` (0.9.11): the desktop app on this computer opens the chats the app made, instead of
+    "Resume failed: not_found" (own_chats.py, loaded by the gateway)."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -620,7 +621,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.9"
+PLUGIN_VERSION = "0.9.11"
 
 
 class Relay:

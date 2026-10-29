@@ -21,6 +21,16 @@ state.db, so naming a login hands over nothing they couldn't take. ``install_pas
 login past Hermes's owner check on unclaimed ``basic:`` chats, and Hermes's own rules (routes, sources, an earlier
 claim, ``session:create``) still apply. The first edit claims the chat for that login, as Hermes does for every
 cold chat, so afterwards Hermes alone decides.
+
+The desktop app couldn't open a chat the app made: "Resume failed: not_found" (0.9.11, tester report 2026-10-29). The
+gateway opens an older chat only after ``hermes_state_local_migration.validate_legacy_row`` passes, and that refuses
+any login stamp but the opener's own, answering ``not_found``. The desktop on this computer opens as the computer's
+user (``uid:<n>``), so it met every ``basic:<username>`` chat, and every ``nous:<user>`` chat the app made before it
+named itself a desktop client (those are ``tui``), as someone else's. ``install_desktop_opens`` lets two openers past
+a dashboard login's stamp, and only the stamp: Hermes's own check runs again with the stamp left out, so its other rules (sources,
+routes, the bot the chat belongs to) still decide. The openers are the computer's own user, who can already read and
+rewrite state.db, and the very login that made the chat (Hermes allows that only on ``desktop`` chats). Opening
+the chat makes it the opener's, as Hermes does for every older chat it opens.
 """
 import logging
 import os
@@ -31,6 +41,9 @@ DEFAULT_PORTAL = "https://portal.nousresearch.com"
 MARK = "_hermes_hq_own_chats"
 PASSWORD_MARK = "_hermes_hq_password_chats"
 PASSWORD_PREFIX = "basic:"
+DESKTOP_MARK = "_hermes_hq_desktop_opens"
+# The dashboard logins the app signs in with (plugins/dashboard_auth): the stamps serve writes on the chats it makes.
+LOGIN_PROVIDERS = ("nous", "basic", "self-hosted")
 
 
 def portal() -> str:
@@ -157,4 +170,67 @@ def install_password_chats() -> str:
     authorize_history.__wrapped__ = original
     setattr(authorize_history, PASSWORD_MARK, True)
     binding.authorize_history = authorize_history
+    return "installed"
+
+
+def host_subject() -> str | None:
+    """The subject the gateway gives the desktop app on this computer: ``uid:<this user>`` (gateway/control_socket.py).
+    None where there is no such user (Windows)."""
+    getuid = getattr(os, "getuid", None)
+    return f"uid:{getuid()}" if callable(getuid) else None
+
+
+def install_desktop_opens() -> str:
+    """Wrap ``validate_legacy_row`` once per process so the desktop app can open the chats the app made.
+    Returns "installed", "not needed" (Hermes already opens them) or "absent" (a reworked Hermes)."""
+    host = host_subject()
+    try:
+        import hermes_state_local_migration as migration
+        import hermes_state_mutation_binding as binding
+        from hermes_state_runtime import RuntimeStoreError
+    except Exception:
+        return "absent"
+    original = getattr(migration, "validate_legacy_row", None)
+    if host is None or not callable(original) or not callable(getattr(binding, "_login_label", None)):
+        return "absent"
+    if getattr(original, DESKTOP_MARK, False):
+        return "installed"
+
+    class _Probe:
+        def _own_profile_name(self):
+            return None
+    try:
+        original(_Probe(), {"source": "desktop", "user_id": "basic:probe", "profile_name": None}, subject=host)
+        return "not needed"
+    except RuntimeStoreError:
+        pass
+    except Exception:
+        return "absent"
+
+    def opener_may(row, subject) -> bool:
+        stamp = row.get("user_id")
+        if not isinstance(stamp, str) or not subject:
+            return False
+        provider, colon, user = stamp.partition(":")
+        if not colon or not user.strip():
+            return False
+        if subject == host:
+            # A dashboard login's stamp only: never another computer user's ``uid:`` or a messaging account.
+            return provider in LOGIN_PROVIDERS
+        # Through the module, so a Nous login maps as install() taught it.
+        return binding._login_label(subject) == stamp
+
+    def validate_legacy_row(db, row, *, subject=None):
+        try:
+            return original(db, row, subject=subject)
+        except RuntimeStoreError as refused:
+            if refused.reason != "not_found" or not opener_may(row, subject):
+                raise
+        # Hermes's own check once more without the stamp: anything else it refuses stays refused.
+        return original(db, {**row, "user_id": None}, subject=subject)
+
+    validate_legacy_row.__doc__ = original.__doc__
+    validate_legacy_row.__wrapped__ = original
+    setattr(validate_legacy_row, DESKTOP_MARK, True)
+    migration.validate_legacy_row = validate_legacy_row
     return "installed"
