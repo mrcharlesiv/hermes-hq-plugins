@@ -41,6 +41,15 @@ def test_not_for_helpers_or_pictures_or_bots_without_clarify(tmp_path):
     assert note(d, clarify=lambda: False) is None
 
 
+def test_not_for_turns_nobody_typed(tmp_path):
+    d = switched(tmp_path)
+    for text in ('[Cronjob "Inbox urgent" output — scheduled job, not the user.]', "[IMPORTANT: Background task done]",
+                 "[System: Your previous turn was interrupted]", "  [ASYNC DELEGATION BATCH]",
+                 "Message from 🤖 hermes (home): lights are off"):
+        assert note(d, user_message=text) is None
+    assert note(d, user_message='MEDIA:"/Users/x/photo.jpg" what is this') == ask_cards.NOTE
+
+
 def test_not_again_while_the_last_one_is_recent(tmp_path):
     d = switched(tmp_path)
     sent = {"role": "user", "content": "hi", "api_content": "hi\n\n" + ask_cards.NOTE}

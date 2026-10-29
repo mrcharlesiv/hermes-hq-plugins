@@ -8,8 +8,8 @@ the file to stop). The note rides ``pre_llm_call``, which Hermes adds to the per
 the chat shows what the person typed. It goes on the first turn and again once it has scrolled out of the last
 ``RESEND_AFTER`` messages, so a long chat isn't paying for it every turn. Only in turns ``hermes serve`` runs (the
 plugin checks): a card from a turn the messaging gateway runs comes back undelivered. Never for a bot without
-``clarify`` in app chats (a Finance-style bot), a helper (subagent) run, or a message with pictures (Hermes keeps
-that note as part of the message itself).
+``clarify`` in app chats (a Finance-style bot), a helper (subagent) run, a turn nobody typed (a job's hand-off,
+another bot's message), or a message with pictures (Hermes keeps that note as part of the message itself).
 """
 import time
 from pathlib import Path
@@ -84,6 +84,13 @@ def _text(message) -> str:
     return "\n".join(parts)
 
 
+def not_typed(message: str) -> bool:
+    """A turn nobody typed: a job's hand-off ("[Cronjob …", "[IMPORTANT: Background …"), Hermes's own notes
+    ("[System: …", "[ASYNC DELEGATION …", "[CONTEXT COMPACTION …") or another bot's message ("Message from …")."""
+    text = message.lstrip()
+    return text.startswith("[") or text.startswith("Message from ")
+
+
 def recently_noted(history) -> bool:
     return any(MARK in _text(m) for m in list(history or [])[-RESEND_AFTER:])
 
@@ -91,7 +98,7 @@ def recently_noted(history) -> bool:
 def context_for(*, data_dir: Path, platform: str = "", parent_session_id: str = "", user_message=None,
                 conversation_history=None, clarify=has_clarify):
     """The note for this turn, or None."""
-    if platform != "desktop" or parent_session_id or not isinstance(user_message, str):
+    if platform != "desktop" or parent_session_id or not isinstance(user_message, str) or not_typed(user_message):
         return None
     if not switched_on(data_dir) or recently_noted(conversation_history) or not clarify():
         return None
