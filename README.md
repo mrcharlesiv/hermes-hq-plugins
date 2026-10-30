@@ -107,6 +107,12 @@ messages from scheduled jobs or other bots, are left alone. The plugin adds the 
 only; the chat still shows what you typed. To turn it off for every bot on the computer, create an empty file named
 `ask-cards.off` in `~/.hermes/plugin-data/hermes-hq-push/`. It works after `hermes serve` restarts.
 
+Version 0.9.13 keeps the **Sessions list fast** on a bot that has run many scheduled jobs. To show one page of chats,
+Hermes read the first message of every chat the bot ever had, and each scheduled run is a chat: on a bot with 8,700
+runs whose prompts were long, one list took 2 seconds, and Hermes HQ asks three times per bot on every refresh. The
+plugin has Hermes read those first messages only for the chats on the page. The list itself is unchanged. It stops
+itself once Hermes picks the page first. It works after `hermes serve` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
