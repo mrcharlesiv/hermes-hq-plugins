@@ -118,6 +118,14 @@ computer stops at 16 MB a day; a phone stuck repeating the same line could reach
 was lost. Past 1,000 copies of the very same line in a day, the plugin writes one short line with how many it left out
 instead. Ordinary days never reach that. It works after `hermes serve` restarts.
 
+Version 0.9.15 has **bots answer right away after Hermes restarts**. A freshly restarted `hermes serve` used to load
+a bot only when the first chat with it opened, so that chat sat on "Waking up…" while the bot's plugins loaded (up to
+a couple of minutes on a busy computer). Now, 20 seconds after it starts, `hermes serve` loads each of your bots in
+the background, one at a time. A computer with one bot has nothing to load. If `hermes serve` freezes for more than
+3 seconds, the plugin writes what every part of it was doing to `logs/loop-stall-stacks.log` in your Hermes folder,
+so the cause can be found. To turn the background loading off, create an empty file named `warmup.off` in the
+plugin's data folder (`plugin-data/hermes-hq-push`). It works after `hermes serve` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
