@@ -113,6 +113,11 @@ runs whose prompts were long, one list took 2 seconds, and Hermes HQ asks three 
 plugin has Hermes read those first messages only for the chats on the page. The list itself is unchanged. It stops
 itself once Hermes picks the page first. It works after `hermes serve` restarts.
 
+Version 0.9.14 keeps one **looping log line** from filling a phone's daily log. Hermes HQ's performance log on your
+computer stops at 16 MB a day; a phone stuck repeating the same line could reach that by morning, and every later line
+was lost. Past 1,000 copies of the very same line in a day, the plugin writes one short line with how many it left out
+instead. Ordinary days never reach that. It works after `hermes serve` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
