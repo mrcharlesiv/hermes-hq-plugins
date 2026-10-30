@@ -91,6 +91,14 @@ Version 0.9.9 sends no alert for a bot's own way of saying nothing, such as "[No
 user-facing response.]" or "(no user-facing response)", the same as a bare `[SILENT]`. Hermes HQ already hid these
 lines in the chat. It works after `hermes gateway restart`.
 
+Version 0.9.11 lets the **Hermes desktop app** open the chats you started in Hermes HQ. Hermes stamps each chat with the
+sign-in that made it. The desktop app refused chats stamped with a password sign-in, a self-hosted sign-in, or a Nous
+sign-in from Hermes HQ before build 402, and said "Resume failed: not_found". The plugin lets two openers past that
+stamp, and changes nothing else: the desktop app on the computer that runs the gateway, signed in as that computer's
+user, and the very sign-in that made the chat. Opening a chat in the desktop app makes it the desktop's, as Hermes does
+with every older chat; Hermes HQ keeps using it as before. It stops itself once Hermes fixes this. It works after
+`hermes gateway restart`.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -157,7 +165,7 @@ python3 -m unittest hermes-hq-push/test_push.py
 ```
 
 `test_input_alerts.py` needs only Python: `python3 -m unittest test_input_alerts.py` from the plugin folder.
-`test_own_chats.py` and `test_cron_working.py` run against a Hermes checkout, with its own python, from the
+`test_own_chats.py`, `test_desktop_opens.py` and `test_cron_working.py` run against a Hermes checkout, with its own python, from the
 plugin folder: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_cron_working.py`.
 
 Tests that need `cryptography` or `fastapi` skip without them.
