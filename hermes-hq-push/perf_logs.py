@@ -12,7 +12,11 @@ message text, prompts, tool output, query strings, tokens or passwords; every li
 numbers, flags and short strings under plain field names, never a field named like content or a credential.
 
 Bounded: a day's file stops at DAY_BYTES (a `log.full` line says so), a device keeps DEVICE_BYTES and KEEP_DAYS at
-most (oldest days removed first), and at most MAX_DEVICES device folders exist.
+most (oldest days removed first), and at most MAX_DEVICES device folders exist. One line repeating all day (a loop on the
+phone) cannot fill the day alone: past REPEAT_LIMIT copies of the very same kind + text in a day (a normal day's busiest line
+has ~1,000), each upload
+writes one `log.repeat` line with the count it left out instead (0.9.14; 2026-10-30 a Sessions re-read loop wrote 14 MB of
+three lines by 10 AM and everything after was lost).
 """
 from __future__ import annotations
 
@@ -27,6 +31,9 @@ DAY_BYTES = 16 * 1024 * 1024
 DEVICE_BYTES = 128 * 1024 * 1024
 KEEP_DAYS = 14
 MAX_DEVICES = 8
+REPEAT_LIMIT = 1000
+REPEAT_KEYS = 4000
+REPEATS_FILE = "repeats.json"
 MAX_LINES = 4000
 MAX_LINE_BYTES = 2048
 MAX_KEYS = 16
@@ -131,9 +138,25 @@ def write(root: Path, device: str, lines: list, app: str = "", reason: str = "",
             dropped += 1
         else:
             events.append(event)
+    seen = load_repeats(folder)
+    squashed: dict[tuple[str, str, str], int] = {}
     for event in events:
         day = time.strftime("%Y-%m-%d", time.gmtime(event["t"] / 1000))
+        if event.get("s") != "g" and isinstance(event.get("m"), str):
+            counts = seen.setdefault(day, {})
+            text = event["m"]
+            key = event["k"] + " " + text
+            if key in counts or len(counts) < REPEAT_KEYS:
+                counts[key] = counts.get(key, 0) + 1
+                if counts[key] > REPEAT_LIMIT:
+                    mark = (day, event["k"], text)
+                    squashed[mark] = squashed.get(mark, 0) + 1
+                    continue
         by_day.setdefault(day, []).append(json.dumps(event, separators=(",", ":"), sort_keys=True))
+    for (day, kind, text), count in squashed.items():
+        by_day.setdefault(day, []).append(json.dumps({"t": int(now * 1000), "k": "log.repeat", "s": "g", "kind": kind, "m": text,
+                                                      "left_out": count}, separators=(",", ":"), sort_keys=True))
+    save_repeats(folder, seen, now)
     for day, items in sorted(by_day.items()):
         path = folder / f"{day}.jsonl"
         size = path.stat().st_size if path.exists() else 0
@@ -250,6 +273,27 @@ def prune_moments(folder: Path, now: float) -> None:
         oldest = files.pop(0)
         total -= oldest.stat().st_size
         oldest.unlink(missing_ok=True)
+
+
+def load_repeats(folder: Path) -> dict[str, dict[str, int]]:
+    """Per day: how many times each kind + text arrived. Unreadable reads as empty."""
+    try:
+        data = json.loads((folder / REPEATS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {day: {k: v for k, v in counts.items() if isinstance(k, str) and isinstance(v, int)}
+            for day, counts in data.items() if isinstance(day, str) and isinstance(counts, dict)}
+
+
+def save_repeats(folder: Path, seen: dict[str, dict[str, int]], now: float) -> None:
+    """Keeps today and yesterday (UTC) only; a phone's clock may run behind."""
+    keep = {time.strftime("%Y-%m-%d", time.gmtime(now - back)) for back in (0, 86400)}
+    try:
+        (folder / REPEATS_FILE).write_text(json.dumps({day: counts for day, counts in seen.items() if day in keep}), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def prune(folder: Path, now: float) -> None:
