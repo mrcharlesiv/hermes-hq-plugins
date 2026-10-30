@@ -99,6 +99,14 @@ user, and the very sign-in that made the chat. Opening a chat in the desktop app
 with every older chat; Hermes HQ keeps using it as before. It stops itself once Hermes fixes this. It works after
 `hermes gateway restart`.
 
+Version 0.9.12 has a bot in a Hermes HQ chat ask a question it needs answered on a **question card**, rather than ending
+its reply with the question in text. You answer the card with one tap, or type your own answer. Only questions the bot
+needs answered before it can go on get a card (which of two things you meant, a choice that changes what it does next).
+"Want me to also…?" offers at the end of finished work stay as text. Bots without the question tool (`clarify`), and
+messages from scheduled jobs or other bots, are left alone. The plugin adds the request to your message for the bot
+only; the chat still shows what you typed. To turn it off for every bot on the computer, create an empty file named
+`ask-cards.off` in `~/.hermes/plugin-data/hermes-hq-push/`. It works after `hermes serve` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
