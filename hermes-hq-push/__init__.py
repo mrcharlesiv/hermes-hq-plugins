@@ -13,6 +13,8 @@ hands the old password login's chats to the one login the computer's owner names
 on this computer open the chats the app made, which Hermes refused as not_found (0.9.11).
 reply_back.py (loaded by the dashboard routes) posts a bot's answer back into the Telegram or Discord chat it came
 from when the app asks, once per answer, only when the prompt was typed in the app (0.9.4).
+ask_cards.py (0.9.12) asks a bot in an app chat to ask a question it needs answered with ``clarify``, so the app shows
+a card, instead of ending its reply with the question in text.
 """
 import importlib.util
 import logging
@@ -30,6 +32,9 @@ _guard_spec.loader.exec_module(restart_guard)
 _own_spec = importlib.util.spec_from_file_location("hermes_hq_push_own_chats", Path(__file__).with_name("own_chats.py"))
 own_chats = importlib.util.module_from_spec(_own_spec)
 _own_spec.loader.exec_module(own_chats)
+_ask_spec = importlib.util.spec_from_file_location("hermes_hq_push_ask_cards", Path(__file__).with_name("ask_cards.py"))
+ask_cards = importlib.util.module_from_spec(_ask_spec)
+_ask_spec.loader.exec_module(ask_cards)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
@@ -112,6 +117,20 @@ def on_human_input_resolved(**kwargs):
         log.debug("hermes-hq-push input settle hook failed", exc_info=True)
 
 
+def pre_llm_call(platform="", parent_session_id="", user_message=None, conversation_history=None, **kwargs):
+    # Only turns ``hermes serve`` runs: a card asked from a turn the messaging gateway runs in an app chat (another
+    # bot's message, a job's hand-off) can't reach the app and comes back undelivered.
+    if not _serves_app_sessions():
+        return None
+    try:
+        note = ask_cards.context_for(data_dir=push.data_dir(), platform=platform, parent_session_id=parent_session_id,
+                                     user_message=user_message, conversation_history=conversation_history)
+    except Exception:
+        log.debug("hermes-hq-push: ask-cards note skipped", exc_info=True)
+        return None
+    return {"context": note} if note else None
+
+
 def _desktop_theme():
     """The Hermes HQ theme for the desktop app (desktop_theme.py): a nicety, so nothing here ever stops the plugin."""
     try:
@@ -166,6 +185,7 @@ def register(ctx):
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("on_human_input_request", on_human_input_request)
     ctx.register_hook("on_human_input_resolved", on_human_input_resolved)
+    ctx.register_hook("pre_llm_call", pre_llm_call)
     _desktop_theme()
     _restart_guard()
     _own_chats()
