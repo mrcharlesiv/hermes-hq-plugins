@@ -15,6 +15,8 @@ reply_back.py (loaded by the dashboard routes) posts a bot's answer back into th
 from when the app asks, once per answer, only when the prompt was typed in the app (0.9.4).
 ask_cards.py (0.9.12) asks a bot in an app chat to ask a question it needs answered with ``clarify``, so the app shows
 a card, instead of ending its reply with the question in text.
+page_previews.py (0.9.13) keeps the Sessions list fast on a bot with many scheduled runs: Hermes read every chat's
+first message to build previews before keeping one page (2 s per list on a bot with 8,700 runs); now only the page's.
 """
 import importlib.util
 import logging
@@ -35,6 +37,9 @@ _own_spec.loader.exec_module(own_chats)
 _ask_spec = importlib.util.spec_from_file_location("hermes_hq_push_ask_cards", Path(__file__).with_name("ask_cards.py"))
 ask_cards = importlib.util.module_from_spec(_ask_spec)
 _ask_spec.loader.exec_module(ask_cards)
+_pages_spec = importlib.util.spec_from_file_location("hermes_hq_push_page_previews", Path(__file__).with_name("page_previews.py"))
+page_previews = importlib.util.module_from_spec(_pages_spec)
+_pages_spec.loader.exec_module(page_previews)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
@@ -179,6 +184,13 @@ def _own_chats():
         log.debug("hermes-hq-push: desktop opens app chats not installed", exc_info=True)
 
 
+def _page_previews():
+    try:
+        log.info("hermes-hq-push: page previews %s", page_previews.install())
+    except Exception:
+        log.debug("hermes-hq-push: page previews not installed", exc_info=True)
+
+
 def register(ctx):
     ctx.register_hook("pre_approval_request", pre_approval_request)
     ctx.register_hook("post_approval_response", post_approval_response)
@@ -189,3 +201,4 @@ def register(ctx):
     _desktop_theme()
     _restart_guard()
     _own_chats()
+    _page_previews()
