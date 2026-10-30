@@ -17,6 +17,8 @@ ask_cards.py (0.9.12) asks a bot in an app chat to ask a question it needs answe
 a card, instead of ending its reply with the question in text.
 page_previews.py (0.9.13) keeps the Sessions list fast on a bot with many scheduled runs: Hermes read every chat's
 first message to build previews before keeping one page (2 s per list on a bot with 8,700 runs); now only the page's.
+serve_warmup.py (0.9.15) loads every bot in the background after ``hermes serve`` starts, so the first chat opened
+right after a restart answers at once (one sat on "Waking up…" ~2 minutes), and records what a frozen server was doing.
 """
 import importlib.util
 import logging
@@ -40,6 +42,9 @@ _ask_spec.loader.exec_module(ask_cards)
 _pages_spec = importlib.util.spec_from_file_location("hermes_hq_push_page_previews", Path(__file__).with_name("page_previews.py"))
 page_previews = importlib.util.module_from_spec(_pages_spec)
 _pages_spec.loader.exec_module(page_previews)
+_warm_spec = importlib.util.spec_from_file_location("hermes_hq_push_serve_warmup", Path(__file__).with_name("serve_warmup.py"))
+serve_warmup = importlib.util.module_from_spec(_warm_spec)
+_warm_spec.loader.exec_module(serve_warmup)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
@@ -191,6 +196,16 @@ def _page_previews():
         log.debug("hermes-hq-push: page previews not installed", exc_info=True)
 
 
+def _serve_warmup():
+    """Only in ``hermes serve`` (the process the app talks to), which has its web server loaded by now."""
+    if "hermes_cli.web_server" not in sys.modules:
+        return
+    try:
+        log.info("hermes-hq-push: warm-up %s", serve_warmup.start_warmup(push.data_dir()))
+    except Exception:
+        log.debug("hermes-hq-push: warm-up not started", exc_info=True)
+
+
 def register(ctx):
     ctx.register_hook("pre_approval_request", pre_approval_request)
     ctx.register_hook("post_approval_response", post_approval_response)
@@ -202,3 +217,4 @@ def register(ctx):
     _restart_guard()
     _own_chats()
     _page_previews()
+    _serve_warmup()

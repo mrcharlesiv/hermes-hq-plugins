@@ -4,7 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 if "hermes_hq_push_core" in sys.modules:
@@ -43,7 +43,26 @@ else:
     sys.modules["hermes_hq_reply_back"] = reply_back
     _reply_spec.loader.exec_module(reply_back)
 
-router = APIRouter()
+_warm_spec = importlib.util.spec_from_file_location("hermes_hq_serve_warmup", Path(__file__).parents[1] / "serve_warmup.py")
+serve_warmup = importlib.util.module_from_spec(_warm_spec)
+_warm_spec.loader.exec_module(serve_warmup)
+_loop_watched = False
+
+
+async def _on_server_loop():
+    """Every route runs this first; the first call (on the server's own loop) arms the freeze recorder (0.9.15)."""
+    global _loop_watched
+    if not _loop_watched:
+        _loop_watched = True
+        try:
+            import asyncio
+            serve_warmup.watch_loop(asyncio.get_running_loop())
+            serve_warmup.start_warmup(push.data_dir())
+        except Exception:
+            pass
+
+
+router = APIRouter(dependencies=[Depends(_on_server_loop)])
 # Reply alerts for every bot, from this server (push.ReplyWatcher).
 push.start_reply_watcher()
 
