@@ -181,6 +181,15 @@ waking the phone. A photo a bot fetches is kept in the plugin's data folder (`de
 that was asked or found is written to the logs. An older Hermes HQ answers Contacts only and says the others aren't
 available yet. Every bot needs its own copy of this version, and it works after Hermes restarts.
 
+Version 0.9.22 keeps **a bot's Lock Screen card live while your phone is locked**. Hermes HQ shows a card on the Lock
+Screen (and in the Dynamic Island) while a bot works on a long reply, naming the step it's on ("Running npm test…"),
+the two before it and how many so far. iOS stops the app about 30 seconds after the phone locks, and from then on only
+a push can change the card. Now the plugin pushes each new step the bot takes, at most one every 3 seconds (the last one
+always arrives), and the card says Done when the turn ends. The steps are sealed with your phone's key, like alerts: the
+relay and Apple see only that a card changed. A step a bot takes in a helper doesn't show, and a card whose turn you
+stop from the app is left to the app. Every bot needs its own copy of this version for its steps to show (the card still
+ends when the reply is written without it), and it works after Hermes restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -247,6 +256,8 @@ python3 -m unittest hermes-hq-push/test_push.py
 ```
 
 `test_input_alerts.py` needs only Python: `python3 -m unittest test_input_alerts.py` from the plugin folder.
+`test_live_steps.py` (Lock Screen steps: the app's step words, the routes, pacing and the sealed card) runs like the
+others: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_live_steps.py`.
 `test_own_chats.py`, `test_desktop_opens.py`, `test_cron_working.py` and `test_gateway_logins.py` run against a Hermes checkout, with its own python, from the
 plugin folder: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_cron_working.py`.
 

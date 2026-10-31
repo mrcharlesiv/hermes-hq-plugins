@@ -3,6 +3,7 @@ session cookie). Mounted in ``hermes serve``, the process that owns app sessions
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -157,6 +158,44 @@ def register_device(device_id: str, body: DeviceIn):
 def remove_device(device_id: str):
     try:
         return push.remove_device(push.data_dir(), device_id)
+    except push.RouteError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+# ---------------------------------------------------------------------------
+# Live Activities (0.9.22 `liveSteps` in status): a bot turn's Lock Screen card, whose steps are pushed (push.LiveFeed).
+# ---------------------------------------------------------------------------
+
+class LiveTrailIn(BaseModel):
+    step: str | None = Field(default=None, max_length=200)
+    recent: list[Annotated[str, Field(max_length=200)]] = Field(default_factory=list, max_length=8)
+    steps: int = Field(default=0, ge=0, le=1_000_000)
+
+
+class LiveIn(BaseModel):
+    token: str = Field(max_length=512)  # the activity's ActivityKit push token, hex
+    profile: str = Field(max_length=64)
+    session: str = Field(default="", max_length=200)  # the bot's Bot Chat, stored id
+    startedAt: float = Field(allow_inf_nan=False)  # seconds since 2001-01-01 (Swift Date): echoed back verbatim
+    trail: LiveTrailIn | None = None  # what the card already says
+
+
+@router.put("/live/{device_id}/{activity_id}")
+def register_live(device_id: str, activity_id: str, body: LiveIn):
+    """The app's card for a bot's turn and its push token, from a phone registered through PUT /devices. Its steps are
+    pushed until the turn ends or DELETE withdraws it."""
+    try:
+        return push.register_live(push.data_dir(), device_id, activity_id, body.token, body.profile, body.session,
+                                  body.startedAt, body.trail.model_dump() if body.trail else None,
+                                  sealed_only=isinstance(push.sender_from_env(), push.Relay))
+    except push.RouteError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.delete("/live/{device_id}/{activity_id}")
+def remove_live(device_id: str, activity_id: str):
+    try:
+        return push.remove_live(push.data_dir(), device_id, activity_id)
     except push.RouteError as error:
         raise HTTPException(error.status_code, error.detail) from None
 

@@ -29,6 +29,8 @@ browser tab in front, which was another site when the bot's own page didn't load
 device_access.py (0.9.19, every kind since 0.9.21) gives bots what the owner shares from the app's Settings › Device
 Access (device_contacts_search, device_location, device_reminders, …): each use is a request the phone fetches (woken
 by a silent push) and answers.
+0.9.22 pushes the steps a bot takes to its turn's Lock Screen card once iOS has suspended the app (push.LiveFeed):
+``pre_tool_call`` names each step (live_steps.py, the app's own words), ``on_session_end`` ends the card Done.
 """
 import importlib.util
 import logging
@@ -67,6 +69,7 @@ _access_spec.loader.exec_module(device_access)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
+_live_feed = None
 _sent_approvals: dict = {}
 _sent_inputs: dict = {}
 
@@ -87,6 +90,14 @@ def _dispatcher_for():
     if _dispatcher is None:
         _dispatcher = push.Dispatcher(push.Store(push.data_dir() / "devices.db"))
     return _dispatcher
+
+
+def _live():
+    """[live-steps] This process's LiveFeed; its store opens on its own thread, at the first step."""
+    global _live_feed
+    if _live_feed is None:
+        _live_feed = push.LiveFeed(lambda: push.Store(push.data_dir() / "devices.db"))
+    return _live_feed
 
 
 def _serves_app_sessions() -> bool:
@@ -179,6 +190,36 @@ def _desktop_theme():
 
 
 def pre_tool_call(tool_name="", args=None, **kwargs):
+    verdict = _veto(tool_name, args)
+    if verdict is None:
+        _live_step(tool_name, args, kwargs)
+    return verdict
+
+
+def _live_step(tool_name, args, kwargs):
+    """[live-steps] The step this tool is, for the turn's Lock Screen card: only queued here (push.LiveFeed); never
+    raises, never waits, never logs the step or its arguments."""
+    try:
+        if push.live_steps.is_silent(tool_name):
+            return
+        _live().step(tool_name, args, kwargs.get("session_id"), _profile())
+    except Exception:
+        log.debug("hermes-hq-push: live step skipped")
+
+
+def on_session_end(session_id="", interrupted=False, **kwargs):
+    """[live-steps] A turn ended (fires once per turn; a teardown repeat carries interrupted=True): its Lock Screen card
+    ends Done. An interrupted turn is left to the app: a /stop or a new message comes from someone with the app open,
+    and the next turn may carry on the same card."""
+    try:
+        if interrupted or not session_id:
+            return
+        _live().ended(session_id, _profile())
+    except Exception:
+        log.debug("hermes-hq-push: live end skipped")
+
+
+def _veto(tool_name, args):
     try:
         unnamed = gateway_logins.unnamed_site(tool_name, args)
     except Exception:
@@ -285,6 +326,7 @@ def register(ctx):
     ctx.register_hook("on_human_input_request", on_human_input_request)
     ctx.register_hook("on_human_input_resolved", on_human_input_resolved)
     ctx.register_hook("pre_llm_call", pre_llm_call)
+    ctx.register_hook("on_session_end", on_session_end)
     _device_tools(ctx)
     _desktop_theme()
     _restart_guard()

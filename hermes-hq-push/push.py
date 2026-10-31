@@ -24,6 +24,7 @@ import importlib.util
 import itertools
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -51,6 +52,10 @@ log = logging.getLogger(NAME)
 _copy_spec = importlib.util.spec_from_file_location("hermes_hq_push_copy", Path(__file__).with_name("alert_copy.py"))
 alert_copy = importlib.util.module_from_spec(_copy_spec)
 _copy_spec.loader.exec_module(alert_copy)
+_steps_spec = importlib.util.spec_from_file_location("hermes_hq_push_live_steps", Path(__file__).with_name("live_steps.py"))
+live_steps = importlib.util.module_from_spec(_steps_spec)
+sys.modules[_steps_spec.name] = live_steps  # its dataclass looks its module up there while it's made
+_steps_spec.loader.exec_module(live_steps)
 
 KINDS = ("turnDone", "approval", "outside", "input")
 TOPIC = "com.charlesmcdowell.dispatch"
@@ -175,6 +180,13 @@ class Store:
             for column in ("seal", "account"):
                 if column not in columns:
                     db.execute(f"alter table devices add column {column} text not null default ''")
+            # [live-steps] 0.9.22: a phone's Live Activities whose steps are pushed (one row per activity).
+            db.execute("""create table if not exists live (
+                device_id text not null, activity_id text not null, token text not null, profile text not null,
+                session text not null default '', started_at real not null, trail text not null default '{}',
+                registered_at real not null, primary key (device_id, activity_id))""")
+            db.execute("create index if not exists live_session on live (session)")
+            db.execute("create index if not exists live_profile on live (profile)")
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=5)
@@ -192,6 +204,7 @@ class Store:
 
     def remove(self, device_id: str) -> bool:
         with self._db() as db:
+            db.execute("delete from live where device_id = ?", (device_id,))
             return db.execute("delete from devices where device_id = ?", (device_id,)).rowcount > 0
 
     def remove_token(self, token: str) -> None:
@@ -206,6 +219,62 @@ class Store:
 
     def get(self, device_id: str) -> Device | None:
         return next((d for d in self.devices() if d.device_id == device_id), None)
+
+    # [live-steps] Live Activity rows (LiveRow). Every Hermes process reads them here: the one running a bot's turn
+    # pushes its steps, the server ends the card when the reply is written.
+
+    _LIVE = "device_id, activity_id, token, profile, session, started_at, trail, registered_at"
+
+    @staticmethod
+    def _live_row(r) -> "LiveRow":
+        try:
+            trail = json.loads(r[6] or "{}")
+        except ValueError:
+            trail = {}
+        return LiveRow(r[0], r[1], r[2], r[3], r[4], r[5], live_steps.Trail.from_words(trail), r[7])
+
+    def put_live(self, row: "LiveRow") -> None:
+        with closing(self._db()) as db, db:
+            db.execute(f"insert or replace into live ({self._LIVE}) values (?,?,?,?,?,?,?,?)",
+                       (row.device_id, row.activity_id, row.token, row.profile, row.session, row.started_at,
+                        json.dumps(row.trail.words(), ensure_ascii=False), row.registered_at))
+            # One row per push token: iOS gives an activity a new token, the app hands it over again.
+            db.execute("delete from live where token = ? and not (device_id = ? and activity_id = ?)",
+                       (row.token, row.device_id, row.activity_id))
+
+    def live_row(self, device_id: str, activity_id: str) -> "LiveRow | None":
+        with closing(self._db()) as db:
+            r = db.execute(f"select {self._LIVE} from live where device_id = ? and activity_id = ?",
+                           (device_id, activity_id)).fetchone()
+        return self._live_row(r) if r else None
+
+    def live_for(self, session: str, profile: str) -> list:
+        """The rows a turn in ``session`` of ``profile`` may be for: that chat's, and every row of that bot (whose chat
+        may have a new id after compression, or none at all)."""
+        with closing(self._db()) as db:
+            rows = db.execute(f"select {self._LIVE} from live where session = ? or profile = ?",
+                              (session, profile)).fetchall()
+        return [self._live_row(r) for r in rows]
+
+    def live_count(self) -> int:
+        with closing(self._db()) as db:
+            return db.execute("select count(*) from live").fetchone()[0]
+
+    def save_trail(self, device_id: str, activity_id: str, trail) -> bool:
+        """False when the row is gone (withdrawn by the app, or its turn ended in another process)."""
+        with closing(self._db()) as db, db:
+            return db.execute("update live set trail = ? where device_id = ? and activity_id = ?",
+                              (json.dumps(trail.words(), ensure_ascii=False), device_id, activity_id)).rowcount > 0
+
+    def remove_live(self, device_id: str, activity_id: str) -> bool:
+        """Also how a turn's end is claimed: only the process whose delete removed the row sends the end."""
+        with closing(self._db()) as db, db:
+            return db.execute("delete from live where device_id = ? and activity_id = ?",
+                              (device_id, activity_id)).rowcount > 0
+
+    def prune_live(self, now: float, max_age: float) -> int:
+        with closing(self._db()) as db, db:
+            return db.execute("delete from live where registered_at < ?", (now - max_age,)).rowcount
 
 
 class RouteError(ValueError):
@@ -245,6 +314,96 @@ def registration(device_id: str, token: str, environment: str, topic: str,
 def remove_device(root: Path, device_id: str) -> dict:
     check_device_id(device_id)
     return {"ok": True, "removed": Store(root / "devices.db").remove(device_id)}
+
+
+# ---------------------------------------------------------------------------
+# [live-steps] Live Activities (0.9.22, `liveSteps`): the steps on a bot turn's Lock Screen card, pushed once iOS has
+# suspended the app (only ActivityKit pushes can change the card then).
+# ---------------------------------------------------------------------------
+
+LIVE_SUFFIX = ".push-type.liveactivity"
+# Swift's Date encodes as seconds since 2001-01-01T00:00:00Z (JSONEncoder's default, what ActivityKit decodes
+# content-state with): the card's dates are those, not Unix time.
+APPLE_EPOCH = 978307200.0
+LIVE_MAX_AGE_S = 8 * 3600
+LIVE_STALE_S = 1800
+LIVE_DISMISS_S = 900
+# Apple's answers that mean this activity's token will never take a push: its row goes, never the phone's own.
+LIVE_GONE_REASONS = frozenset({"BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic", "ExpiredToken", "TopicDisallowed"})
+
+
+@dataclass
+class LiveRow:
+    device_id: str
+    activity_id: str
+    token: str         # the activity's ActivityKit push token (hex), not the phone's
+    profile: str       # the bot
+    session: str       # its Bot Chat's stored id ("" when the app has none: any turn of the bot)
+    started_at: float  # the card's startedAt, as the app sent it (Apple reference date), echoed back verbatim
+    trail: object      # live_steps.Trail: what the card says now
+    registered_at: float = 0.0
+
+    @property
+    def key(self) -> tuple:
+        return (self.device_id, self.activity_id)
+
+
+def check_activity_id(activity_id: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", activity_id or ""):
+        raise RouteError(400, "Invalid activity id.")
+
+
+def register_live(root: Path, device_id: str, activity_id: str, token: str, profile: str, session: str,
+                  started_at, trail=None, sealed_only: bool = False, now: float | None = None) -> dict:
+    """PUT /live/<device>/<activity>: a bot turn's card on a registered phone, and its push token. Replaces the row (a
+    new token, or the app's latest trail). 404 for a phone that isn't registered for notifications (its environment,
+    seal key and relay-or-direct come from that row); 409 in relay mode for a phone without a seal key."""
+    check_device_id(device_id)
+    check_activity_id(activity_id)
+    if (not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64,512}", token.lower())
+            or not isinstance(profile, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", profile)
+            or not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_.:@-]{0,200}", session)
+            or isinstance(started_at, bool) or not isinstance(started_at, (int, float))
+            or not math.isfinite(started_at) or abs(started_at) > 1e10):
+        raise RouteError(400, "Invalid Live Activity registration.")
+    store = Store(root / "devices.db")
+    device = store.get(device_id)
+    if device is None:
+        raise RouteError(404, "This phone isn't registered for notifications.")
+    if sealed_only and not device.seal:
+        raise RouteError(409, "Update Hermes HQ to get Lock Screen steps through the push relay.")
+    now = time.time() if now is None else now
+    store.prune_live(now, LIVE_MAX_AGE_S)
+    store.put_live(LiveRow(device_id, activity_id, token.lower(), profile, session, float(started_at),
+                           live_steps.Trail.from_words(trail), now))
+    return {"ok": True}
+
+
+def remove_live(root: Path, device_id: str, activity_id: str) -> dict:
+    """DELETE /live/<device>/<activity>: the card ended in the app; nothing more is pushed to it. 200 either way."""
+    check_device_id(device_id)
+    check_activity_id(activity_id)
+    return {"ok": True, "removed": Store(root / "devices.db").remove_live(device_id, activity_id)}
+
+
+def live_payload(row: LiveRow, trail, event: str, now: float, device: Device, nonce: bytes | None = None) -> dict:
+    """The ActivityKit push: `update` (working, its steps) or `end` (done). The steps ride sealed with the phone's push
+    key, like an alert, so Apple and the relay carry no words; only a direct send to a phone without a key carries them
+    plainly."""
+    state: dict = {"phase": "working" if event == "update" else "done", "startedAt": row.started_at}
+    if event == "end":
+        state["endedAt"] = now - APPLE_EPOCH
+    words = trail.words()
+    if device.seal:
+        state["seal"] = seal_box(words, seal_key(device.seal), nonce)
+    else:
+        state.update(words)
+    aps: dict = {"timestamp": int(now), "event": event, "content-state": state}
+    if event == "update":
+        aps["stale-date"] = int(now) + LIVE_STALE_S
+    else:
+        aps["dismissal-date"] = int(now) + LIVE_DISMISS_S
+    return {"aps": aps}
 
 
 def status_body(root: Path, sender) -> dict:
@@ -288,11 +447,13 @@ def status_body(root: Path, sender) -> dict:
     /serve/working lists the chats this server is running a turn in (serve_working.py), the ones /sessions/working can't
     see, so a host restart can wait for them. `deviceAccessKinds` (0.9.21): Device Access takes every kind the app shares
     (location, reminders, calendar, alarms, photos, Health, motion, music, drafts; device_access.OPERATIONS), POST
-    .../pending gives each request's `profile`, and POST .../files/<id> takes a photo before its answer."""
+    .../pending gives each request's `profile`, and POST .../files/<id> takes a photo before its answer. `liveSteps`
+    (0.9.22): PUT /live/<device>/<activity> takes a bot turn's Live Activity push token, and the steps the bot takes are
+    pushed to its Lock Screen card (sealed) until the turn ends; the app asks for a token only when this says so."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "liveSteps": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -412,10 +573,6 @@ def sealed(payload: dict, key: bytes, nonce: bytes | None = None) -> dict:
     """AES-256-GCM over the whole payload; the box is nonce (12) + ciphertext + tag (16), as CryptoKit's
     AES.GCM.SealedBox(combined:) reads it. The visible alert says only "Hermes HQ: New notification" and asks for the
     extension (mutable-content); a settle stays a silent background push the app opens itself."""
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    nonce = nonce or secrets.token_bytes(12)
-    plain = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
-    box = nonce + AESGCM(key).encrypt(nonce, plain, SEAL_AAD)
     inner = payload.get("aps", {})
     if "alert" in inner:
         # No category outside: Approve/Deny come only from the opened alert (the extension sets them), never on a
@@ -425,11 +582,22 @@ def sealed(payload: dict, key: bytes, nonce: bytes | None = None) -> dict:
                "relevance-score": inner.get("relevance-score", 0.5)}
     else:
         aps = {"content-available": 1}
-    return {"aps": aps, "seal": {"v": 1, "kid": seal_kid(key), "box": base64.b64encode(box).decode("ascii")}}
+    return {"aps": aps, "seal": seal_box(payload, key, nonce)}
+
+
+def seal_box(plain: dict, key: bytes, nonce: bytes | None = None) -> dict:
+    """``{"v": 1, "kid", "box"}``: ``plain`` as compact JSON, AES-256-GCM with the phone's key, bound to SEAL_AAD. The
+    box is nonce (12) + ciphertext + tag (16), as CryptoKit's AES.GCM.SealedBox(combined:) reads it. A sealed alert's
+    plaintext is its whole payload; a Live Activity's only its card's words (live_payload)."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    nonce = nonce or secrets.token_bytes(12)
+    data = json.dumps(plain, separators=(",", ":"), ensure_ascii=False).encode()
+    box = nonce + AESGCM(key).encrypt(nonce, data, SEAL_AAD)
+    return {"v": 1, "kid": seal_kid(key), "box": base64.b64encode(box).decode("ascii")}
 
 
 def unseal(outer: dict, key: bytes) -> dict:
-    """The phone's side, for tests and the shared vectors."""
+    """The phone's side, for tests and the shared vectors: any object with a ``seal`` (an alert, a card's state)."""
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     box = base64.b64decode(outer["seal"]["box"])
     return json.loads(AESGCM(key).decrypt(box[:12], box[12:], SEAL_AAD))
@@ -552,6 +720,11 @@ class Gone(Exception):
     """APNs says the token is dead (uninstalled app or rotated token)."""
 
 
+class LiveGone(Exception):
+    """[live-steps] APNs won't take pushes for one Live Activity's token (ended, expired, or not this app's): drop that
+    activity's row, not the phone."""
+
+
 class DeliveryError(Exception):
     """A push that didn't go. ``code`` names it in /status (an HTTP status, ``timeout`` or ``unreachable``). A
     ``transient`` one (Apple or the relay busy or briefly out of reach: 429, 5xx, a timeout) is tried again; anything
@@ -604,11 +777,31 @@ class DirectAPNs:
         return token
 
     def send(self, device: Device, push: Push) -> None:
-        host = "api.push.apple.com" if device.environment == "production" else "api.sandbox.push.apple.com"
         payload, collapse = push.for_device(device)
-        headers = [f"authorization: bearer {self._bearer()}", f"apns-topic: {device.topic}",
-                   f"apns-push-type: {'background' if push.settled else 'alert'}",
-                   f"apns-priority: {5 if push.settled else 10}", f"apns-collapse-id: {collapse}"]
+        status, reason, stderr = self._post(device.environment, device.token, [
+            f"apns-topic: {device.topic}", f"apns-push-type: {'background' if push.settled else 'alert'}",
+            f"apns-priority: {5 if push.settled else 10}", f"apns-collapse-id: {collapse}"], payload)
+        if status == "200":
+            return
+        if status == "410" or reason in ("BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic"):
+            raise Gone(reason or status)
+        raise self._failure(status, reason, stderr)
+
+    def send_live(self, device: Device, token: str, payload: dict, priority: int) -> None:
+        """[live-steps] An ActivityKit push to one activity's token. A token Apple won't take raises LiveGone: that
+        activity's row goes, never the phone's registration."""
+        status, reason, stderr = self._post(device.environment, token, [
+            f"apns-topic: {device.topic}{LIVE_SUFFIX}", "apns-push-type: liveactivity", f"apns-priority: {priority}"], payload)
+        if status == "200":
+            return
+        if status == "410" or reason in LIVE_GONE_REASONS:
+            raise LiveGone(reason or status)
+        raise self._failure(status, reason, stderr)
+
+    def _post(self, environment: str, token: str, headers: list, payload: dict) -> tuple:
+        """(status, reason, stderr) for one POST to Apple."""
+        host = "api.push.apple.com" if environment == "production" else "api.sandbox.push.apple.com"
+        headers = [f"authorization: bearer {self._bearer()}", *headers]
         # Headers go through a 0600 file so the bearer token never appears in the process list.
         with tempfile.NamedTemporaryFile("w", delete=False) as handle:
             handle.write("\n".join(headers))
@@ -616,31 +809,31 @@ class DirectAPNs:
         try:
             result = self.run(["curl", "-sS", "--http2", "--max-time", "10", "-X", "POST",
                                "-H", f"@{header_file}", "--data-binary", "@-", "-w", "\n%{http_code}",
-                               f"https://{host}/3/device/{device.token}"],
+                               f"https://{host}/3/device/{token}"],
                               input=json.dumps(payload), capture_output=True, text=True, timeout=15)
         except subprocess.TimeoutExpired:
             raise DeliveryError("timeout", "APNs didn't answer in time", transient=True) from None
         finally:
             os.unlink(header_file)
         body, _, status = (result.stdout or "").rpartition("\n")
-        if status == "200":
-            return
         reason = ""
-        try:
-            reason = json.loads(body or "{}").get("reason", "")
-        except ValueError:
-            pass
-        if status == "410" or reason in ("BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic"):
-            raise Gone(reason or status)
+        if status != "200":
+            try:
+                reason = json.loads(body or "{}").get("reason", "")
+            except ValueError:
+                pass
+        return status, reason, result.stderr
+
+    def _failure(self, status: str, reason: str, stderr) -> "DeliveryError":
         if status == "403" and reason == "ExpiredProviderToken":
             self._jwt, self._expired = None, True  # the retry signs a new one, issued now
-            raise DeliveryError("403", "APNs 403 ExpiredProviderToken", transient=True)
+            return DeliveryError("403", "APNs 403 ExpiredProviderToken", transient=True)
         code = status if status and status != "000" else "unreachable"
         transient = code in ("unreachable", "429") or code.startswith("5")
-        raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
+        return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.21"
+PLUGIN_VERSION = "0.9.22"
 
 
 class Relay:
@@ -661,28 +854,56 @@ class Relay:
                 "pushType": "background" if push.settled else "alert", "collapseId": collapse, "payload": payload}
 
     def send(self, device: Device, push: Push) -> None:
-        import httpx
-        headers = {"user-agent": f"{NAME}/{PLUGIN_VERSION}"}
-        if self.key:
-            headers["authorization"] = f"Bearer {self.key}"
-        try:
-            response = httpx.post(f"{self.url}/v1/push", timeout=10, headers=headers, json=self.body(device, push))
-        except httpx.TimeoutException:
-            raise DeliveryError("timeout", "The push relay didn't answer in time", transient=True) from None
-        except httpx.TransportError as error:
-            raise DeliveryError("unreachable", f"The push relay is unreachable ({type(error).__name__})", transient=True) from None
+        response = self._post(self.body(device, push))
         status = response.status_code
         if status == 410:
             raise Gone("relay")
         if 200 <= status < 300:
             return
+        raise self._failure(response, self._said(response))
+
+    def live_body(self, device: Device, token: str, payload: dict, priority: int) -> dict:
+        """[live-steps] The relay accepts an ActivityKit push only to the app's Live Activity topic, sealed."""
+        return {"token": token, "environment": device.environment, "topic": device.topic + LIVE_SUFFIX,
+                "pushType": "liveactivity", "priority": priority, "payload": payload}
+
+    def send_live(self, device: Device, token: str, payload: dict, priority: int) -> None:
+        response = self._post(self.live_body(device, token, payload, priority))
+        status = response.status_code
+        if 200 <= status < 300:
+            return
+        said = self._said(response, as_dict=True)
+        if status == 410 or (status == 400 and said.get("reason") in LIVE_GONE_REASONS):
+            raise LiveGone(str(said.get("reason") or status))
+        raise self._failure(response, " ".join(str(said.get(k) or "") for k in ("error", "reason")).strip())
+
+    def _post(self, body: dict):
+        import httpx
+        headers = {"user-agent": f"{NAME}/{PLUGIN_VERSION}"}
+        if self.key:
+            headers["authorization"] = f"Bearer {self.key}"
+        try:
+            return httpx.post(f"{self.url}/v1/push", timeout=10, headers=headers, json=body)
+        except httpx.TimeoutException:
+            raise DeliveryError("timeout", "The push relay didn't answer in time", transient=True) from None
+        except httpx.TransportError as error:
+            raise DeliveryError("unreachable", f"The push relay is unreachable ({type(error).__name__})", transient=True) from None
+
+    @staticmethod
+    def _said(response, as_dict: bool = False):
         try:
             said = response.json()
-            said = " ".join(str(said.get(k) or "") for k in ("error", "reason")).strip()
+            if as_dict:
+                return said if isinstance(said, dict) else {}
+            return " ".join(str(said.get(k) or "") for k in ("error", "reason")).strip()
         except Exception:
-            said = ""
-        raise DeliveryError(str(status), f"Relay {status} {said}".strip(), status == 429 or status >= 500,
-                            retry_after(response.headers.get("retry-after")))
+            return {} if as_dict else ""
+
+    @staticmethod
+    def _failure(response, said: str) -> "DeliveryError":
+        status = response.status_code
+        return DeliveryError(str(status), f"Relay {status} {said}".strip(), status == 429 or status >= 500,
+                             retry_after(response.headers.get("retry-after")))
 
 
 # Read through env(): HERMES_HQ_<name>, else DISPATCH_<name>.
@@ -847,8 +1068,12 @@ class ReplyWatcher:
     RECHECK_MAX = 256
 
     def __init__(self, root: Path, submit: Callable[[Push], None], sender: Callable[[str], str] = profile_sender,
-                 health: Health | None = None, clock: Callable[[], float] = time.monotonic):
+                 health: Health | None = None, clock: Callable[[], float] = time.monotonic,
+                 turn_ended: Callable[[str, str], None] | None = None):
         self.root, self.submit, self.sender, self.health, self.clock = Path(root), submit, sender, health, clock
+        # [live-steps] (profile, session) of each chat whose turn just wrote its finished reply, silent ones too: its
+        # Lock Screen card ends (LiveFeed.ended).
+        self.turn_ended = turn_ended
         self.seen: dict[Path, int] = {}
         self.open: dict[Path, dict[int, float]] = {}
 
@@ -897,6 +1122,12 @@ class ReplyWatcher:
             if self.health:
                 for ending, count in endings:
                     self.health.record(f"replies:{ending}", count=count)
+            if self.turn_ended:
+                for session in dict.fromkeys(session for _, session, _, _ in sorted(rows)):
+                    try:
+                        self.turn_ended(profile, session)
+                    except Exception:
+                        log.debug(f"{NAME} live end skipped", exc_info=True)
             last: dict[str, tuple[str, str]] = {}
             for _, session, content, source in sorted(rows):
                 if silent_reply(content):
@@ -939,7 +1170,9 @@ def start_reply_watcher(root: Path | None = None) -> bool:
         return False
     _watcher_started = True
     dispatcher = Dispatcher(Store(data_dir() / "devices.db"))
-    watcher = ReplyWatcher(root, dispatcher.submit, health=dispatcher.health)
+    feed = LiveFeed(lambda: Store(data_dir() / "devices.db"), lineage=Lineage(lambda: root))
+    watcher = ReplyWatcher(root, dispatcher.submit, health=dispatcher.health,
+                           turn_ended=lambda profile, session: feed.ended(session, profile))
     thread = threading.Thread(target=watcher.run, name=f"{NAME}-replies", daemon=True)
     thread._push_lock = lock  # held for the process's life
     thread.start()
@@ -1073,3 +1306,265 @@ class Dispatcher:
                 self.retry_due()
             except Exception:
                 log.warning(f"{NAME} delivery pass failed", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# [live-steps] Pushing a turn's steps to its Lock Screen card (0.9.22)
+# ---------------------------------------------------------------------------
+
+def _hermes_root() -> Path:
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
+
+
+class Lineage:
+    """A chat can change id in the middle of a turn: compression carries it on in a new session row whose parent ended
+    with ``end_reason = 'compression'``. The app registered the id it knew; the hook then sees the new one. This reads
+    a session's compression ancestors (and its source: a helper's own session, ``subagent``, is never the bot's turn)
+    from the bot's state.db, read-only, once per session id."""
+
+    HOPS = 4
+    LIMIT = 256
+
+    def __init__(self, root: Callable[[], Path] = _hermes_root):
+        self.root = root
+        self.known: dict = {}
+
+    def path(self, profile: str) -> Path:
+        root = Path(self.root())
+        return root / "state.db" if profile in ("", "default") else root / "profiles" / profile / "state.db"
+
+    def info(self, profile: str, session: str) -> tuple:
+        """(source, frozenset of ancestor ids) for ``session``; ("", ∅) when it can't be read."""
+        key = (profile, session)
+        if key in self.known:
+            return self.known[key]
+        nothing = ("", frozenset())
+        if not session or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", profile or "default"):
+            return nothing
+        path = self.path(profile)
+        if not path.is_file():
+            return nothing
+        try:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)) as db:
+                row = db.execute("SELECT source, parent_session_id FROM sessions WHERE id = ?", (session,)).fetchone()
+                if row is None:
+                    return nothing  # not written yet: asked again next time
+                source, parent = row
+                ancestors = []
+                settled = not parent
+                while parent and len(ancestors) < self.HOPS:
+                    up = db.execute("SELECT end_reason, parent_session_id FROM sessions WHERE id = ?", (parent,)).fetchone()
+                    if up is None or up[0] != "compression":
+                        break
+                    ancestors.append(str(parent))
+                    parent = up[1]
+                settled = settled or bool(ancestors)
+        except sqlite3.Error:
+            return nothing
+        found = (str(source or ""), frozenset(ancestors))
+        if settled:  # a parent not (yet) marked compressed is asked again: its mark may land a moment later
+            if len(self.known) >= self.LIMIT:
+                self.known.pop(next(iter(self.known)))
+            self.known[key] = found
+        return found
+
+
+class LiveFeed:
+    """The steps a bot takes, pushed to the Lock Screen cards the app registered (PUT /live): each new step (from
+    ``pre_tool_call``, in the process running the turn) updates its card, at most one push per activity every 3 s with
+    the last step always landing (live_steps.Pacer); the turn's end (``on_session_end``, or the server's ReplyWatcher
+    seeing the finished reply) ends the card Done. Hooks only queue (``step``, ``ended``): one daemon thread reads the
+    rows, words the step and sends, so nothing here delays a tool or raises into Hermes. Step words, arguments and
+    tokens are never logged.
+
+    A card is matched to a turn by its chat (the row's ``session``, or one it was compressed from: Lineage); a row
+    without a chat matches any turn of its bot except a helper's. Updates that fail are dropped (the next step sends the
+    whole trail again); an end that fails for a moment is tried once more."""
+
+    def __init__(self, store: Callable[[], "Store"], sender_factory: Callable = sender_from_env,
+                 clock: Callable[[], float] = time.time, lineage: Lineage | None = None):
+        self._store_factory, self._store, self._health = store, None, None
+        self.sender_factory, self.clock = sender_factory, clock
+        self.lineage = lineage or Lineage()
+        self.pacer = live_steps.Pacer()
+        self.inbox: queue.Queue = queue.Queue(maxsize=256)
+        self.retries: list = []  # heap of (due, seq, row): an end to try once more
+        self.thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._seq = itertools.count()
+        self._idle: tuple | None = None  # the store's file signature when it last held no live rows
+
+    @property
+    def store(self) -> "Store":
+        if self._store is None:
+            self._store = self._store_factory()
+        return self._store
+
+    @property
+    def health(self) -> Health:
+        if self._health is None:
+            self._health = Health(self.store.path)
+        return self._health
+
+    # Hooks (any thread): queue it, nothing more.
+
+    def step(self, tool_name, args, session, profile) -> None:
+        if live_steps.is_silent(tool_name):
+            return
+        self._put(("step", str(tool_name or ""), dict(args) if isinstance(args, dict) else {}, str(session or ""),
+                   str(profile or "default")))
+
+    def ended(self, session, profile) -> None:
+        self._put(("end", str(session or ""), str(profile or "default")))
+
+    def _put(self, item: tuple) -> None:
+        try:
+            self.inbox.put_nowait(item)
+        except queue.Full:
+            return
+        with self._lock:
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self._run, name=f"{NAME}-live", daemon=True)
+                self.thread.start()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                due = self.next_due()
+                wait = None if due is None else max(0.0, due - self.clock())
+                try:
+                    item = self.inbox.get(timeout=wait)
+                except queue.Empty:
+                    item = None
+                if item is not None:
+                    self.handle(item)
+                self.flush()
+            except Exception:
+                log.debug(f"{NAME} live pass failed", exc_info=True)
+
+    def handle(self, item: tuple) -> int:
+        if item[0] == "step":
+            return self.on_step(*item[1:])
+        return self.on_end(*item[1:])
+
+    def next_due(self) -> float | None:
+        dues = [at for at in (self.pacer.next_due(), self.retries[0][0] if self.retries else None) if at is not None]
+        return min(dues) if dues else None
+
+    # The delivery thread's own (tests call these directly).
+
+    def _signature(self) -> tuple:
+        out = []
+        for path in (self.store.path, Path(f"{self.store.path}-wal")):
+            try:
+                st = os.stat(path)
+                out.append((st.st_mtime_ns, st.st_size))
+            except OSError:
+                out.append(None)
+        return tuple(out)
+
+    def rows(self, session: str, profile: str) -> list:
+        """The cards a turn in ``session`` of ``profile`` is for. While the store has no live rows at all and hasn't
+        changed since, nothing is read."""
+        if self._idle is not None and self._idle == self._signature():
+            return []
+        signature = self._signature()
+        rows = self.store.live_for(session, profile)
+        if not rows and self.store.live_count() == 0:
+            self._idle = signature
+            return []
+        self._idle = None
+        now = self.clock()
+        fresh = []
+        for row in rows:
+            if now - row.registered_at > LIVE_MAX_AGE_S:
+                self.store.remove_live(*row.key)
+                self.pacer.forget(row.key)
+            else:
+                fresh.append(row)
+        matched = [row for row in fresh if row.session and row.session == session]
+        others = [row for row in fresh if row.profile == profile and row not in matched]
+        if not others:
+            return matched
+        source, ancestors = self.lineage.info(profile, session) if session else ("", frozenset())
+        matched += [row for row in others if row.session and row.session in ancestors]
+        if source != "subagent":
+            matched += [row for row in others if not row.session]
+        return matched
+
+    def on_step(self, tool_name: str, args: dict, session: str, profile: str) -> int:
+        """A tool starts: each card it is for names it, pushed now or when its gap is up. Returns pushes sent now."""
+        if live_steps.is_silent(tool_name):
+            return 0
+        rows = self.rows(session, profile)
+        if not rows:
+            return 0
+        words = live_steps.phrase(tool_name, args)
+        now, sent = self.clock(), 0
+        for row in rows:
+            if not row.trail.follow(words):
+                continue
+            if not self.store.save_trail(row.device_id, row.activity_id, row.trail):
+                continue  # withdrawn meanwhile
+            if self.pacer.offer(row.key, now):
+                sent += self._deliver(row, "update", row.trail, self.pacer.sent(row.key, now))
+        return sent
+
+    def on_end(self, session: str, profile: str) -> int:
+        """The turn ended: its cards end Done, the step it was on a finished one, and their rows go. Only the process
+        whose delete took a row sends its end (the turn's own process and the server may both hear the end)."""
+        sent = 0
+        for row in self.rows(session, profile):
+            if not self.store.remove_live(*row.key):
+                continue
+            self.pacer.forget(row.key)
+            sent += self._deliver(row, "end", row.trail.settled(), 10)
+        return sent
+
+    def flush(self) -> int:
+        """Trailing updates whose gap is up (the card's trail as stored now), and ends to try again."""
+        now, sent = self.clock(), 0
+        for key in self.pacer.take_due(now):
+            row = self.store.live_row(*key)
+            if row is not None:
+                sent += self._deliver(row, "update", row.trail, self.pacer.sent(key, now))
+        while self.retries and self.retries[0][0] <= now:
+            _, _, row = heapq.heappop(self.retries)
+            sent += self._deliver(row, "end", row.trail.settled(), 10, retry=False)
+        return sent
+
+    def _deliver(self, row: LiveRow, event: str, trail, priority: int, retry: bool = True) -> int:
+        sender = self.sender_factory()
+        if sender is None:
+            return 0
+        device = self.store.get(row.device_id)
+        if device is None or (isinstance(sender, Relay) and not device.seal):
+            self.store.remove_live(*row.key)  # the phone unregistered, or can't take sealed pushes
+            self.pacer.forget(row.key)
+            return 0
+        now = self.clock()
+        try:
+            sender.send_live(device, row.token, live_payload(row, trail, event, now, device), priority)
+        except LiveGone as gone:
+            self.store.remove_live(*row.key)
+            self.pacer.forget(row.key)
+            self.health.record("live:gone", f"A Live Activity's push token was retired ({gone})")
+            return 0
+        except DeliveryError as error:
+            if event == "end" and retry and error.transient:
+                wait = RETRY_DELAYS[0]
+                if error.retry_after is not None:
+                    wait = min(max(wait, error.retry_after), RETRY_AFTER_MAX)
+                heapq.heappush(self.retries, (now + wait, next(self._seq), row))
+                self.health.record(f"live:retried:{error.code}", str(error))
+            else:
+                self.health.record(f"live:failed:{error.code}", str(error))
+            log.info(f"{NAME} Live Activity {event} not sent (%s)", error)
+            return 0
+        except Exception as error:  # best effort; never disturb the agent
+            self.health.record("live:failed:error", type(error).__name__)
+            log.info(f"{NAME} Live Activity {event} not sent (%s)", type(error).__name__)
+            return 0
+        self.health.record(f"live:{event}")
+        return 1
