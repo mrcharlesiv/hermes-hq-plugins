@@ -143,6 +143,10 @@ appears when you open it, for as long as the bot waits (10 minutes for a login, 
 straight to the vault, never into the chat. A scheduled job's own run still can't ask anyone. Every bot needs its own
 copy of this version, and it works after Hermes restarts.
 
+Version 0.9.18 makes **a bot name the site when it asks for a login or a code**. Without a site, Hermes asked for
+whichever browser tab was in front; when the bot's own page hadn't loaded, the card asked for some other site's login.
+Now the bot is told to say which site, and Hermes only asks when that site's page is open.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

@@ -24,6 +24,8 @@ holds it (Hermes refused it "open in another Hermes window"), and Hermes's hand-
 gateway_logins.py (0.9.17) lets a bot ask for a login, a one-time code or a password manager's unlock in a turn the
 messaging gateway runs (another bot's message, a hand-off): the card shows in the app's copy of the chat, as it does for
 a turn the app runs (Hermes answered "this session cannot ask the user for a login").
+0.9.18 sends a login or code asked without naming the site back to the bot to name it: Hermes otherwise asks for the
+browser tab in front, which was another site when the bot's own page didn't load (gateway_logins.unnamed_site).
 """
 import importlib.util
 import logging
@@ -171,6 +173,13 @@ def _desktop_theme():
 
 
 def pre_tool_call(tool_name="", args=None, **kwargs):
+    try:
+        unnamed = gateway_logins.unnamed_site(tool_name, args)
+    except Exception:
+        unnamed = None
+    if unnamed:
+        log.info("hermes-hq-push: %s %s without a site: asked the bot to name it", tool_name, (args or {}).get("action"))
+        return {"action": "block", "message": unnamed}
     try:
         message = restart_guard.blocked_message(args)
     except Exception:

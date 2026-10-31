@@ -277,3 +277,27 @@ def test_the_server_starts_once_and_leaves_a_live_one_alone(logins, folder, monk
                 if owner is not None:
                     owner.shutdown()
                     owner.server_close()
+
+
+def test_a_login_or_code_without_the_site_is_sent_back_to_name_it(logins):
+    """Finance's Instantly page timed out and the card asked for cloudfree.shop, the tab in front (2026-10-30)."""
+    for action in ("save_login", "enter_code"):
+        message = logins.unnamed_site("browser_vault", {"action": action})
+        assert message and "origin" in message and action in message
+        assert logins.unnamed_site("browser_vault", {"action": action, "origin": "https://app.instantly.ai"}) is None
+        assert logins.unnamed_site("browser_vault", {"action": action, "url": "app.instantly.ai"}) is None
+    assert logins.unnamed_site("browser_vault", {"action": "enter_code", "handle": "v1"}) is None, "a stored code"
+    for action in ("list", "fill", "unlock"):
+        assert logins.unnamed_site("browser_vault", {"action": action}) is None
+    assert logins.unnamed_site("browser_navigate", {"action": "save_login"}) is None
+
+
+def test_the_hook_blocks_it_before_hermes_asks(monkeypatch):
+    """Through the add-on's pre_tool_call, the way Hermes calls it."""
+    spec = importlib.util.spec_from_file_location("hermes_hq_push_under_test", Path(__file__).with_name("__init__.py"),
+                                                  submodule_search_locations=[str(Path(__file__).parent)])
+    addon = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(addon)
+    blocked = addon.pre_tool_call(tool_name="browser_vault", args={"action": "save_login"})
+    assert blocked and blocked["action"] == "block" and "origin" in blocked["message"]
+    assert addon.pre_tool_call(tool_name="browser_vault", args={"action": "save_login", "origin": "https://a.example"}) is None

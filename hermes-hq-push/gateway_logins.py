@@ -178,6 +178,27 @@ def install_prompts(data_dir: Path) -> str:
     return "installed"
 
 
+def unnamed_site(tool_name: str, args) -> str | None:
+    """A login or code asked without naming the site: the message the bot gets back instead, else None (0.9.18).
+
+    Without ``origin`` Hermes asks for the login of whichever browser tab is in front; when the bot's own page didn't
+    load (a navigation timed out) that is some other site, so the card asked for the wrong login (owner, 2026-10-30:
+    Finance trying Instantly asked for cloudfree.shop, "it often does that"). Named, Hermes uses only that site's tab
+    and refuses when none is open, so the card can't name another site."""
+    if tool_name != "browser_vault" or not isinstance(args, dict):
+        return None
+    action = str(args.get("action") or "")
+    if action not in ("save_login", "enter_code") or str(args.get("origin") or args.get("url") or "").strip():
+        return None
+    if action == "enter_code" and str(args.get("handle") or "").strip():
+        return None
+    what = "login" if action == "save_login" else "code"
+    return (f"Not asked: say which site this {what} is for. Call browser_vault again with action {action} and origin "
+            f"set to the sign-in page's URL (for example https://app.example.com). Without it the {what} would be "
+            f"asked for whichever browser tab is in front, which may be another site. If that site's page didn't "
+            f"load, open it first.")
+
+
 # MARK: The server's side
 
 def find_chat(session_id: str, home: str):
