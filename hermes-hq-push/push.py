@@ -286,11 +286,13 @@ def status_body(root: Path, sender) -> dict:
     /device-access/<device> says what it shares, POST .../pending fetches what bots asked, POST .../results/<id> answers;
     a bot's request wakes the phone with a silent push (kind "device", to that phone only). `serveWorking` (0.9.20): GET
     /serve/working lists the chats this server is running a turn in (serve_working.py), the ones /sessions/working can't
-    see, so a host restart can wait for them."""
+    see, so a host restart can wait for them. `deviceAccessKinds` (0.9.21): Device Access takes every kind the app shares
+    (location, reminders, calendar, alarms, photos, Health, motion, music, drafts; device_access.OPERATIONS), POST
+    .../pending gives each request's `profile`, and POST .../files/<id> takes a photo before its answer."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -638,7 +640,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.19"
+PLUGIN_VERSION = "0.9.21"
 
 
 class Relay:

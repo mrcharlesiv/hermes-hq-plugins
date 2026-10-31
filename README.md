@@ -161,6 +161,26 @@ Version 0.9.20 tells a restart script **which chats typed in Hermes HQ or the de
 `/sessions/working` (the gateway's work) to be empty could still cut off a reply you were watching. Nothing changes in
 the app. It works after Hermes restarts.
 
+Version 0.9.21 lets **Device Access share everything else on your phone**. Each kind is its own page under **Settings ›
+Device Access** in Hermes HQ, everything starts off, and the phone checks every request against its own switches:
+
+| Kind | A bot can | Tool |
+|---|---|---|
+| Location | ask where you are: city, street address or exact, as you choose; only while the app is open unless you allow While Locked | `device_location` |
+| Reminders | see your reminders and lists; with Add, Edit & Complete, add, change and tick them off | `device_reminders` |
+| Calendar | see your events; with Add Events, add new ones (never change or delete) | `device_calendar` |
+| Alarms & Timers | set alarms and timers that ring like the Clock app's, and see or cancel only the ones it set | `device_alarms` |
+| Photos | find photos by date, place, favourite or kind; with Send Photos, get a copy of one (saved on the computer for a day) | `device_photos` |
+| Health | read summaries of steps, sleep, workouts and heart rate, whichever you switch on (only while the phone is unlocked) | `device_health` |
+| Motion & Fitness | see whether you're walking, running, driving or still, and today's steps | `device_motion` |
+| Music | see what's playing; with Play & Pause, play from your library, pause or skip | `device_music` |
+| Email & Text Drafts | write an email or a text that waits on your phone as a draft: nothing is sent until you tap Send | `device_draft` |
+
+A bot sees a kind's tool only while a phone shares that kind, and a request whose switch is off is answered without
+waking the phone. A photo a bot fetches is kept in the plugin's data folder (`device-access-files`) for a day. Nothing
+that was asked or found is written to the logs. An older Hermes HQ answers Contacts only and says the others aren't
+available yet. Every bot needs its own copy of this version, and it works after Hermes restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

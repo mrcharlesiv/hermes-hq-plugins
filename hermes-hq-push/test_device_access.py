@@ -37,9 +37,10 @@ def store(tmp_path, clock=None):
 
 def test_share_keeps_known_kinds_and_details_only(tmp_path):
     s = store(tmp_path)
-    kept = s.share(PHONE, {"contacts": {"phone": True, "email": "yes", "ssn": True}, "photos": {"all": True}},
-                   name="Charles’s iPhone")["access"]
-    assert kept == {"contacts": {"phone": True, "email": False, "birthday": False, "address": False}}
+    kept = s.share(PHONE, {"contacts": {"phone": True, "email": "yes", "ssn": True}, "photos": {"all": True},
+                           "files": {"read": True}}, name="Charles’s iPhone")["access"]
+    assert kept == {"contacts": {"phone": True, "email": False, "birthday": False, "address": False},
+                    "photos": {"find": False, "send": False}}
     assert device_access.shared(kept, "contacts") == ["phone"]
     assert [p["device_id"] for p in s.sharing("contacts")] == [PHONE]
 
@@ -177,4 +178,204 @@ def test_wake_goes_only_to_the_phone_asked(tmp_path):
 
 
 def test_status_says_device_access(tmp_path):
-    assert push.status_body(tmp_path, None)["deviceAccess"] is True
+    body = push.status_body(tmp_path, None)
+    assert body["deviceAccess"] is True and body["deviceAccessKinds"] is True
+
+
+# -- 0.9.21: every kind ------------------------------------------------------------------------------------------------
+
+def test_every_request_has_a_kind_and_its_switches():
+    for op, (kind, any_of) in device_access.OPERATIONS.items():
+        assert op.startswith(kind + ".") and set(any_of) <= set(device_access.KINDS[kind])
+        assert all((kind, key) in device_access.SWITCHES for key in any_of)
+    for kind in device_access.KINDS:
+        assert kind in device_access.TITLES
+        assert any(k == kind for k, _ in device_access.OPERATIONS.values())
+    assert set(device_access.TOOLS) | {"device_contacts_search"} == {
+        f"device_{'draft' if k == 'drafts' else 'contacts_search' if k == 'contacts' else k}" for k in device_access.KINDS}
+
+
+def test_while_locked_alone_shares_no_location(tmp_path):
+    s = store(tmp_path)
+    s.share(PHONE, {"location": {"locked": True}})
+    assert s.sharing("location") == []
+    s.share(PHONE, {"location": {"city": True, "locked": True}})
+    assert [p["device_id"] for p in s.sharing("location")] == [PHONE]
+
+
+def test_turning_one_kind_off_ends_only_its_waiting_requests(tmp_path):
+    s = store(tmp_path)
+    s.share(PHONE, {"contacts": {"phone": True}, "reminders": {"read": True, "write": True}})
+    look = s.create(PHONE, "default", "contacts.search", {"query": "Ann"})
+    add = s.create(PHONE, "default", "reminders.create", {"title": "Milk"})
+    see = s.create(PHONE, "default", "reminders.list", {})
+    s.share(PHONE, {"contacts": {"phone": True}, "reminders": {"read": True}})
+    assert s.get(look)["status"] == "pending" and s.get(see)["status"] == "pending"
+    assert s.get(add)["status"] == "unavailable" and "Reminders" in s.get(add)["error"]
+
+
+def test_pending_says_which_bot_asked(tmp_path):
+    s = store(tmp_path)
+    s.create(PHONE, "finance", "alarms.list", {})
+    assert s.pending(PHONE)[0]["profile"] == "finance"
+
+
+def test_a_0919_database_gains_the_file_column(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "device-access.db")
+    db.executescript("""
+        create table phones (device_id text primary key, account text not null default '', name text not null
+            default '', platform text not null default '', access text not null, updated_at real not null,
+            seen_at real not null);
+        create table requests (id text primary key, device_id text not null, profile text not null, op text not null,
+            args text not null, status text not null, result text, error text not null default '',
+            created_at real not null, updated_at real not null);
+        insert into requests values ('%s', '%s', 'default', 'contacts.search', '{}', 'pending', null, '', 1000, 1000);
+    """ % ("a" * 32, PHONE))
+    db.commit()
+    db.close()
+    s = store(tmp_path)
+    assert s.get("a" * 32)["file"] == "" and s.pending(PHONE)[0]["id"] == "a" * 32
+
+
+def test_too_many_waiting_requests_are_refused(tmp_path):
+    clock = Clock()
+    s = store(tmp_path, clock)
+    for _ in range(device_access.MAX_WAITING):
+        s.create(PHONE, "default", "alarms.list", {})
+    with pytest.raises(device_access.AccessError) as refused:
+        s.create(PHONE, "default", "alarms.list", {})
+    assert refused.value.status_code == 429
+    clock.now += device_access.REQUEST_TTL + 1   # the old ones expired: room again
+    s.create(PHONE, "default", "alarms.list", {})
+
+
+def test_a_photo_is_kept_with_its_request_and_removed_after_a_day(tmp_path):
+    import base64
+    clock = Clock()
+    s = store(tmp_path, clock)
+    rid = s.create(PHONE, "default", "photos.get", {"id": "X/L0/001"})
+    jpeg = b"\xff\xd8\xff" + b"0" * 100
+    data = base64.b64encode(jpeg).decode()
+    with pytest.raises(device_access.AccessError):
+        s.attach(OTHER, rid, "image/jpeg", "photo.jpg", data)
+    with pytest.raises(device_access.AccessError):
+        s.attach(PHONE, rid, "application/pdf", "x.pdf", data)
+    with pytest.raises(device_access.AccessError):
+        s.attach(PHONE, rid, "image/jpeg", "x.jpg", "not base64!")
+    assert s.attach(PHONE, rid, "image/jpeg", "../../photo 2026-11-01.jpg", data)["accepted"] is True
+    s.complete(PHONE, rid, "done", {"photo": {"id": "X/L0/001"}})
+    request = s.get(rid)
+    path = Path(request["file"])
+    assert path.parent == tmp_path / "device-access-files" and path.read_bytes() == jpeg
+    assert path.name.startswith("photo-2026-11-01-") and path.suffix == ".jpg"
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    assert device_access.outcome(request, "iPhone")["file"] == str(path)
+    clock.now += device_access.KEEP_SECONDS + 1
+    s.pending(PHONE)
+    assert not path.exists() and s.get(rid) is None
+
+
+def test_a_photo_answer_without_its_file_fails_and_a_failed_one_drops_it(tmp_path):
+    import base64
+    s = store(tmp_path)
+    missing = s.create(PHONE, "default", "photos.get", {"id": "A"})
+    s.complete(PHONE, missing, "done", {"photo": {}})
+    assert s.get(missing)["status"] == "failed"
+    dropped = s.create(PHONE, "default", "photos.get", {"id": "B"})
+    s.attach(PHONE, dropped, "image/png", "b.png", base64.b64encode(b"png").decode())
+    s.complete(PHONE, dropped, "failed", error="Couldn't load it.")
+    assert list((tmp_path / "device-access-files").iterdir()) == []
+    other = s.create(PHONE, "default", "alarms.list", {})
+    with pytest.raises(device_access.AccessError):
+        s.attach(PHONE, other, "image/png", "b.png", base64.b64encode(b"png").decode())
+
+
+@pytest.mark.parametrize("tool, args, op, sent", [
+    ("device_location", {}, "location.get", {}),
+    ("device_location", {"precision": "city"}, "location.get", {"precision": "city"}),
+    ("device_reminders", {"action": "list", "search": "milk", "limit": 5, "id": "x"}, "reminders.list",
+     {"search": "milk", "limit": 5}),
+    ("device_reminders", {"action": "update", "id": "R1", "due": None, "notes": None}, "reminders.update",
+     {"id": "R1", "due": None}),
+    ("device_calendar", {"action": "create", "title": "Lunch", "start": "2026-11-02T12:00"}, "calendar.create",
+     {"title": "Lunch", "start": "2026-11-02T12:00"}),
+    ("device_alarms", {"action": "timer", "seconds": 600, "label": "Tea"}, "alarms.timer", {"seconds": 600, "label": "Tea"}),
+    ("device_alarms", {"action": "list"}, "alarms.list", {}),
+    ("device_photos", {"action": "get", "id": "P1", "max_pixels": 800}, "photos.get", {"id": "P1", "max_pixels": 800}),
+    ("device_health", {"metrics": ["sleep", "mood"]}, "health.summary", {"metrics": ["sleep"]}),
+    ("device_motion", {"start": "2026-11-01"}, "motion.activity", {"start": "2026-11-01"}),
+    ("device_music", {"action": "play", "query": "Abbey Road"}, "music.control", {"action": "play", "query": "Abbey Road"}),
+    ("device_music", {"action": "now"}, "music.now", {}),
+    ("device_draft", {"kind": "text", "to": "+1 555", "subject": "x", "body": "On my way"}, "drafts.create",
+     {"kind": "text", "to": ["+1 555"], "body": "On my way"}),
+])
+def test_each_tool_asks_the_phone_one_request(tool, args, op, sent):
+    planned = device_access.plan(tool, args)
+    assert planned[0] == op and planned[1] == sent
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("device_location", {"precision": "street"}),
+    ("device_reminders", {"action": "create"}),
+    ("device_reminders", {"action": "delete", "id": "R1"}),
+    ("device_calendar", {"action": "create", "title": "Lunch"}),
+    ("device_alarms", {"action": "set", "time": "7am"}),
+    ("device_alarms", {"action": "timer", "seconds": "ten"}),
+    ("device_photos", {"action": "get"}),
+    ("device_health", {"metrics": ["mood"]}),
+    ("device_music", {"action": "shuffle"}),
+    ("device_draft", {"kind": "fax", "to": ["Ann"], "body": "Hi"}),
+    ("device_draft", {"kind": "email", "to": [], "body": "Hi"}),
+])
+def test_calls_that_cant_be_asked_say_why_without_waking_the_phone(tool, args):
+    assert isinstance(device_access.plan(tool, args), str)
+
+
+def test_a_switch_that_is_off_is_answered_here(tmp_path):
+    wakes = []
+    s, registered = tools(tmp_path, wakes)
+    s.share(PHONE, {"reminders": {"read": True}, "drafts": {"email": True}, "health": {"sleep": True}})
+    add = json.loads(asyncio.run(registered["device_reminders"][0]({"action": "create", "title": "Milk"})))
+    assert add["status"] == "unavailable" and "Add, Edit & Complete" in add["error"] and "Reminders" in add["hint"]
+    text = json.loads(asyncio.run(registered["device_draft"][0]({"kind": "text", "to": ["Ann"], "body": "Hi"})))
+    assert text["status"] == "unavailable" and "Text Message Drafts" in text["error"]
+    steps = json.loads(asyncio.run(registered["device_health"][0]({"metrics": ["steps"]})))
+    assert steps["status"] == "unavailable" and "Steps & Distance" in steps["error"]
+    photos = json.loads(asyncio.run(registered["device_photos"][0]({"action": "search"})))
+    assert photos["status"] == "unavailable" and "No phone shares Photos" in photos["error"]
+    bad = json.loads(asyncio.run(registered["device_alarms"][0]({"action": "ring"})))
+    assert bad["status"] == "failed"
+    assert wakes == [] and s.pending(PHONE) == []
+
+
+def test_each_kind_shows_its_tool_only_while_shared(tmp_path):
+    s, registered = tools(tmp_path, [])
+    assert not any(check() for name, (_, check) in registered.items())
+    s.share(PHONE, {"music": {"nowPlaying": True}})
+    assert {name for name, (_, check) in registered.items() if check()} == {"device_music", "device_request_result"}
+
+
+def test_a_photo_round_trip_gives_the_bot_its_file(tmp_path, monkeypatch):
+    import base64
+    wakes = []
+    s, registered = tools(tmp_path, wakes)
+    s.share(OTHER, {"photos": {"find": True}}, name="iPad")
+    s.share(PHONE, {"photos": {"find": True, "send": True}}, name="iPhone")
+    s.share(OTHER, {"photos": {"find": True}}, name="iPad")   # heard from last, but can't send photos
+
+    async def run():
+        task = asyncio.create_task(registered["device_photos"][0]({"action": "get", "id": "P1"}))
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            waiting = s.pending(PHONE)
+            if waiting:
+                break
+        assert waiting[0]["op"] == "photos.get" and waiting[0]["profile"] == "finance"
+        s.attach(PHONE, waiting[0]["id"], "image/jpeg", "photo.jpg", base64.b64encode(b"jpeg").decode())
+        s.complete(PHONE, waiting[0]["id"], "done", {"photo": {"id": "P1"}, "status": "spoofed", "file": "/etc/passwd"})
+        return json.loads(await task)
+
+    answer = asyncio.run(run())
+    assert answer["status"] == "done" and answer["device"] == "iPhone" and answer["photo"] == {"id": "P1"}
+    assert answer["file"].startswith(str(tmp_path / "device-access-files")) and wakes[0][0] == PHONE

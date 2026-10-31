@@ -257,7 +257,7 @@ def outside_answer(profile: str, session_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Device Access (0.9.19, `deviceAccess` in status): the phone's side of device_access.py.
+# Device Access (0.9.19 `deviceAccess`, 0.9.21 `deviceAccessKinds` in status): the phone's side of device_access.py.
 # ---------------------------------------------------------------------------
 
 def _device_store():
@@ -275,6 +275,12 @@ class ResultIn(BaseModel):
     status: str = Field(pattern="^(done|failed|unavailable)$")
     result: dict = Field(default_factory=dict)
     error: str = Field(default="", max_length=300)
+
+
+class FileIn(BaseModel):
+    type: str = Field(pattern="^image/(jpeg|png)$")
+    name: str = Field(default="", max_length=120)
+    data: str = Field(max_length=12 * 1024 * 1024)  # base64; device_access.FILE_LIMIT once decoded
 
 
 @router.put("/device-access/{device_id}")
@@ -299,6 +305,15 @@ def device_pending(device_id: str):
     """What bots asked this phone and it hasn't answered (on a wake-up push and whenever the app opens)."""
     try:
         return {"requests": _device_store().pending(device_id)}
+    except device_access.AccessError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.post("/device-access/{device_id}/files/{request_id}")
+def device_file(device_id: str, request_id: str, body: FileIn):
+    """A photo a bot asked for (photos.get), sent before the request's answer."""
+    try:
+        return _device_store().attach(device_id, request_id, body.type, body.name, body.data)
     except device_access.AccessError as error:
         raise HTTPException(error.status_code, error.detail) from None
 

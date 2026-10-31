@@ -26,8 +26,9 @@ messaging gateway runs (another bot's message, a hand-off): the card shows in th
 a turn the app runs (Hermes answered "this session cannot ask the user for a login").
 0.9.18 sends a login or code asked without naming the site back to the bot to name it: Hermes otherwise asks for the
 browser tab in front, which was another site when the bot's own page didn't load (gateway_logins.unnamed_site).
-device_access.py (0.9.19) gives bots what the owner shares from the app's Settings › Device Access, Contacts first
-(device_contacts_search): each use is a request the phone fetches (woken by a silent push) and answers.
+device_access.py (0.9.19, every kind since 0.9.21) gives bots what the owner shares from the app's Settings › Device
+Access (device_contacts_search, device_location, device_reminders, …): each use is a request the phone fetches (woken
+by a silent push) and answers.
 """
 import importlib.util
 import logging
