@@ -276,11 +276,12 @@ def status_body(root: Path, sender) -> dict:
     message (page_previews.py, loaded by ``hermes serve``; 2 s per list on a bot with 8,700 scheduled runs). `warmup`
     (0.9.15): ``hermes serve`` loads every bot in the background after a restart, so the first chat opened doesn't sit on
     "Waking up…" while its plugins load, and a frozen server writes what froze it to logs/loop-stall-stacks.log
-    (serve_warmup.py)."""
+    (serve_warmup.py). `desktopForward` (0.9.16): a message from the app into a chat the desktop app has open goes to the
+    gateway holding it instead of "open in another Hermes window", and the hand-off fits a long chat (desktop_forward.py)."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -627,7 +628,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.15"
+PLUGIN_VERSION = "0.9.16"
 
 
 class Relay:

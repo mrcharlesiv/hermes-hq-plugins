@@ -48,6 +48,17 @@ serve_warmup = importlib.util.module_from_spec(_warm_spec)
 _warm_spec.loader.exec_module(serve_warmup)
 _loop_watched = False
 
+# The app's messages into a chat the desktop app has open go to the gateway holding it (0.9.16). Here as well as in
+# register(): this module is what ``hermes serve`` loads, and the refusal it patches is this process's.
+_fwd_spec = importlib.util.spec_from_file_location("hermes_hq_desktop_forward", Path(__file__).parents[1] / "desktop_forward.py")
+desktop_forward = importlib.util.module_from_spec(_fwd_spec)
+_fwd_spec.loader.exec_module(desktop_forward)
+for _install in (desktop_forward.install, desktop_forward.install_frame_limit):
+    try:
+        desktop_forward.log.info("hermes-hq-push: %s %s", _install.__name__, _install())
+    except Exception:
+        desktop_forward.log.debug("hermes-hq-push: %s failed", _install.__name__, exc_info=True)
+
 
 async def _on_server_loop():
     """Every route runs this first; the first call (on the server's own loop) arms the freeze recorder (0.9.15)."""

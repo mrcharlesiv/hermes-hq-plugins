@@ -19,6 +19,8 @@ page_previews.py (0.9.13) keeps the Sessions list fast on a bot with many schedu
 first message to build previews before keeping one page (2 s per list on a bot with 8,700 runs); now only the page's.
 serve_warmup.py (0.9.15) loads every bot in the background after ``hermes serve`` starts, so the first chat opened
 right after a restart answers at once (one sat on "Waking up…" ~2 minutes), and records what a frozen server was doing.
+desktop_forward.py (0.9.16) lets the app send into a chat the desktop app has open: the message goes to the gateway that
+holds it (Hermes refused it "open in another Hermes window"), and Hermes's hand-off to the gateway fits a long chat.
 """
 import importlib.util
 import logging
@@ -42,6 +44,9 @@ _ask_spec.loader.exec_module(ask_cards)
 _pages_spec = importlib.util.spec_from_file_location("hermes_hq_push_page_previews", Path(__file__).with_name("page_previews.py"))
 page_previews = importlib.util.module_from_spec(_pages_spec)
 _pages_spec.loader.exec_module(page_previews)
+_fwd_spec = importlib.util.spec_from_file_location("hermes_hq_push_desktop_forward", Path(__file__).with_name("desktop_forward.py"))
+desktop_forward = importlib.util.module_from_spec(_fwd_spec)
+_fwd_spec.loader.exec_module(desktop_forward)
 _warm_spec = importlib.util.spec_from_file_location("hermes_hq_push_serve_warmup", Path(__file__).with_name("serve_warmup.py"))
 serve_warmup = importlib.util.module_from_spec(_warm_spec)
 _warm_spec.loader.exec_module(serve_warmup)
@@ -189,6 +194,17 @@ def _own_chats():
         log.debug("hermes-hq-push: desktop opens app chats not installed", exc_info=True)
 
 
+def _desktop_forward():
+    try:
+        log.info("hermes-hq-push: app messages into desktop chats %s", desktop_forward.install())
+    except Exception:
+        log.debug("hermes-hq-push: app messages into desktop chats not installed", exc_info=True)
+    try:
+        log.info("hermes-hq-push: hand-off frame limit %s", desktop_forward.install_frame_limit())
+    except Exception:
+        log.debug("hermes-hq-push: hand-off frame limit not installed", exc_info=True)
+
+
 def _page_previews():
     try:
         log.info("hermes-hq-push: page previews %s", page_previews.install())
@@ -217,4 +233,5 @@ def register(ctx):
     _restart_guard()
     _own_chats()
     _page_previews()
+    _desktop_forward()
     _serve_warmup()
