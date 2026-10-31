@@ -21,6 +21,9 @@ serve_warmup.py (0.9.15) loads every bot in the background after ``hermes serve`
 right after a restart answers at once (one sat on "Waking up…" ~2 minutes), and records what a frozen server was doing.
 desktop_forward.py (0.9.16) lets the app send into a chat the desktop app has open: the message goes to the gateway that
 holds it (Hermes refused it "open in another Hermes window"), and Hermes's hand-off to the gateway fits a long chat.
+gateway_logins.py (0.9.17) lets a bot ask for a login, a one-time code or a password manager's unlock in a turn the
+messaging gateway runs (another bot's message, a hand-off): the card shows in the app's copy of the chat, as it does for
+a turn the app runs (Hermes answered "this session cannot ask the user for a login").
 """
 import importlib.util
 import logging
@@ -50,6 +53,9 @@ _fwd_spec.loader.exec_module(desktop_forward)
 _warm_spec = importlib.util.spec_from_file_location("hermes_hq_push_serve_warmup", Path(__file__).with_name("serve_warmup.py"))
 serve_warmup = importlib.util.module_from_spec(_warm_spec)
 _warm_spec.loader.exec_module(serve_warmup)
+_logins_spec = importlib.util.spec_from_file_location("hermes_hq_push_gateway_logins", Path(__file__).with_name("gateway_logins.py"))
+gateway_logins = importlib.util.module_from_spec(_logins_spec)
+_logins_spec.loader.exec_module(gateway_logins)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
@@ -115,7 +121,11 @@ def on_human_input_request(**kwargs):
     so the prompt isn't missed while the app is in the background (its socket closed, nothing shows the card)."""
     try:
         if not _serves_app_sessions():
-            return
+            # [gateway-logins] A vault prompt in a gateway turn that goes to the app's copy of the chat (0.9.17).
+            if not str(kwargs.get("kind") or "").startswith("vault_") \
+                    or not gateway_logins.would_ask(gateway_logins.socket_path(push.data_dir())):
+                return
+            kwargs = {**kwargs, "platform": "desktop"}
         profile = _profile()
         item = push.input_push(kwargs, profile, _sender(profile))
         if item is not None:
@@ -205,6 +215,13 @@ def _desktop_forward():
         log.debug("hermes-hq-push: hand-off frame limit not installed", exc_info=True)
 
 
+def _gateway_logins():
+    try:
+        log.info("hermes-hq-push: logins asked in gateway turns %s", gateway_logins.install_prompts(push.data_dir()))
+    except Exception:
+        log.debug("hermes-hq-push: logins asked in gateway turns not installed", exc_info=True)
+
+
 def _page_previews():
     try:
         log.info("hermes-hq-push: page previews %s", page_previews.install())
@@ -234,4 +251,5 @@ def register(ctx):
     _own_chats()
     _page_previews()
     _desktop_forward()
+    _gateway_logins()
     _serve_warmup()

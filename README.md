@@ -135,6 +135,14 @@ message to the gateway on long chats: it gave up on any chat whose history was o
 bot was working in a long chat waited for the bot to finish instead of joining its queue. It works after `hermes
 serve` restarts.
 
+Version 0.9.17 lets **a bot ask you for a login, a one-time code or a password manager unlock when another bot's
+message started its turn**. Those turns run in the bot's messaging gateway, which has no way to show the secure card,
+so Hermes refused: "this session cannot ask the user for a login". Now the request shows as the same card in Hermes
+HQ's copy of that chat, and your phone gets an alert while the bot waits. If the chat isn't open in Hermes HQ, the card
+appears when you open it, for as long as the bot waits (10 minutes for a login, 5 for a code). What you type goes
+straight to the vault, never into the chat. A scheduled job's own run still can't ask anyone. Every bot needs its own
+copy of this version, and it works after Hermes restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -201,7 +209,7 @@ python3 -m unittest hermes-hq-push/test_push.py
 ```
 
 `test_input_alerts.py` needs only Python: `python3 -m unittest test_input_alerts.py` from the plugin folder.
-`test_own_chats.py`, `test_desktop_opens.py` and `test_cron_working.py` run against a Hermes checkout, with its own python, from the
+`test_own_chats.py`, `test_desktop_opens.py`, `test_cron_working.py` and `test_gateway_logins.py` run against a Hermes checkout, with its own python, from the
 plugin folder: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_cron_working.py`.
 
 Tests that need `cryptography` or `fastapi` skip without them.

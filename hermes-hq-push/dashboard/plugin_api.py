@@ -58,6 +58,22 @@ for _install in (desktop_forward.install, desktop_forward.install_frame_limit):
         desktop_forward.log.info("hermes-hq-push: %s %s", _install.__name__, _install())
     except Exception:
         desktop_forward.log.debug("hermes-hq-push: %s failed", _install.__name__, exc_info=True)
+# A bot's login, code or unlock asked in a turn the messaging gateway runs is shown in the app's copy of the chat
+# (0.9.17): this server listens for the gateway's prompts (gateway_logins.py).
+_logins_spec = importlib.util.spec_from_file_location("hermes_hq_gateway_logins", Path(__file__).parents[1] / "gateway_logins.py")
+gateway_logins = importlib.util.module_from_spec(_logins_spec)
+_logins_spec.loader.exec_module(gateway_logins)
+
+
+def _listen_for_gateway_logins():
+    try:
+        gateway_logins.log.info("hermes-hq-push: gateway logins listener %s", gateway_logins.start_server(push.data_dir()))
+    except Exception:
+        gateway_logins.log.warning("hermes-hq-push: gateway logins listener not started", exc_info=True)
+
+
+if gateway_logins.in_server():
+    _listen_for_gateway_logins()
 
 
 async def _on_server_loop():
@@ -71,6 +87,7 @@ async def _on_server_loop():
             serve_warmup.start_warmup(push.data_dir())
         except Exception:
             pass
+        _listen_for_gateway_logins()
 
 
 router = APIRouter(dependencies=[Depends(_on_server_loop)])
