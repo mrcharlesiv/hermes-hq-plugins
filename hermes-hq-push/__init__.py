@@ -26,6 +26,8 @@ messaging gateway runs (another bot's message, a hand-off): the card shows in th
 a turn the app runs (Hermes answered "this session cannot ask the user for a login").
 0.9.18 sends a login or code asked without naming the site back to the bot to name it: Hermes otherwise asks for the
 browser tab in front, which was another site when the bot's own page didn't load (gateway_logins.unnamed_site).
+device_access.py (0.9.19) gives bots what the owner shares from the app's Settings › Device Access, Contacts first
+(device_contacts_search): each use is a request the phone fetches (woken by a silent push) and answers.
 """
 import importlib.util
 import logging
@@ -58,6 +60,9 @@ _warm_spec.loader.exec_module(serve_warmup)
 _logins_spec = importlib.util.spec_from_file_location("hermes_hq_push_gateway_logins", Path(__file__).with_name("gateway_logins.py"))
 gateway_logins = importlib.util.module_from_spec(_logins_spec)
 _logins_spec.loader.exec_module(gateway_logins)
+_access_spec = importlib.util.spec_from_file_location("hermes_hq_device_access", Path(__file__).with_name("device_access.py"))
+device_access = importlib.util.module_from_spec(_access_spec)
+_access_spec.loader.exec_module(device_access)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
@@ -248,6 +253,30 @@ def _serve_warmup():
         log.debug("hermes-hq-push: warm-up not started", exc_info=True)
 
 
+def _device_store():
+    return device_access.Store(push.data_dir() / "device-access.db")
+
+
+def _device_wake(device_id: str, request_id: str, profile: str) -> str:
+    """A silent push to the one phone a Device Access request is for; what a bot is told about it."""
+    try:
+        registered = push.Store(push.data_dir() / "devices.db").get(device_id)
+        if registered is None or push.sender_from_env() is None:
+            return "Notifications are off on that phone, so it gets this when Hermes HQ is next opened."
+        _dispatcher_for().submit(push.Push(kind="device", request=request_id, profile=profile, settled=True, to=device_id))
+        return "Asked the phone to answer (iOS wakes it when it can)."
+    except Exception:
+        log.debug("hermes-hq-push: device access wake failed", exc_info=True)
+        return "Couldn't wake the phone; it gets this when Hermes HQ is next opened."
+
+
+def _device_tools(ctx):
+    try:
+        device_access.register_tools(ctx, _device_store, _device_wake, _profile)
+    except Exception:
+        log.warning("hermes-hq-push: device access tools not registered", exc_info=True)
+
+
 def register(ctx):
     ctx.register_hook("pre_approval_request", pre_approval_request)
     ctx.register_hook("post_approval_response", post_approval_response)
@@ -255,6 +284,7 @@ def register(ctx):
     ctx.register_hook("on_human_input_request", on_human_input_request)
     ctx.register_hook("on_human_input_resolved", on_human_input_resolved)
     ctx.register_hook("pre_llm_call", pre_llm_call)
+    _device_tools(ctx)
     _desktop_theme()
     _restart_guard()
     _own_chats()

@@ -281,11 +281,14 @@ def status_body(root: Path, sender) -> dict:
     `gatewayLogins` (0.9.17): a bot's login, code or unlock asked in a turn the messaging gateway runs (another bot's
     message, a hand-off) shows as the card in the app's copy of the chat instead of being refused (gateway_logins.py).
     `namedSites` (0.9.18): a login or code asked without naming the site goes back to the bot to name it, so the card
-    can't ask for whichever browser tab happened to be in front (gateway_logins.unnamed_site)."""
+    can't ask for whichever browser tab happened to be in front (gateway_logins.unnamed_site). `deviceAccess` (0.9.19):
+    the app's Settings › Device Access shares Contacts from the phone with the bots (device_access.py): PUT
+    /device-access/<device> says what it shares, POST .../pending fetches what bots asked, POST .../results/<id> answers;
+    a bot's request wakes the phone with a silent push (kind "device", to that phone only)."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -339,6 +342,7 @@ class Push:
     about: str = ""   # an approval's description
     outside: str = ""  # the other app a chat runs in (OUTSIDE_LABELS key): only devices that asked for "outside"
     ask: str = ""      # an "input" alert's prompt (ASKS): what the bot is waiting for
+    to: str = ""       # only this device (a Device Access wake-up goes to the phone the request is for)
     queued: float = 0.0  # when the Dispatcher took it (its clock): a reply alert too late to matter isn't retried
 
     def payload(self, previews: bool = True, account: str = "") -> dict:
@@ -632,7 +636,7 @@ class DirectAPNs:
         raise DeliveryError(code, f"APNs {code} {reason or (result.stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.18"
+PLUGIN_VERSION = "0.9.19"
 
 
 class Relay:
@@ -947,7 +951,7 @@ REPLY_MAX_AGE = 120.0
 
 def priority(push: Push) -> int:
     """Approvals and questions (and their withdrawals) before replies: an agent is waiting on them."""
-    return 0 if push.kind in ("approval", "input") else 1
+    return 0 if push.kind in ("approval", "input", "device") else 1
 
 
 class Dispatcher:
@@ -1007,7 +1011,7 @@ class Dispatcher:
         for device in self.store.devices():
             if (device.topic != TOPIC or device.profile not in ("*", push.profile)
                     or not device.wants(push.kind) or (push.outside and not device.wants("outside"))
-                    or (only and device.device_id != only)):
+                    or (only and device.device_id != only) or (push.to and device.device_id != push.to)):
                 continue
             # Registered before relay mode, without a key: the relay takes only sealed alerts.
             if isinstance(sender, Relay) and not device.seal:

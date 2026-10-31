@@ -43,6 +43,14 @@ else:
     sys.modules["hermes_hq_reply_back"] = reply_back
     _reply_spec.loader.exec_module(reply_back)
 
+if "hermes_hq_device_access" in sys.modules:
+    device_access = sys.modules["hermes_hq_device_access"]
+else:
+    _access_spec = importlib.util.spec_from_file_location("hermes_hq_device_access", Path(__file__).parents[1] / "device_access.py")
+    device_access = importlib.util.module_from_spec(_access_spec)
+    sys.modules["hermes_hq_device_access"] = device_access
+    _access_spec.loader.exec_module(device_access)
+
 _warm_spec = importlib.util.spec_from_file_location("hermes_hq_serve_warmup", Path(__file__).parents[1] / "serve_warmup.py")
 serve_warmup = importlib.util.module_from_spec(_warm_spec)
 _warm_spec.loader.exec_module(serve_warmup)
@@ -228,3 +236,58 @@ def outside_answer(profile: str, session_id: str):
         return reply_back.hermes_answer(profile, session_id, push.data_dir())
     except reply_back.ReplyError as error:
         raise HTTPException(error.status_code, {"message": error.detail, "reason": error.reason}) from None
+
+
+# ---------------------------------------------------------------------------
+# Device Access (0.9.19, `deviceAccess` in status): the phone's side of device_access.py.
+# ---------------------------------------------------------------------------
+
+def _device_store():
+    return device_access.Store(push.data_dir() / "device-access.db")
+
+
+class ShareIn(BaseModel):
+    access: dict = Field(default_factory=dict)  # {"contacts": {"phone": true, "email": true, ...}}
+    account: str = Field(default="", max_length=64)
+    name: str = Field(default="", max_length=80)  # "Charles's iPhone": how a bot names the phone
+    platform: str = Field(default="", max_length=16)
+
+
+class ResultIn(BaseModel):
+    status: str = Field(pattern="^(done|failed|unavailable)$")
+    result: dict = Field(default_factory=dict)
+    error: str = Field(default="", max_length=300)
+
+
+@router.put("/device-access/{device_id}")
+def device_share(device_id: str, body: ShareIn):
+    """What this phone shares now (Settings › Device Access). All off still registers it, sharing nothing."""
+    try:
+        return _device_store().share(device_id, body.access, body.account, body.name, body.platform)
+    except device_access.AccessError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.delete("/device-access/{device_id}")
+def device_forget(device_id: str):
+    try:
+        return _device_store().forget(device_id)
+    except device_access.AccessError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.post("/device-access/{device_id}/pending")
+def device_pending(device_id: str):
+    """What bots asked this phone and it hasn't answered (on a wake-up push and whenever the app opens)."""
+    try:
+        return {"requests": _device_store().pending(device_id)}
+    except device_access.AccessError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.post("/device-access/{device_id}/results/{request_id}")
+def device_result(device_id: str, request_id: str, body: ResultIn):
+    try:
+        return _device_store().complete(device_id, request_id, body.status, body.result, body.error)
+    except device_access.AccessError as error:
+        raise HTTPException(error.status_code, error.detail) from None
