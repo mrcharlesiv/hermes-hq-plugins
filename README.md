@@ -147,6 +147,15 @@ Version 0.9.18 makes **a bot name the site when it asks for a login or a code**.
 whichever browser tab was in front; when the bot's own page hadn't loaded, the card asked for some other site's login.
 Now the bot is told to say which site, and Hermes only asks when that site's page is open.
 
+Version 0.9.19 adds **Device Access**: a bot can look someone up in your phone's contacts. In Hermes HQ, open
+**Settings › Device Access** and switch on the details you'll share (phone numbers, email addresses, birthdays, postal
+addresses); everything starts off. A bot asks by name, email address or phone number, the plugin wakes your phone with
+a silent notification, and the phone answers with at most 10 matches carrying only the details you switched on. Bots
+never get the whole address book, and the phone checks every request against its own switches. Bots see the
+`device_contacts_search` tool only while a phone shares something. If the phone hasn't answered within 25 seconds, the
+bot is told it's waiting and can check later with `device_request_result`. Nothing that was asked or found is written to
+the logs. Every bot needs its own copy of this version, and it works after Hermes restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
