@@ -35,6 +35,13 @@ else:
     session_working = importlib.util.module_from_spec(_working_spec)
     sys.modules["hermes_hq_session_working"] = session_working
     _working_spec.loader.exec_module(session_working)
+if "hermes_hq_serve_working" in sys.modules:
+    serve_working = sys.modules["hermes_hq_serve_working"]
+else:
+    _serve_spec = importlib.util.spec_from_file_location("hermes_hq_serve_working", Path(__file__).parents[1] / "serve_working.py")
+    serve_working = importlib.util.module_from_spec(_serve_spec)
+    sys.modules["hermes_hq_serve_working"] = serve_working
+    _serve_spec.loader.exec_module(serve_working)
 if "hermes_hq_reply_back" in sys.modules:
     reply_back = sys.modules["hermes_hq_reply_back"]
 else:
@@ -216,6 +223,17 @@ def sessions_working(profile: str = "", session: str = ""):
         return {"sessions": session_working.hermes_working(profile or None, session or None)}
     except Exception as error:
         raise HTTPException(503, f"couldn't read the ledger: {type(error).__name__}") from None
+
+
+@router.get("/serve/working")
+def serve_turns_working():
+    """0.9.20 (`serveWorking` in status): the chats this server is running a turn in right now, the ones typed in
+    Hermes HQ or the desktop app (serve_working.py). `/sessions/working` holds only the gateway's work, so a restart that
+    waits for both doesn't cut off a reply you're watching. 503 when this process isn't the one serving chats."""
+    rows = serve_working.hermes_working()
+    if rows is None:
+        raise HTTPException(503, "this process isn't serving chats")
+    return {"sessions": rows}
 
 
 @router.get("/outside/{profile}/{session_id}")

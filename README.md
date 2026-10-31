@@ -156,6 +156,11 @@ never get the whole address book, and the phone checks every request against its
 bot is told it's waiting and can check later with `device_request_result`. Nothing that was asked or found is written to
 the logs. Every bot needs its own copy of this version, and it works after Hermes restarts.
 
+Version 0.9.20 tells a restart script **which chats typed in Hermes HQ or the desktop app are mid-reply**
+(`GET /api/plugins/hermes-hq-push/serve/working`). Hermes keeps those turns only in memory, so a restart that waited for
+`/sessions/working` (the gateway's work) to be empty could still cut off a reply you were watching. Nothing changes in
+the app. It works after Hermes restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
