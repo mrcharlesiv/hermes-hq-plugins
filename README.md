@@ -126,6 +126,15 @@ the background, one at a time. A computer with one bot has nothing to load. If `
 so the cause can be found. To turn the background loading off, create an empty file named `warmup.off` in the
 plugin's data folder (`plugin-data/hermes-hq-push`). It works after `hermes serve` restarts.
 
+Version 0.9.16 lets you **send from Hermes HQ into a chat the Hermes desktop app has open**. Hermes lets only one
+program write to a chat at a time, and a chat open in the desktop app keeps that right for as long as it stays open,
+so Hermes HQ's messages were refused ("This chat is open in another Hermes window"). Now your message goes to the
+gateway that has the chat open, runs there after anything already running, and the reply comes back to Hermes HQ. A chat
+open in a terminal or another program still says it's open elsewhere. This version also fixes Hermes's hand-off of a
+message to the gateway on long chats: it gave up on any chat whose history was over 1 MB, so a message sent while a
+bot was working in a long chat waited for the bot to finish instead of joining its queue. It works after `hermes
+serve` restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
