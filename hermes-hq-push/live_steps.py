@@ -468,15 +468,15 @@ class Trail:
 
 class Pacer:
     """Per activity: a push goes now when the last went at least ``MIN_GAP_S`` ago; otherwise one is due when the gap
-    is up (a trailing push, carrying whatever the trail is by then). Priority 10 when the activity's last priority-10
-    push was at least ``HIGH_GAP_S`` ago, else 5 (iOS budgets priority-10 Live Activity pushes)."""
+    is up (a trailing push, carrying whatever the trail is by then). Steps always go at ``PRIORITY`` 5: iOS rations
+    priority-10 Live Activity pushes per app, and a long turn's steps at 10 (0.9.22: one every 20 s) used up that ration,
+    so the turn's end, the one push that must land, could be held back and the card counted on (owner, 2026-11-01)."""
 
     MIN_GAP_S = 3.0
-    HIGH_GAP_S = 20.0
+    PRIORITY = 5
 
     def __init__(self):
         self.last: dict = {}
-        self.last_high: dict = {}
         self.due: dict = {}
 
     def offer(self, key, now: float) -> bool:
@@ -491,10 +491,7 @@ class Pacer:
         """A push for ``key`` goes now: the priority it goes at."""
         self.last[key] = now
         self.due.pop(key, None)
-        if now - self.last_high.get(key, -math.inf) >= self.HIGH_GAP_S:
-            self.last_high[key] = now
-            return 10
-        return 5
+        return self.PRIORITY
 
     def next_due(self):
         return min(self.due.values()) if self.due else None
@@ -506,5 +503,5 @@ class Pacer:
         return keys
 
     def forget(self, key) -> None:
-        for table in (self.last, self.last_high, self.due):
+        for table in (self.last, self.due):
             table.pop(key, None)

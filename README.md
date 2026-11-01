@@ -190,6 +190,13 @@ relay and Apple see only that a card changed. A step a bot takes in a helper doe
 stop from the app is left to the app. Every bot needs its own copy of this version for its steps to show (the card still
 ends when the reply is written without it), and it works after Hermes restarts.
 
+Version 0.9.23 makes **the Lock Screen card say Done when a long reply ends**. iOS lets an app send only so many urgent
+updates to its cards; a long reply's steps went as urgent ones and could use them all up, so the push that ends the card
+was held back and its clock kept counting until you opened the app. Steps now go as ordinary updates, which iOS doesn't
+ration, and the end goes as an urgent one and again 30 seconds later as an ordinary one. Apple also keeps the end for a
+while if your phone can't be reached at that moment. Every bot needs its own copy of this version, and it works after
+Hermes restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

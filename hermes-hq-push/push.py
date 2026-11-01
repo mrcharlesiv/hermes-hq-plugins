@@ -328,6 +328,9 @@ APPLE_EPOCH = 978307200.0
 LIVE_MAX_AGE_S = 8 * 3600
 LIVE_STALE_S = 1800
 LIVE_DISMISS_S = 900
+# The end goes again this long after, at priority 5 (outside iOS's ration of priority-10 Live Activity pushes): if the
+# first was held back, the card still ends. Ending a card that already ended changes nothing.
+LIVE_END_AGAIN_S = 30.0
 # Apple's answers that mean this activity's token will never take a push: its row goes, never the phone's own.
 LIVE_GONE_REASONS = frozenset({"BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic", "ExpiredToken", "TopicDisallowed"})
 
@@ -449,11 +452,14 @@ def status_body(root: Path, sender) -> dict:
     (location, reminders, calendar, alarms, photos, Health, motion, music, drafts; device_access.OPERATIONS), POST
     .../pending gives each request's `profile`, and POST .../files/<id> takes a photo before its answer. `liveSteps`
     (0.9.22): PUT /live/<device>/<activity> takes a bot turn's Live Activity push token, and the steps the bot takes are
-    pushed to its Lock Screen card (sealed) until the turn ends; the app asks for a token only when this says so."""
+    pushed to its Lock Screen card (sealed) until the turn ends; the app asks for a token only when this says so.
+    `liveEnds` (0.9.23): the steps go at priority 5 and only the end at 10, sent again 30 s later at 5 (iOS rations
+    priority-10 Live Activity pushes, and a long turn's steps used to spend it all, leaving the card counting after the
+    turn ended); the app offers an update to a plugin without it."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "liveSteps": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "liveSteps": True, "liveEnds": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -787,11 +793,14 @@ class DirectAPNs:
             raise Gone(reason or status)
         raise self._failure(status, reason, stderr)
 
-    def send_live(self, device: Device, token: str, payload: dict, priority: int) -> None:
+    def send_live(self, device: Device, token: str, payload: dict, priority: int, expires: int | None = None) -> None:
         """[live-steps] An ActivityKit push to one activity's token. A token Apple won't take raises LiveGone: that
-        activity's row goes, never the phone's registration."""
-        status, reason, stderr = self._post(device.environment, token, [
-            f"apns-topic: {device.topic}{LIVE_SUFFIX}", "apns-push-type: liveactivity", f"apns-priority: {priority}"], payload)
+        activity's row goes, never the phone's registration. ``expires`` (Unix seconds): Apple keeps the push and tries
+        again until then if the phone can't be reached at once (the end: until the card would go anyway)."""
+        headers = [f"apns-topic: {device.topic}{LIVE_SUFFIX}", "apns-push-type: liveactivity", f"apns-priority: {priority}"]
+        if expires is not None:
+            headers.append(f"apns-expiration: {int(expires)}")
+        status, reason, stderr = self._post(device.environment, token, headers, payload)
         if status == "200":
             return
         if status == "410" or reason in LIVE_GONE_REASONS:
@@ -833,7 +842,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.22"
+PLUGIN_VERSION = "0.9.23"
 
 
 class Relay:
@@ -867,7 +876,8 @@ class Relay:
         return {"token": token, "environment": device.environment, "topic": device.topic + LIVE_SUFFIX,
                 "pushType": "liveactivity", "priority": priority, "payload": payload}
 
-    def send_live(self, device: Device, token: str, payload: dict, priority: int) -> None:
+    def send_live(self, device: Device, token: str, payload: dict, priority: int, expires: int | None = None) -> None:
+        # The relay's own request has no expiration field (it sends what Apple's default keeps): ``expires`` stays here.
         response = self._post(self.live_body(device, token, payload, priority))
         status = response.status_code
         if 200 <= status < 300:
@@ -1380,7 +1390,8 @@ class LiveFeed:
 
     A card is matched to a turn by its chat (the row's ``session``, or one it was compressed from: Lineage); a row
     without a chat matches any turn of its bot except a helper's. Updates that fail are dropped (the next step sends the
-    whole trail again); an end that fails for a moment is tried once more."""
+    whole trail again); an end that fails for a moment is tried once more. Steps go at priority 5, the end at 10 and
+    again ``LIVE_END_AGAIN_S`` later at 5 (iOS rations priority-10 pushes; see live_steps.Pacer)."""
 
     def __init__(self, store: Callable[[], "Store"], sender_factory: Callable = sender_from_env,
                  clock: Callable[[], float] = time.time, lineage: Lineage | None = None):
@@ -1389,7 +1400,7 @@ class LiveFeed:
         self.lineage = lineage or Lineage()
         self.pacer = live_steps.Pacer()
         self.inbox: queue.Queue = queue.Queue(maxsize=256)
-        self.retries: list = []  # heap of (due, seq, row): an end to try once more
+        self.retries: list = []  # heap of (due, seq, row, priority): an end to send (again)
         self.thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._seq = itertools.count()
@@ -1519,19 +1530,20 @@ class LiveFeed:
             if not self.store.remove_live(*row.key):
                 continue
             self.pacer.forget(row.key)
+            heapq.heappush(self.retries, (self.clock() + LIVE_END_AGAIN_S, next(self._seq), row, 5))
             sent += self._deliver(row, "end", row.trail.settled(), 10)
         return sent
 
     def flush(self) -> int:
-        """Trailing updates whose gap is up (the card's trail as stored now), and ends to try again."""
+        """Trailing updates whose gap is up (the card's trail as stored now), and ends to send again."""
         now, sent = self.clock(), 0
         for key in self.pacer.take_due(now):
             row = self.store.live_row(*key)
             if row is not None:
                 sent += self._deliver(row, "update", row.trail, self.pacer.sent(key, now))
         while self.retries and self.retries[0][0] <= now:
-            _, _, row = heapq.heappop(self.retries)
-            sent += self._deliver(row, "end", row.trail.settled(), 10, retry=False)
+            _, _, row, priority = heapq.heappop(self.retries)
+            sent += self._deliver(row, "end", row.trail.settled(), priority, retry=False)
         return sent
 
     def _deliver(self, row: LiveRow, event: str, trail, priority: int, retry: bool = True) -> int:
@@ -1540,15 +1552,14 @@ class LiveFeed:
             return 0
         device = self.store.get(row.device_id)
         if device is None or (isinstance(sender, Relay) and not device.seal):
-            self.store.remove_live(*row.key)  # the phone unregistered, or can't take sealed pushes
-            self.pacer.forget(row.key)
+            self._drop(row)  # the phone unregistered, or can't take sealed pushes
             return 0
         now = self.clock()
+        expires = int(now) + LIVE_DISMISS_S if event == "end" else None
         try:
-            sender.send_live(device, row.token, live_payload(row, trail, event, now, device), priority)
+            sender.send_live(device, row.token, live_payload(row, trail, event, now, device), priority, expires=expires)
         except LiveGone as gone:
-            self.store.remove_live(*row.key)
-            self.pacer.forget(row.key)
+            self._drop(row)
             self.health.record("live:gone", f"A Live Activity's push token was retired ({gone})")
             return 0
         except DeliveryError as error:
@@ -1556,7 +1567,7 @@ class LiveFeed:
                 wait = RETRY_DELAYS[0]
                 if error.retry_after is not None:
                     wait = min(max(wait, error.retry_after), RETRY_AFTER_MAX)
-                heapq.heappush(self.retries, (now + wait, next(self._seq), row))
+                heapq.heappush(self.retries, (now + wait, next(self._seq), row, priority))
                 self.health.record(f"live:retried:{error.code}", str(error))
             else:
                 self.health.record(f"live:failed:{error.code}", str(error))
@@ -1566,5 +1577,14 @@ class LiveFeed:
             self.health.record("live:failed:error", type(error).__name__)
             log.info(f"{NAME} Live Activity {event} not sent (%s)", type(error).__name__)
             return 0
-        self.health.record(f"live:{event}")
+        self.health.record("live:end-again" if event == "end" and priority == 5 else f"live:{event}")
         return 1
+
+    def _drop(self, row: LiveRow) -> None:
+        """Nothing more goes to this card: its row, its pacing and any end still to send."""
+        self.store.remove_live(*row.key)
+        self.pacer.forget(row.key)
+        kept = [item for item in self.retries if item[2].key != row.key]
+        if len(kept) != len(self.retries):
+            self.retries = kept
+            heapq.heapify(self.retries)

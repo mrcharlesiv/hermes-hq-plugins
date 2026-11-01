@@ -139,16 +139,16 @@ def test_pacer_sends_one_every_three_seconds_and_the_last_always():
     pacer = steps.Pacer()
     key = ("phone", "activity")
     assert pacer.offer(key, 100.0)
-    assert pacer.sent(key, 100.0) == 10
+    assert pacer.sent(key, 100.0) == 5  # steps never spend iOS's priority-10 ration: the end needs it
     assert not pacer.offer(key, 101.0)
     assert not pacer.offer(key, 102.0)
     assert pacer.next_due() == 103.0
     assert pacer.take_due(102.9) == []
     assert pacer.take_due(103.0) == [key]
-    assert pacer.sent(key, 103.0) == 5  # priority 10 at most every 20 s
+    assert pacer.sent(key, 103.0) == 5
     assert pacer.offer(key, 106.5)
     assert pacer.sent(key, 106.5) == 5
-    assert pacer.offer(key, 121.0) and pacer.sent(key, 121.0) == 10
+    assert pacer.offer(key, 121.0) and pacer.sent(key, 121.0) == 5
     pacer.offer(key, 122.0)
     pacer.forget(key)
     assert pacer.next_due() is None and pacer.offer(key, 122.5)
@@ -256,7 +256,7 @@ def live_body(**extra):
 
 def test_routes(client, tmp_path, monkeypatch):
     status = client.get(f"{BASE}/status").json()
-    assert status["liveSteps"] is True and status["pluginVersion"] == "0.9.22"
+    assert status["liveSteps"] is True and status["liveEnds"] is True and status["pluginVersion"] == "0.9.23"
     # Not registered for notifications yet.
     missing = client.put(f"{BASE}/live/{PHONE}/{ACTIVITY}", json=live_body())
     assert missing.status_code == 404 and "detail" in missing.json()
@@ -310,13 +310,14 @@ class Clock:
 
 class Sender:
     def __init__(self):
-        self.sent, self.fail = [], None
+        self.sent, self.fail, self.expires = [], None, []
 
-    def send_live(self, device, token, payload, priority):
+    def send_live(self, device, token, payload, priority, expires=None):
         if self.fail:
             error, self.fail = self.fail, None
             raise error
         self.sent.append((device.device_id, token, payload, priority))
+        self.expires.append(expires)
 
 
 def state_db(path, rows):
@@ -350,7 +351,8 @@ def test_each_step_updates_the_card_then_the_end(feed):
     t.store.put_live(row(trail=steps.Trail("reading package.json", [], 1), registered=t.clock.now))
     assert feed.on_step("terminal", {"command": "npm test"}, "s-chat", "cro") == 1
     device_id, token, payload, priority = t.sender.sent[0]
-    assert (device_id, token, priority) == (PHONE, LIVE_TOKEN, 10)
+    assert (device_id, token, priority) == (PHONE, LIVE_TOKEN, 5)
+    assert t.sender.expires[0] is None
     assert payload["aps"]["content-state"]["startedAt"] == STARTED
     assert opened(t.sender.sent[0]) == {"step": "running npm test", "recent": ["reading package.json"], "steps": 2}
     # Within 3 s: stored, not sent; the trailing push carries the newest trail.
@@ -374,10 +376,19 @@ def test_each_step_updates_the_card_then_the_end(feed):
     assert feed.on_end("s-chat", "cro") == 1
     _, _, end, priority = t.sender.sent[-1]
     assert priority == 10 and end["aps"]["event"] == "end" and end["aps"]["content-state"]["phase"] == "done"
+    assert t.sender.expires[-1] == int(t.clock.now) + push.LIVE_DISMISS_S, "Apple holds the end for a phone out of reach"
     assert opened(t.sender.sent[-1])["step"] is None
     assert t.store.live_count() == 0
     assert feed.on_end("s-chat", "cro") == 0
     assert feed.on_step("terminal", {"command": "ls"}, "s-chat", "cro") == 0
+    # The same end once more, at priority 5 (outside iOS's ration), in case the first was held back; then nothing.
+    assert feed.next_due() == pytest.approx(t.clock.now + push.LIVE_END_AGAIN_S)
+    t.clock.now += push.LIVE_END_AGAIN_S
+    assert feed.flush() == 1
+    _, _, again, priority = t.sender.sent[-1]
+    assert priority == 5 and again["aps"]["event"] == "end" and again["aps"]["content-state"]["phase"] == "done"
+    assert t.sender.expires[-1] == int(t.clock.now) + push.LIVE_DISMISS_S
+    assert feed.next_due() is None and feed.flush() == 0
 
 
 @needs_crypto
@@ -421,14 +432,21 @@ def test_dead_tokens_and_failures(feed):
     assert feed.retries == [] and t.store.live_count() == 1
     t.sender.fail = push.DeliveryError("503", "Relay 503", transient=True)
     assert feed.on_end("s-chat", "cro") == 0
-    assert len(feed.retries) == 1
+    assert len(feed.retries) == 2  # the end tried again in 2 s, and its priority-5 copy in 30 s
     t.clock.now += 2
     assert feed.flush() == 1
-    assert t.sender.sent[-1][2]["aps"]["event"] == "end" and feed.retries == []
+    assert t.sender.sent[-1][2]["aps"]["event"] == "end" and t.sender.sent[-1][3] == 10 and len(feed.retries) == 1
+    t.clock.now += push.LIVE_END_AGAIN_S
+    assert feed.flush() == 1 and t.sender.sent[-1][3] == 5 and feed.retries == []
+    # A card whose token Apple retired at the end gets no copy either.
+    t.store.put_live(row(registered=t.clock.now))
+    t.sender.fail = push.LiveGone("Unregistered")
+    assert feed.on_end("s-chat", "cro") == 0
+    assert feed.retries == [] and feed.next_due() is None
     health = push.Health(t.store.path)
     with sqlite3.connect(t.store.path) as db:
         names = {name for (name,) in db.execute("select name from delivery")}
-    assert {"live:gone", "live:failed:503", "live:retried:503", "live:end"} <= names
+    assert {"live:gone", "live:failed:503", "live:retried:503", "live:end", "live:end-again"} <= names
     assert health.summary()["sent"] == 0  # alerts' own counts aren't touched
 
 
@@ -502,6 +520,8 @@ def test_direct_live_push_headers_and_answers():
     assert call["headers"] == ["authorization: bearer jwt", "apns-topic: com.charlesmcdowell.dispatch.push-type.liveactivity",
                                "apns-push-type: liveactivity", "apns-priority: 5"]
     assert json.loads(call["body"]) == {"aps": {"event": "update"}}
+    sender.send_live(device(), LIVE_TOKEN, {"aps": {"event": "end"}}, 10, expires=1_790_000_900)
+    assert sender.run.calls[1]["headers"][-2:] == ["apns-priority: 10", "apns-expiration: 1790000900"]
     for stdout in ('{"reason":"Unregistered"}\n410', '{"reason":"ExpiredToken"}\n400', '{"reason":"TopicDisallowed"}\n400'):
         with pytest.raises(push.LiveGone):
             direct(stdout).send_live(device(), LIVE_TOKEN, {}, 10)
@@ -623,8 +643,8 @@ def test_the_feed_thread_sends_and_ends(tmp_path):
     sender, done = Sender(), threading.Event()
     real = sender.send_live
 
-    def send_live(*a):
-        real(*a)
+    def send_live(*a, **kw):
+        real(*a, **kw)
         if a[2]["aps"]["event"] == "end":
             done.set()
 
