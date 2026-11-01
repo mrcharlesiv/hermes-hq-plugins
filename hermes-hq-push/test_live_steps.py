@@ -202,6 +202,35 @@ def test_update_and_end_payloads():
     assert push.unseal(end["content-state"], KEY) == {"step": None, "recent": ["running npm test", "reading package.json"], "steps": 2}
 
 
+def test_a_quick_replys_done_goes_after_a_minute_a_longer_ones_after_fifteen():
+    started_unix = STARTED + push.APPLE_EPOCH
+    quick = push.live_payload(row(), steps.Trail(), "end", started_unix + 40.5, device(seal=""))["aps"]
+    assert quick["dismissal-date"] == int(started_unix + 40.5) + 60
+    longer = push.live_payload(row(), steps.Trail(), "end", started_unix + 61, device(seal=""))["aps"]
+    assert longer["dismissal-date"] == int(started_unix + 61) + 900
+    # A copy sent later says when the turn really ended, and keeps the same dismissal.
+    copy = push.live_payload(row(), steps.Trail(), "end", started_unix + 70.5, device(seal=""), ended=started_unix + 40.5)["aps"]
+    assert copy["dismissal-date"] == quick["dismissal-date"] and copy["timestamp"] == int(started_unix + 70.5)
+    assert copy["content-state"]["endedAt"] == pytest.approx(STARTED + 40.5)
+    # A start time that is somehow ahead of the end lingers the usual 15 minutes.
+    assert push.live_linger(row(), started_unix - 5) == 900
+
+
+@needs_crypto
+def test_a_quick_replys_end_and_its_copy_both_go_a_minute_after_it_ended(feed):
+    t = feed.test
+    t.clock.now = STARTED + push.APPLE_EPOCH + 30
+    t.store.put_live(row(registered=t.clock.now))
+    assert feed.on_end("s-chat", "cro") == 1
+    ended = t.clock.now
+    assert t.sender.sent[-1][2]["aps"]["dismissal-date"] == int(ended) + 60 and t.sender.expires[-1] == int(ended) + 60
+    t.clock.now += push.LIVE_END_AGAIN_S
+    assert feed.flush() == 1
+    again = t.sender.sent[-1][2]["aps"]
+    assert t.sender.sent[-1][3] == 5 and again["dismissal-date"] == int(ended) + 60 and t.sender.expires[-1] == int(ended) + 60
+    assert again["timestamp"] == int(t.clock.now), "a newer timestamp, so iOS takes it over the first"
+
+
 def test_a_phone_without_a_key_reads_plain_words_when_sent_direct():
     trail = steps.Trail("running npm test", [], 1)
     state = push.live_payload(row(), trail, "update", 1000.0, device(seal=""))["aps"]["content-state"]
@@ -256,7 +285,8 @@ def live_body(**extra):
 
 def test_routes(client, tmp_path, monkeypatch):
     status = client.get(f"{BASE}/status").json()
-    assert status["liveSteps"] is True and status["liveEnds"] is True and status["pluginVersion"] == "0.9.23"
+    assert status["liveSteps"] is True and status["liveEnds"] is True and status["liveQuick"] is True
+    assert status["pluginVersion"] == "0.9.24"
     # Not registered for notifications yet.
     missing = client.put(f"{BASE}/live/{PHONE}/{ACTIVITY}", json=live_body())
     assert missing.status_code == 404 and "detail" in missing.json()
@@ -387,7 +417,7 @@ def test_each_step_updates_the_card_then_the_end(feed):
     assert feed.flush() == 1
     _, _, again, priority = t.sender.sent[-1]
     assert priority == 5 and again["aps"]["event"] == "end" and again["aps"]["content-state"]["phase"] == "done"
-    assert t.sender.expires[-1] == int(t.clock.now) + push.LIVE_DISMISS_S
+    assert t.sender.expires[-1] == int(t.clock.now - push.LIVE_END_AGAIN_S) + push.LIVE_DISMISS_S, "counted from the end itself"
     assert feed.next_due() is None and feed.flush() == 0
 
 

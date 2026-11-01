@@ -197,6 +197,11 @@ ration, and the end goes as an urgent one and again 30 seconds later as an ordin
 while if your phone can't be reached at that moment. Every bot needs its own copy of this version, and it works after
 Hermes restarts.
 
+Version 0.9.24 lets **a quick reply's card go soon after it's done**. Hermes HQ now shows a card for any reply that's
+still going when you leave the app, not only one that has already run 20 seconds. When a reply took under a minute, its
+Done card leaves the Lock Screen a minute later instead of 15; its notification says the rest. The second copy of the end
+now says the same end time as the first.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
