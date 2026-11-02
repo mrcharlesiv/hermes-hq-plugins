@@ -1,5 +1,10 @@
 """Terminal (0.9.25): a real shell on a real terminal, driven through stand-in sockets, and the /terminal route.
-``~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_terminal.py`` from the plugin folder."""
+``~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_terminal.py`` from the plugin folder.
+
+Each shell test runs twice: on the Mac and Linux runner (``Session``) and on the Windows one (``WinSession``), whose
+pywinpty ``PtyProcess`` is stood in for by ptyprocess's ``PtyProcessUnicode`` (pywinpty copies its interface: text in
+and out, ``EOFError`` at the end), running /bin/sh. What only a real Windows has (ConPTY, PowerShell, the login
+environment from Windows) is not tested here."""
 import asyncio
 import importlib.util
 import json
@@ -21,7 +26,7 @@ else:
     sys.modules["hermes_hq_terminal"] = terminal
     _spec.loader.exec_module(terminal)
 
-pytestmark = pytest.mark.skipif(not terminal.supported(), reason="no POSIX terminal here")
+pytestmark = pytest.mark.skipif(not terminal.supported() or terminal.WINDOWS, reason="no POSIX terminal here")
 
 SESSION = "0123456789abcdef0123456789abcdef"
 OTHER = "fedcba9876543210fedcba9876543210"
@@ -79,10 +84,30 @@ class Socket:
         return next(t for t in self.texts if t["type"] == "ready")
 
 
+def plain_env():
+    """/bin/sh with no profile, so nothing on this computer changes what it prints. UTF-8, or its line editing
+    rings the bell at an é rather than take it."""
+    return {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "TERM": "xterm-256color", "PS1": "$ ", "ENV": "",
+            "LANG": "en_US.UTF-8"}
+
+
 def plain_sh(ident, cols, rows):
-    """/bin/sh with no profile, so nothing on this computer changes what it prints."""
-    env = {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "TERM": "xterm-256color", "PS1": "$ ", "ENV": ""}
-    return terminal.Session(ident, cols, rows, shell="/bin/sh", env=env)
+    return terminal.Session(ident, cols, rows, shell="/bin/sh", env=plain_env())
+
+
+def conpty_sh(ident, cols, rows):
+    import ptyprocess
+    return terminal.WinSession(ident, cols, rows, shell="/bin/sh", env=plain_env(), cwd=str(Path.home()),
+                               pty=ptyprocess.PtyProcessUnicode)
+
+
+@pytest.fixture(params=["pty", "conpty"])
+def spawn(request):
+    """The Mac and Linux runner, then the Windows one on a stand-in pseudo-console."""
+    if request.param == "conpty":
+        pytest.importorskip("ptyprocess")
+        return conpty_sh
+    return plain_sh
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +115,10 @@ def fresh_sessions():
     terminal._sessions.clear()
     yield
     for session in list(terminal._sessions.values()):  # its loop has closed: kill it directly
+        if isinstance(session, terminal.WinSession):
+            session.typed.put(None)
+            session.process.terminate(force=True)
+            continue
         try:  # first: a shell exits only once its terminal's output is read or the terminal is gone (macOS)
             os.close(session.master)
         except OSError:
@@ -110,10 +139,10 @@ def query(**extra):
     return {"session": SESSION, "cols": "80", "rows": "24", **extra}
 
 
-def test_a_shell_answers_and_ends_with_its_exit_code():
+def test_a_shell_answers_and_ends_with_its_exit_code(spawn):
     async def go():
         page = Socket()
-        served = asyncio.create_task(terminal.serve(page, query(), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(page, query(), spawn=spawn))
         await page.until(lambda: page.texts)
         assert page.ready() == {"type": "ready", "session": SESSION, "offset": 0, "shell": "sh", "resumed": False}
         page.type("echo hello-$((6*7))\n")
@@ -126,10 +155,10 @@ def test_a_shell_answers_and_ends_with_its_exit_code():
     run(go())
 
 
-def test_the_size_and_a_resize_reach_the_shell():
+def test_the_size_and_a_resize_reach_the_shell(spawn):
     async def go():
         page = Socket()
-        served = asyncio.create_task(terminal.serve(page, query(cols="91", rows="33"), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(page, query(cols="91", rows="33"), spawn=spawn))
         page.type("stty size\n")
         await page.until(lambda: b"33 91" in page.output)
         page.control(type="resize", cols=120, rows=40)
@@ -141,10 +170,10 @@ def test_the_size_and_a_resize_reach_the_shell():
     run(go())
 
 
-def test_ctrl_c_stops_what_runs_in_front_and_the_shell_stays():
+def test_ctrl_c_stops_what_runs_in_front_and_the_shell_stays(spawn):
     async def go():
         page = Socket()
-        served = asyncio.create_task(terminal.serve(page, query(), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(page, query(), spawn=spawn))
         page.type("tty; sleep 30; echo after-$?\n")
         await page.until(lambda: b"/dev/tty" in page.output or b"/dev/pts" in page.output)
         await asyncio.sleep(0.3)
@@ -155,10 +184,10 @@ def test_ctrl_c_stops_what_runs_in_front_and_the_shell_stays():
     run(go())
 
 
-def test_a_page_that_comes_back_gets_only_what_it_missed():
+def test_a_page_that_comes_back_gets_only_what_it_missed(spawn):
     async def go():
         first = Socket()
-        served = asyncio.create_task(terminal.serve(first, query(), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(first, query(), spawn=spawn))
         first.type("echo one-$((1+1))\n")
         await first.until(lambda: b"one-2" in first.output)
         seen = len(first.output)
@@ -170,7 +199,7 @@ def test_a_page_that_comes_back_gets_only_what_it_missed():
         assert session.viewer is None and not session.ended
         await asyncio.sleep(1.0)  # the shell kept going while no page was open
         second = Socket()
-        served = asyncio.create_task(terminal.serve(second, query(since=str(seen)), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(second, query(since=str(seen)), spawn=spawn))
         await second.until(lambda: b"two-3" in second.output)
         ready = second.ready()
         assert ready["resumed"] is True and ready["offset"] == seen
@@ -181,10 +210,10 @@ def test_a_page_that_comes_back_gets_only_what_it_missed():
     run(go())
 
 
-def test_a_page_with_a_count_history_no_longer_holds_gets_all_of_it():
+def test_a_page_with_a_count_history_no_longer_holds_gets_all_of_it(spawn):
     async def go():
         first = Socket()
-        served = asyncio.create_task(terminal.serve(first, query(), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(first, query(), spawn=spawn))
         first.type("echo kept\n")
         await first.until(lambda: b"kept" in first.output)
         first.leave()
@@ -195,14 +224,14 @@ def test_a_page_with_a_count_history_no_longer_holds_gets_all_of_it():
     run(go())
 
 
-def test_a_second_socket_takes_the_shell_over():
+def test_a_second_socket_takes_the_shell_over(spawn):
     async def go():
         first = Socket()
-        one = asyncio.create_task(terminal.serve(first, query(), spawn=plain_sh))
+        one = asyncio.create_task(terminal.serve(first, query(), spawn=spawn))
         first.type("echo first-$((3*3))\n")
         await first.until(lambda: b"first-9" in first.output)
         second = Socket()
-        two = asyncio.create_task(terminal.serve(second, query(since=str(len(first.output))), spawn=plain_sh))
+        two = asyncio.create_task(terminal.serve(second, query(since=str(len(first.output))), spawn=spawn))
         await first.until(lambda: first.closed)
         assert first.closed[0] == terminal.CLOSE_REPLACED
         await one
@@ -215,10 +244,10 @@ def test_a_second_socket_takes_the_shell_over():
     run(go())
 
 
-def test_end_hangs_up_the_shell():
+def test_end_hangs_up_the_shell(spawn):
     async def go():
         page = Socket()
-        served = asyncio.create_task(terminal.serve(page, query(), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(page, query(), spawn=spawn))
         page.type("echo up\n")
         await page.until(lambda: b"up" in page.output)
         page.control(type="end")
@@ -228,12 +257,12 @@ def test_end_hangs_up_the_shell():
     run(go())
 
 
-def test_a_shell_left_alone_closes_after_keep(monkeypatch):
+def test_a_shell_left_alone_closes_after_keep(monkeypatch, spawn):
     monkeypatch.setattr(terminal, "KEEP", 0.3)
 
     async def go():
         page = Socket()
-        served = asyncio.create_task(terminal.serve(page, query(), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(page, query(), spawn=spawn))
         await page.until(lambda: page.texts)
         session = terminal._sessions[SESSION]
         page.leave()
@@ -251,28 +280,28 @@ def test_a_bad_session_name_is_refused():
     run(go())
 
 
-def test_a_full_computer_ends_the_oldest_shell_nobody_has_open(monkeypatch):
+def test_a_full_computer_ends_the_oldest_shell_nobody_has_open(monkeypatch, spawn):
     monkeypatch.setattr(terminal, "MAX_SESSIONS", 2)
 
     async def go():
         pages = []
         for ident in (SESSION, OTHER):
             page = Socket()
-            served = asyncio.create_task(terminal.serve(page, query(session=ident), spawn=plain_sh))
+            served = asyncio.create_task(terminal.serve(page, query(session=ident), spawn=spawn))
             await page.until(lambda: page.texts)
             pages.append((page, served))
         oldest = terminal._sessions[SESSION]
         pages[0][0].leave()
         await pages[0][1]
         third = Socket()
-        served = asyncio.create_task(terminal.serve(third, query(session="ab" * 16), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(third, query(session="ab" * 16), spawn=spawn))
         await third.until(lambda: third.texts)
         assert SESSION not in terminal._sessions and set(terminal._sessions) == {OTHER, "ab" * 16}
         await asyncio.sleep(2.5)
         assert oldest.ended
         # Every page still open: a fourth is turned away rather than taking someone's shell.
         fourth = Socket()
-        await terminal.serve(fourth, query(session="cd" * 16), spawn=plain_sh)
+        await terminal.serve(fourth, query(session="cd" * 16), spawn=spawn)
         assert fourth.closed[0] == terminal.CLOSE_FULL
         for page, task in (pages[1], (third, served)):
             page.leave()
@@ -280,10 +309,10 @@ def test_a_full_computer_ends_the_oldest_shell_nobody_has_open(monkeypatch):
     run(go())
 
 
-def test_a_lot_of_output_all_arrives_in_order():
+def test_a_lot_of_output_all_arrives_in_order(spawn):
     async def go():
         page = Socket()
-        served = asyncio.create_task(terminal.serve(page, query(), spawn=plain_sh))
+        served = asyncio.create_task(terminal.serve(page, query(), spawn=spawn))
         page.type("i=0; while [ $i -lt 20000 ]; do echo line-$i; i=$((i+1)); done; echo done-$((1+1))\n")
         await page.until(lambda: b"done-2\r\n" in page.output, timeout=25)
         # macOS's terminal sometimes doubles the \r before a \n when the shell's write had to wait: same on screen.
@@ -312,6 +341,103 @@ def test_sizes_are_clamped():
 def test_login_shell_is_runnable():
     shell = terminal.login_shell()
     assert os.path.isabs(shell) and os.access(shell, os.X_OK)
+
+
+def test_a_character_split_across_two_frames_arrives_whole(spawn):
+    async def go():
+        page = Socket()
+        served = asyncio.create_task(terminal.serve(page, query(), spawn=spawn))
+        await page.until(lambda: page.texts)
+        word = "echo caf\u00e9-$((5+5))\n".encode()
+        cut = word.index(b"\xa9")  # between the two bytes of é
+        page.inbox.put_nowait({"type": "websocket.receive", "bytes": word[:cut]})
+        page.inbox.put_nowait({"type": "websocket.receive", "bytes": word[cut:]})
+        await page.until(lambda: "caf\u00e9-10".encode() in page.output)
+        page.leave()
+        await served
+    run(go())
+
+
+# -- Windows, without one ----------------------------------------------------------------------------------------------
+
+def test_it_loads_without_the_unix_modules_and_needs_pywinpty_on_windows(monkeypatch):
+    """The whole add-on loads this file, so on Windows (no fcntl, pwd or termios) it must load and say no terminal
+    rather than fail; with pywinpty there it says yes."""
+    for name in ("fcntl", "pwd", "termios", "winpty"):
+        monkeypatch.setitem(sys.modules, name, None)  # what importing a module Windows doesn't have does
+    spec = importlib.util.spec_from_file_location("hermes_hq_terminal_on_windows", HERE / "terminal.py")
+    windows = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(windows)
+    assert windows.fcntl is None and windows.termios is None and windows.ConPty is None
+    assert windows.supported() is False  # posix without termios
+    monkeypatch.setattr(windows, "WINDOWS", True)
+    assert windows.supported() is False and windows.status(Path("/nowhere")) == {"terminal": False, "terminalOff": False}
+    monkeypatch.setattr(windows, "ConPty", object())
+    assert windows.supported() is True
+
+
+def test_windows_starts_powershell_7_then_windows_powershell_then_cmd(tmp_path, monkeypatch):
+    found = {"pwsh.exe": r"C:\Program Files\PowerShell\7\pwsh.exe", "powershell.exe": r"C:\W\powershell.exe"}
+    assert terminal.windows_shell(which=found.get) == found["pwsh.exe"]
+    assert terminal.windows_shell(which={"powershell.exe": found["powershell.exe"]}.get) == found["powershell.exe"]
+    builtin = tmp_path / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    builtin.parent.mkdir(parents=True)
+    builtin.write_text("")
+    assert terminal.windows_shell(which=lambda _: None, root=str(tmp_path)) == str(builtin)
+    builtin.unlink()
+    monkeypatch.setenv("ComSpec", r"C:\Windows\system32\cmd.exe")
+    assert terminal.windows_shell(which=lambda _: None, root=str(tmp_path)) == r"C:\Windows\system32\cmd.exe"
+    monkeypatch.delenv("ComSpec")
+    assert terminal.windows_shell(which=lambda _: None, root=str(tmp_path)) == "cmd.exe"
+
+
+def test_windows_environment_is_a_logins_not_the_servers():
+    login = {"Path": r"C:\Windows\system32", "USERPROFILE": r"C:\Users\kim", "SystemRoot": r"C:\Windows"}
+    env = terminal.windows_env(base={"OPENAI_API_KEY": "sk-secret"}, login=login)
+    assert "OPENAI_API_KEY" not in env and env["USERPROFILE"] == r"C:\Users\kim"
+    assert env["TERM_PROGRAM"] == "HermesHQ" and env["COLORTERM"] == "truecolor" and env["TERM"] == "xterm-256color"
+    # Windows didn't say (no pywin32): the server's, with only the names Windows itself sets (os.environ is upper case).
+    server = {"PATH": r"C:\Windows", "SYSTEMROOT": r"C:\Windows", "USERPROFILE": r"C:\Users\kim", "TEMP": r"C:\T",
+              "OPENAI_API_KEY": "sk-secret", "HERMES_HOME": r"C:\h", "TELEGRAM_BOT_TOKEN": "1:x"}
+    env = terminal.windows_env(base=server, login={})
+    assert env["SystemRoot"] == r"C:\Windows" and env["PATH"] == r"C:\Windows" and env["TEMP"] == r"C:\T"
+    assert not {"OPENAI_API_KEY", "HERMES_HOME", "TELEGRAM_BOT_TOKEN"} & set(env)
+
+
+def test_the_page_is_told_the_shells_name_without_exe():
+    assert terminal.shell_name(r"C:\Program Files\PowerShell\7\pwsh.exe") == "pwsh"
+    assert terminal.shell_name(r"C:\Windows\System32\cmd.EXE") == "cmd"
+    assert terminal.shell_name("/bin/zsh") == "zsh"
+
+
+class Recorded:
+    """pywinpty's PtyProcess, recording how it was asked to start and never starting anything."""
+    started: dict = {}
+
+    @classmethod
+    def spawn(cls, argv, cwd=None, env=None, dimensions=(24, 80)):
+        cls.started = {"argv": argv, "cwd": cwd, "env": env, "dimensions": dimensions}
+        return cls()
+
+    pid = 4242
+    exitstatus = 0
+
+    def read(self, size):
+        raise EOFError
+
+    def isalive(self):
+        return False
+
+
+def test_windows_powershell_starts_without_its_banner_in_the_home_folder():
+    async def go():
+        env = {"USERPROFILE": r"C:\Users\kim"}
+        terminal.WinSession(SESSION, 100, 30, shell=r"C:\pwsh\pwsh.exe", env=env, pty=Recorded)
+        assert Recorded.started["argv"] == [r"C:\pwsh\pwsh.exe", "-NoLogo"]
+        assert Recorded.started["cwd"] == r"C:\Users\kim" and Recorded.started["dimensions"] == (30, 100)
+        terminal.WinSession(SESSION, 80, 24, shell=r"C:\Windows\System32\cmd.exe", env=env, pty=Recorded)
+        assert Recorded.started["argv"] == [r"C:\Windows\System32\cmd.exe"]
+    run(go())
 
 
 # -- the route ---------------------------------------------------------------------------------------------------------

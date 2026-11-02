@@ -209,7 +209,8 @@ for Face ID or your passcode each time it opens. The shell is the login shell of
 in its home folder, like an SSH login: what you type there has the same access Hermes has. It keeps running for 15
 minutes after you leave the page (or your phone locks), so you come back to the same shell and what it printed. To turn
 the Terminal off on a computer, create an empty `terminal.off` file in `~/.hermes/plugin-data/hermes-hq-push/`. It
-works on Mac and Linux, not Windows, and only after Hermes restarts.
+works on Mac, Linux and Windows, and only after Hermes restarts. On Windows the shell is PowerShell (PowerShell 7 when
+it's installed); Hermes in WSL gets your Linux shell.
 
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
@@ -282,7 +283,8 @@ others: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_live_steps.py`
 `test_own_chats.py`, `test_desktop_opens.py`, `test_cron_working.py` and `test_gateway_logins.py` run against a Hermes checkout, with its own python, from the
 plugin folder: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_cron_working.py`.
 
-`test_terminal.py` (the Terminal's shells, replay, takeover and limits) opens real shells on this computer:
+`test_terminal.py` (the Terminal's shells, replay, takeover and limits) opens real shells on this computer, through
+the Mac and Linux runner and through the Windows one on a stand-in for Windows' pseudo-console:
 `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_terminal.py`.
 
 Tests that need `cryptography` or `fastapi` skip without them.
