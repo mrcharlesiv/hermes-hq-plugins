@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket
 from pydantic import BaseModel, Field
 
 if "hermes_hq_push_core" in sys.modules:
@@ -58,6 +58,14 @@ else:
     device_access = importlib.util.module_from_spec(_access_spec)
     sys.modules["hermes_hq_device_access"] = device_access
     _access_spec.loader.exec_module(device_access)
+
+if "hermes_hq_terminal" in sys.modules:
+    terminal = sys.modules["hermes_hq_terminal"]
+else:
+    _terminal_spec = importlib.util.spec_from_file_location("hermes_hq_terminal", Path(__file__).parents[1] / "terminal.py")
+    terminal = importlib.util.module_from_spec(_terminal_spec)
+    sys.modules["hermes_hq_terminal"] = terminal
+    _terminal_spec.loader.exec_module(terminal)
 
 _warm_spec = importlib.util.spec_from_file_location("hermes_hq_serve_warmup", Path(__file__).parents[1] / "serve_warmup.py")
 serve_warmup = importlib.util.module_from_spec(_warm_spec)
@@ -139,7 +147,7 @@ class ApprovalIn(BaseModel):
 @router.get("/status")
 def status():
     """The app probes this to offer push; a 404 means the plugin isn't installed or enabled."""
-    return push.status_body(push.data_dir(), push.sender_from_env())
+    return {**push.status_body(push.data_dir(), push.sender_from_env()), **terminal.status(push.data_dir())}
 
 
 @router.put("/devices/{device_id}")
@@ -363,3 +371,31 @@ def device_result(device_id: str, request_id: str, body: ResultIn):
         return _device_store().complete(device_id, request_id, body.status, body.result, body.error)
     except device_access.AccessError as error:
         raise HTTPException(error.status_code, error.detail) from None
+
+
+# ---------------------------------------------------------------------------
+# Terminal (0.9.25 `terminal` in status): a shell on this computer, one websocket per open Terminal page (terminal.py).
+# ---------------------------------------------------------------------------
+
+def _ws_allowed(ws) -> bool:
+    """Websocket upgrades skip the dashboard's HTTP login, so check it here. Never fail open."""
+    try:
+        from hermes_cli import web_server_chat as chat
+        return bool(chat._ws_auth_ok(ws)) and bool(chat._ws_request_is_allowed(ws))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+@router.websocket("/terminal")
+async def terminal_socket(ws: WebSocket):
+    if not _ws_allowed(ws):
+        await ws.close(code=4401)
+        return
+    await ws.accept()  # the refusals below carry a reason the app shows
+    if not terminal.supported():
+        await ws.close(code=terminal.CLOSE_UNSUPPORTED, reason="This computer can't open a terminal")
+        return
+    if terminal.turned_off(push.data_dir()):
+        await ws.close(code=terminal.CLOSE_OFF, reason="Terminal is turned off on this computer")
+        return
+    await terminal.serve(ws, ws.query_params)

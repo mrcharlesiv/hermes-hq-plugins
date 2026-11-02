@@ -470,7 +470,9 @@ def status_body(root: Path, sender) -> dict:
     priority-10 Live Activity pushes, and a long turn's steps used to spend it all, leaving the card counting after the
     turn ended); the app offers an update to a plugin without it. `liveQuick` (0.9.24): a card whose reply ran under a
     minute goes a minute after its Done, not 15 (the app now shows a card for any reply still going when the phone is
-    left), and the end's copy says the same end time; the app offers an update to a plugin without it."""
+    left), and the end's copy says the same end time; the app offers an update to a plugin without it. `terminal` (0.9.25,
+    added by dashboard/plugin_api.py from terminal.status): the /terminal websocket opens a shell on this computer for the
+    app's Terminal page (terminal.py); `terminalOff`: plugin-data's terminal.off turns it off."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
@@ -857,7 +859,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.24"
+PLUGIN_VERSION = "0.9.25"
 
 
 class Relay:

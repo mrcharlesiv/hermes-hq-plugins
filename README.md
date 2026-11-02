@@ -202,6 +202,15 @@ still going when you leave the app, not only one that has already run 20 seconds
 Done card leaves the Lock Screen a minute later instead of 15; its notification says the rest. The second copy of the end
 now says the same end time as the first.
 
+Version 0.9.25 adds the **Terminal**: a shell on your gateway's computer, typed into from Hermes HQ, with copy and
+paste both ways. Open it from **More › Terminal** (you can make it a tab, or a place in the Mac's sidebar) or from
+**Bot Info › Computer › Terminal**. The first time, Hermes HQ asks whether to turn it on for that computer, then asks
+for Face ID or your passcode each time it opens. The shell is the login shell of the account Hermes runs as, started
+in its home folder, like an SSH login: what you type there has the same access Hermes has. It keeps running for 15
+minutes after you leave the page (or your phone locks), so you come back to the same shell and what it printed. To turn
+the Terminal off on a computer, create an empty `terminal.off` file in `~/.hermes/plugin-data/hermes-hq-push/`. It
+works on Mac and Linux, not Windows, and only after Hermes restarts.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -272,6 +281,9 @@ python3 -m unittest hermes-hq-push/test_push.py
 others: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_live_steps.py`.
 `test_own_chats.py`, `test_desktop_opens.py`, `test_cron_working.py` and `test_gateway_logins.py` run against a Hermes checkout, with its own python, from the
 plugin folder: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_cron_working.py`.
+
+`test_terminal.py` (the Terminal's shells, replay, takeover and limits) opens real shells on this computer:
+`~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_terminal.py`.
 
 Tests that need `cryptography` or `fastapi` skip without them.
 
