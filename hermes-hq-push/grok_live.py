@@ -16,7 +16,8 @@ Two routes, both behind the dashboard's normal login like everything else in ``d
 Both routes run under the bot's own profile (``?profile=``, the same scope every other route here uses,
 ``hermes_cli.web_server_profiles._config_profile_scope``) so a second bot's own xAI credentials and
 ``voice.grok_live`` settings are the ones read, not the dashboard's own. A bot with no xAI login or key of its own
-borrows the main bot's (0.9.27): the person signs in to Grok once (``hermes auth add xai-oauth``) and every bot on the
+borrows the main bot's Grok sign-in (0.9.27; Hermes's credential pool already does for minting, the status
+probe now says so too): the person signs in to Grok once (``hermes auth add xai-oauth``) and every bot on the
 computer can talk with it, each still with its own name, voice and instructions. Status says ``"shared": true`` then.
 
 Hermes imports are wrapped in ``try/except``: an older Hermes without ``tools.xai_http`` (or without xAI OAuth at
@@ -35,9 +36,6 @@ DEFAULT_BASE_URL = "https://api.x.ai/v1"
 EXPIRES_AFTER_SECONDS = 300
 SESSION_TIMEOUT = 20.0
 BODY_LIMIT = 300  # how much of xAI's error body ever reaches the app
-# The main bot's profile, named outright: inside a request that asked for ?profile=B, Hermes's scope reads "" as
-# "this request's own profile" (B again), so borrowing the main bot's login needs its explicit name.
-MAIN_BOT = "default"
 
 # Appended to the voice persona (tools/voice_live.py's live_persona/live_instructions), after any config.yaml
 # voice.grok_live.instructions: the one thing Grok Live itself can't do is run Hermes's tools.
@@ -120,21 +118,9 @@ def _xai_auth_kind() -> str | None:
     or any ``credential_pool.xai-oauth`` entry), else ``"api_key"`` if ``XAI_API_KEY`` resolves, else ``None``.
     Mirrors ``tools.xai_http.has_xai_credentials``'s own checks, split by which one matched; never raises."""
     try:
-        import json
         from hermes_constants import get_hermes_home
-        auth_path = get_hermes_home() / "auth.json"
-        if auth_path.exists():
-            store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
-            providers = store.get("providers") if isinstance(store, dict) else None
-            tokens = (providers or {}).get("xai-oauth") if isinstance(providers, dict) else None
-            tokens = (tokens or {}).get("tokens") if isinstance(tokens, dict) else None
-            if isinstance(tokens, dict) and str(tokens.get("access_token") or "").strip():
-                return "subscription"
-            pool = store.get("credential_pool") if isinstance(store, dict) else None
-            entries = (pool or {}).get("xai-oauth") if isinstance(pool, dict) else None
-            if isinstance(entries, list) and any(
-                    isinstance(e, dict) and str(e.get("access_token") or "").strip() for e in entries):
-                return "subscription"
+        if _oauth_in(get_hermes_home() / "auth.json"):
+            return "subscription"
     except Exception:
         log.debug("hermes-hq-push: grok-live oauth probe failed", exc_info=True)
     try:
@@ -181,12 +167,38 @@ def status(profile: str = "") -> dict:
                     "reason": "unsupported_hermes"}
         if _has_credentials(has_xai_credentials):
             return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice}
-    if profile:
-        with _scope(MAIN_BOT):
-            if _has_credentials(has_xai_credentials):
-                return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice,
-                        "shared": True}
+    if profile and _main_bot_has_xai_login():
+        return {"ok": True, "available": True, "auth": "subscription", "model": model, "voice": voice, "shared": True}
     return {"ok": True, "available": False, "auth": None, "model": model, "voice": voice, "reason": "no_credentials"}
+
+
+def _main_bot_has_xai_login() -> bool:
+    """The main bot's Grok sign-in (``auth.json`` at the Hermes root). Hermes's own credential pool already falls
+    back to it for a bot without one (``agent/credential_pool.py``, the global-root fallback), so the session route
+    mints with it; only ``has_xai_credentials`` looks at the bot's own file alone. Read by path, not by profile
+    scope: inside a ``?profile=B`` request an empty or ``default`` scope stays on B."""
+    try:
+        from hermes_constants import get_default_hermes_root
+        return _oauth_in(get_default_hermes_root() / "auth.json")
+    except Exception:
+        log.debug("hermes-hq-push: grok-live main bot probe failed", exc_info=True)
+        return False
+
+
+def _oauth_in(auth_path) -> bool:
+    import json
+    if not auth_path.exists():
+        return False
+    store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
+    providers = store.get("providers") if isinstance(store, dict) else None
+    tokens = (providers or {}).get("xai-oauth") if isinstance(providers, dict) else None
+    tokens = (tokens or {}).get("tokens") if isinstance(tokens, dict) else None
+    if isinstance(tokens, dict) and str(tokens.get("access_token") or "").strip():
+        return True
+    pool = store.get("credential_pool") if isinstance(store, dict) else None
+    entries = (pool or {}).get("xai-oauth") if isinstance(pool, dict) else None
+    return isinstance(entries, list) and any(
+        isinstance(e, dict) and str(e.get("access_token") or "").strip() for e in entries)
 
 
 def _has_credentials(probe) -> bool:
@@ -195,24 +207,6 @@ def _has_credentials(probe) -> bool:
     except Exception:
         log.warning("hermes-hq-push: grok-live status probe failed", exc_info=True)
         return False
-
-
-def _credentials_profile(profile: str) -> str:
-    """The profile whose xAI login mints the token: the bot's own, else the main bot's (``""``) when the bot has
-    none. Network-free, like ``status``."""
-    if not profile:
-        return profile
-    try:
-        from tools.xai_http import has_xai_credentials
-    except Exception:
-        return profile
-    with _scope(profile):
-        if _has_credentials(has_xai_credentials):
-            return profile
-    with _scope(MAIN_BOT):
-        if _has_credentials(has_xai_credentials):
-            return MAIN_BOT
-    return profile
 
 
 def _post_client_secret(creds: dict, headers_fn) -> "object":
@@ -246,7 +240,6 @@ def mint_session(profile: str = "") -> dict:
         model, voice = model_of(section), voice_of(section)
         instructions = instructions_of(section, _persona())
 
-    with _scope(_credentials_profile(profile)):
         try:
             creds = resolve_xai_http_credentials()
         except Exception:

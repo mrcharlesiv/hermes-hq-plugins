@@ -218,7 +218,7 @@ session, without calling xAI; `POST .../voice/grok-live/session` asks xAI for a 
 app's voice session can talk to Grok directly — the bearer that authorizes it never reaches the phone. Configure a
 bot's model, voice and extra instructions under `voice.grok_live` in its `config.yaml`.
 
-Version 0.9.27: a bot with no xAI sign-in or key of its own uses the main bot's, so one `hermes auth add xai-oauth`
+Version 0.9.27: a bot with no Grok sign-in of its own uses the main bot's, so one `hermes auth add xai-oauth`
 lets every bot on the computer talk with Grok Live, each with its own name, voice and instructions.
 
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its

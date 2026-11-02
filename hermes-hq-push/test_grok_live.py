@@ -390,11 +390,6 @@ def test_route_session_success_with_an_empty_body(client, monkeypatch):
 # 0.9.27: a bot with no xAI login of its own borrows the main bot's
 # ---------------------------------------------------------------------------
 
-def _only_main_bot_has_xai():
-    from hermes_constants import get_hermes_home
-    return get_hermes_home().resolve() == ROOT.resolve()
-
-
 def test_status_borrows_the_main_bots_login(monkeypatch):
     home = profile_home("grok-borrow-status")
     (home / "config.yaml").write_text("voice:\n  grok_live:\n    voice: nova\n")
@@ -402,7 +397,7 @@ def test_status_borrows_the_main_bots_login(monkeypatch):
     had = root_auth.read_text() if root_auth.exists() else None
     root_auth.write_text(json.dumps({"providers": {"xai-oauth": {"tokens": {"access_token": "root-tok"}}}}))
     try:
-        monkeypatch.setattr(xai_http, "has_xai_credentials", _only_main_bot_has_xai)
+        monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: False)  # the bot's own auth.json has none
         assert grok_live.status("grok-borrow-status") == {
             "ok": True, "available": True, "auth": "subscription", "model": grok_live.DEFAULT_MODEL,
             "voice": "nova", "shared": True}
@@ -410,41 +405,21 @@ def test_status_borrows_the_main_bots_login(monkeypatch):
         root_auth.write_text(had) if had is not None else root_auth.unlink()
 
 
+def test_status_without_any_login_anywhere_is_unavailable(monkeypatch):
+    home = profile_home("grok-borrow-none")
+    (home / "config.yaml").write_text("voice: {}\n")
+    root_auth = ROOT / "auth.json"
+    had = root_auth.read_text() if root_auth.exists() else None
+    if root_auth.exists():
+        root_auth.unlink()
+    try:
+        monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: False)
+        assert grok_live.status("grok-borrow-none")["available"] is False
+    finally:
+        if had is not None:
+            root_auth.write_text(had)
+
+
 def test_status_of_the_main_bot_itself_is_never_shared(monkeypatch):
-    monkeypatch.setattr(xai_http, "has_xai_credentials", _only_main_bot_has_xai)
-    assert "shared" not in grok_live.status("")
-
-
-def test_mint_session_uses_the_main_bots_login_and_the_bots_own_settings(monkeypatch):
-    home = profile_home("grok-borrow-session")
-    (home / "config.yaml").write_text("voice:\n  grok_live:\n    voice: nova\n    instructions: Sound like the CFO.\n")
-    monkeypatch.setattr(xai_http, "has_xai_credentials", _only_main_bot_has_xai)
-
-    def resolver(**kw):
-        key = "root-tok" if _only_main_bot_has_xai() else ""
-        return {"provider": "xai-oauth", "api_key": key, "base_url": "https://api.x.ai/v1"}
-    monkeypatch.setattr(xai_http, "resolve_xai_http_credentials", resolver)
-    monkeypatch.setattr(xai_http, "hermes_xai_default_headers", lambda: {})
-    posted = []
-
-    def fake_post(url, headers=None, json=None, timeout=None):
-        posted.append(headers["Authorization"])
-        return FakeResponse(200, {"value": "s", "expires_at": 1})
-    monkeypatch.setattr(httpx, "post", fake_post)
-
-    result = grok_live.mint_session("grok-borrow-session")
-    assert posted == ["Bearer root-tok"]
-    assert result["voice"] == "nova" and "Sound like the CFO." in result["instructions"]
-    assert result["auth"] == "subscription"
-
-
-def test_a_bot_with_its_own_login_keeps_it(monkeypatch):
-    (profile_home("grok-own-login") / "config.yaml").write_text("voice: {}\n")
     monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: True)
-    assert grok_live._credentials_profile("grok-own-login") == "grok-own-login"
-
-
-def test_nobody_has_a_login_stays_on_the_bot(monkeypatch):
-    (profile_home("grok-no-login") / "config.yaml").write_text("voice: {}\n")
-    monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: False)
-    assert grok_live._credentials_profile("grok-no-login") == "grok-no-login"
+    assert "shared" not in grok_live.status("")
