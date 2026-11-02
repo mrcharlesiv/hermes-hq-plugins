@@ -35,6 +35,9 @@ DEFAULT_BASE_URL = "https://api.x.ai/v1"
 EXPIRES_AFTER_SECONDS = 300
 SESSION_TIMEOUT = 20.0
 BODY_LIMIT = 300  # how much of xAI's error body ever reaches the app
+# The main bot's profile, named outright: inside a request that asked for ?profile=B, Hermes's scope reads "" as
+# "this request's own profile" (B again), so borrowing the main bot's login needs its explicit name.
+MAIN_BOT = "default"
 
 # Appended to the voice persona (tools/voice_live.py's live_persona/live_instructions), after any config.yaml
 # voice.grok_live.instructions: the one thing Grok Live itself can't do is run Hermes's tools.
@@ -179,7 +182,7 @@ def status(profile: str = "") -> dict:
         if _has_credentials(has_xai_credentials):
             return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice}
     if profile:
-        with _scope(""):
+        with _scope(MAIN_BOT):
             if _has_credentials(has_xai_credentials):
                 return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice,
                         "shared": True}
@@ -206,9 +209,9 @@ def _credentials_profile(profile: str) -> str:
     with _scope(profile):
         if _has_credentials(has_xai_credentials):
             return profile
-    with _scope(""):
+    with _scope(MAIN_BOT):
         if _has_credentials(has_xai_credentials):
-            return ""
+            return MAIN_BOT
     return profile
 
 
