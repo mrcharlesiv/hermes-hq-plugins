@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 if "hermes_hq_push_core" in sys.modules:
@@ -66,6 +67,14 @@ else:
     terminal = importlib.util.module_from_spec(_terminal_spec)
     sys.modules["hermes_hq_terminal"] = terminal
     _terminal_spec.loader.exec_module(terminal)
+
+if "hermes_hq_grok_live" in sys.modules:
+    grok_live = sys.modules["hermes_hq_grok_live"]
+else:
+    _grok_live_spec = importlib.util.spec_from_file_location("hermes_hq_grok_live", Path(__file__).parents[1] / "grok_live.py")
+    grok_live = importlib.util.module_from_spec(_grok_live_spec)
+    sys.modules["hermes_hq_grok_live"] = grok_live
+    _grok_live_spec.loader.exec_module(grok_live)
 
 _warm_spec = importlib.util.spec_from_file_location("hermes_hq_serve_warmup", Path(__file__).parents[1] / "serve_warmup.py")
 serve_warmup = importlib.util.module_from_spec(_warm_spec)
@@ -399,3 +408,26 @@ async def terminal_socket(ws: WebSocket):
         await ws.close(code=terminal.CLOSE_OFF, reason="Terminal is turned off on this computer")
         return
     await terminal.serve(ws, ws.query_params)
+
+
+# ---------------------------------------------------------------------------
+# Grok Live voice tokens (0.9.26): the app's WebRTC voice session talks to xAI directly once this
+# mints it a short-lived token (grok_live.py). Plain ``def`` routes: Starlette runs a sync path
+# function in its thread pool automatically, so the session route's one blocking xAI call never
+# blocks this server's event loop for every other bot.
+# ---------------------------------------------------------------------------
+
+@router.get("/voice/grok-live/status")
+def grok_live_status(profile: str = ""):
+    """Cheap, network-free: whether Grok Live can start for this bot, and which credential it would use."""
+    return grok_live.status(profile)
+
+
+@router.post("/voice/grok-live/session")
+def grok_live_session(profile: str = ""):
+    """Mint a short-lived xAI Realtime token for this bot's voice.grok_live config. The bearer that
+    authorizes it never leaves this computer."""
+    try:
+        return grok_live.mint_session(profile)
+    except grok_live.GrokLiveError as error:
+        return JSONResponse(status_code=error.status_code, content={"ok": False, "detail": error.detail})

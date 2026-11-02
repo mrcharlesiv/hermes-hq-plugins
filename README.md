@@ -212,6 +212,12 @@ the Terminal off on a computer, create an empty `terminal.off` file in `~/.herme
 works on Mac, Linux and Windows, and only after Hermes restarts. On Windows the shell is PowerShell (PowerShell 7 when
 it's installed); Hermes in WSL gets your Linux shell.
 
+Version 0.9.26 mints the **Grok Live** voice session a short-lived xAI token. `GET .../voice/grok-live/status`
+tells Hermes HQ whether a bot's xAI credentials (your subscription sign-in or `XAI_API_KEY`) can start a voice
+session, without calling xAI; `POST .../voice/grok-live/session` asks xAI for a token good for a few minutes so the
+app's WebRTC session can talk to Grok directly — the bearer that authorizes it never reaches the phone. Configure a
+bot's model, voice and extra instructions under `voice.grok_live` in its `config.yaml`.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

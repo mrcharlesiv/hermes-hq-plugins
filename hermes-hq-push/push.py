@@ -472,7 +472,9 @@ def status_body(root: Path, sender) -> dict:
     minute goes a minute after its Done, not 15 (the app now shows a card for any reply still going when the phone is
     left), and the end's copy says the same end time; the app offers an update to a plugin without it. `terminal` (0.9.25,
     added by dashboard/plugin_api.py from terminal.status): the /terminal websocket opens a shell on this computer for the
-    app's Terminal page (terminal.py); `terminalOff`: plugin-data's terminal.off turns it off."""
+    app's Terminal page (terminal.py); `terminalOff`: plugin-data's terminal.off turns it off. 0.9.26 adds
+    GET /voice/grok-live/status and POST /voice/grok-live/session (grok_live.py), their own routes rather than fields
+    here: the app probes them directly to mint the Grok Live voice session's short-lived xAI token."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
@@ -859,7 +861,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.25"
+PLUGIN_VERSION = "0.9.26"
 
 
 class Relay:
