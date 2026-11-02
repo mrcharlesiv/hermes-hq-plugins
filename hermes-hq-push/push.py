@@ -861,7 +861,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.26"
+PLUGIN_VERSION = "0.9.27"
 
 
 class Relay:

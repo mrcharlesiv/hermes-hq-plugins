@@ -1,5 +1,5 @@
-"""Grok Live voice tokens (0.9.26, ``voice.grok_live`` in config.yaml): the app's WebRTC voice session talks to
-xAI's Realtime API directly, so this only mints the short-lived ephemeral token (``POST
+"""Grok Live voice tokens (0.9.26, ``voice.grok_live`` in config.yaml): the app's voice session (a WebSocket) talks
+to xAI's Realtime API directly, so this only mints the short-lived ephemeral token (``POST
 .../realtime/client_secrets``) xAI's own guide asks for — the bearer that authorizes it never reaches the phone.
 
 Two routes, both behind the dashboard's normal login like everything else in ``dashboard/plugin_api.py``:
@@ -15,7 +15,9 @@ Two routes, both behind the dashboard's normal login like everything else in ``d
 
 Both routes run under the bot's own profile (``?profile=``, the same scope every other route here uses,
 ``hermes_cli.web_server_profiles._config_profile_scope``) so a second bot's own xAI credentials and
-``voice.grok_live`` settings are the ones read, not the dashboard's own.
+``voice.grok_live`` settings are the ones read, not the dashboard's own. A bot with no xAI login or key of its own
+borrows the main bot's (0.9.27): the person signs in to Grok once (``hermes auth add xai-oauth``) and every bot on the
+computer can talk with it, each still with its own name, voice and instructions. Status says ``"shared": true`` then.
 
 Hermes imports are wrapped in ``try/except``: an older Hermes without ``tools.xai_http`` (or without xAI OAuth at
 all, e.g. a Windows build that predates it) answers ``available: false, reason: "unsupported_hermes"`` rather than
@@ -174,15 +176,40 @@ def status(profile: str = "") -> dict:
         except Exception:
             return {"ok": True, "available": False, "auth": None, "model": model, "voice": voice,
                     "reason": "unsupported_hermes"}
-        try:
-            available = bool(has_xai_credentials())
-        except Exception:
-            log.warning("hermes-hq-push: grok-live status probe failed", exc_info=True)
-            available = False
-        if not available:
-            return {"ok": True, "available": False, "auth": None, "model": model, "voice": voice,
-                    "reason": "no_credentials"}
-        return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice}
+        if _has_credentials(has_xai_credentials):
+            return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice}
+    if profile:
+        with _scope(""):
+            if _has_credentials(has_xai_credentials):
+                return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice,
+                        "shared": True}
+    return {"ok": True, "available": False, "auth": None, "model": model, "voice": voice, "reason": "no_credentials"}
+
+
+def _has_credentials(probe) -> bool:
+    try:
+        return bool(probe())
+    except Exception:
+        log.warning("hermes-hq-push: grok-live status probe failed", exc_info=True)
+        return False
+
+
+def _credentials_profile(profile: str) -> str:
+    """The profile whose xAI login mints the token: the bot's own, else the main bot's (``""``) when the bot has
+    none. Network-free, like ``status``."""
+    if not profile:
+        return profile
+    try:
+        from tools.xai_http import has_xai_credentials
+    except Exception:
+        return profile
+    with _scope(profile):
+        if _has_credentials(has_xai_credentials):
+            return profile
+    with _scope(""):
+        if _has_credentials(has_xai_credentials):
+            return ""
+    return profile
 
 
 def _post_client_secret(creds: dict, headers_fn) -> "object":
@@ -216,6 +243,7 @@ def mint_session(profile: str = "") -> dict:
         model, voice = model_of(section), voice_of(section)
         instructions = instructions_of(section, _persona())
 
+    with _scope(_credentials_profile(profile)):
         try:
             creds = resolve_xai_http_credentials()
         except Exception:

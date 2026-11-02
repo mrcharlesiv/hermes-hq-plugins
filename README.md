@@ -215,8 +215,11 @@ it's installed); Hermes in WSL gets your Linux shell.
 Version 0.9.26 mints the **Grok Live** voice session a short-lived xAI token. `GET .../voice/grok-live/status`
 tells Hermes HQ whether a bot's xAI credentials (your subscription sign-in or `XAI_API_KEY`) can start a voice
 session, without calling xAI; `POST .../voice/grok-live/session` asks xAI for a token good for a few minutes so the
-app's WebRTC session can talk to Grok directly — the bearer that authorizes it never reaches the phone. Configure a
+app's voice session can talk to Grok directly — the bearer that authorizes it never reaches the phone. Configure a
 bot's model, voice and extra instructions under `voice.grok_live` in its `config.yaml`.
+
+Version 0.9.27: a bot with no xAI sign-in or key of its own uses the main bot's, so one `hermes auth add xai-oauth`
+lets every bot on the computer talk with Grok Live, each with its own name, voice and instructions.
 
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
