@@ -420,6 +420,19 @@ def test_status_without_any_login_anywhere_is_unavailable(monkeypatch):
             root_auth.write_text(had)
 
 
+def test_status_borrows_even_when_the_route_gets_no_profile(monkeypatch):
+    # The dashboard can scope the request to the bot itself and pass the route an empty profile.
+    root_auth = ROOT / "auth.json"
+    had = root_auth.read_text() if root_auth.exists() else None
+    root_auth.write_text(json.dumps({"credential_pool": {"xai-oauth": [{"access_token": "root-tok"}]}}))
+    try:
+        monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: False)
+        result = grok_live.status("")
+        assert result["available"] is True and result["shared"] is True
+    finally:
+        root_auth.write_text(had) if had is not None else root_auth.unlink()
+
+
 def test_status_of_the_main_bot_itself_is_never_shared(monkeypatch):
     monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: True)
     assert "shared" not in grok_live.status("")

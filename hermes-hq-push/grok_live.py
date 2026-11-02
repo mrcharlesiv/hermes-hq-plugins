@@ -167,7 +167,9 @@ def status(profile: str = "") -> dict:
                     "reason": "unsupported_hermes"}
         if _has_credentials(has_xai_credentials):
             return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice}
-    if profile and _main_bot_has_xai_login():
+    # Not ``if profile``: the dashboard may take ``?profile=`` itself and hand the route an empty one while the
+    # request already runs under that bot's home. The main bot never gets here (its own probe said yes).
+    if _main_bot_has_xai_login():
         return {"ok": True, "available": True, "auth": "subscription", "model": model, "voice": voice, "shared": True}
     return {"ok": True, "available": False, "auth": None, "model": model, "voice": voice, "reason": "no_credentials"}
 
