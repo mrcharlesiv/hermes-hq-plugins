@@ -36,28 +36,50 @@
     .tile { grid-template-rows: auto auto minmax(0, 1fr) auto auto; grid-template-areas: "head" "value" "chart" "list" "foot"; }
     .list { display: grid !important; }
   }
+  /* Big and wide (Extra Large on an iPad or Mac): the chart and the list side by side. */
+  @container (min-width: 560px) and (min-height: 300px) {
+    .tile { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); grid-template-rows: auto auto 1fr auto;
+            grid-template-areas: "head head" "value value" "chart list" "foot foot"; }
+    .list { display: grid !important; align-content: start; }
+  }
+  /* Short (a card on Artifacts, ~140 pt): the number and the chart only. */
+  @container (max-height: 150px) {
+    .foot { display: none; }
+  }
   .head, .value, .foot, .list { min-width: 0; }
   .chart { grid-area: chart; min-height: 0; min-width: 0; }
   .chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
   /* ---- end KEEP ---- */
 
   /* ---- The look: change anything below to suit the person. ---- */
-  :root { --bg: #f6f6f3; --ink: #17181a; --ink2: #6b6e75; --accent: #2f6fed; --good: #1a9b55; --bad: #d64545; --line: rgba(0,0,0,.08); }
+  /* The app hands every page the person's theme (--card, --foreground, --muted-foreground, --accent, --border), so a
+     tile matches their app; the second value is used anywhere else (the check, a browser). Pick your own colours
+     only when the person asks for a look. */
+  :root { --bg: var(--card, #f6f6f3); --ink: var(--foreground, #17181a); --ink2: var(--muted-foreground, #6b6e75);
+          --tint: var(--accent, #2f6fed); --good: #1a9b55; --bad: #d64545; --line: var(--border, rgba(0,0,0,.08)); }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #121417; --ink: #f2f3f5; --ink2: #9aa0a8; --accent: #6ea0ff; --good: #3ccf7e; --bad: #ff6b6b; --line: rgba(255,255,255,.1); }
+    :root { --bg: var(--card, #121417); --ink: var(--foreground, #f2f3f5); --ink2: var(--muted-foreground, #9aa0a8);
+            --tint: var(--accent, #6ea0ff); --good: #3ccf7e; --bad: #ff6b6b; --line: var(--border, rgba(255,255,255,.1)); }
   }
   body { background: var(--bg); color: var(--ink);
          font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
   .head { grid-area: head; display: flex; align-items: baseline; justify-content: space-between; gap: .5em; }
   .title { font-size: .85em; font-weight: 600; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .value { grid-area: value; display: flex; align-items: baseline; gap: .4em; flex-wrap: wrap; }
-  .big { font-size: 2.2em; font-weight: 700; letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+  .big { font-size: 2.2em; font-weight: 700; letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums;
+          white-space: nowrap; }
+  .big.empty { color: var(--ink2); font-size: 1.3em; font-weight: 600; }
   .delta { font-size: .85em; font-weight: 600; }
   .delta.up { color: var(--good); } .delta.down { color: var(--bad); }
   .list { grid-area: list; display: none; gap: .35em; font-size: .8em; }
   .row { display: flex; justify-content: space-between; gap: 1em; border-top: 1px solid var(--line); padding-top: .35em; }
   .row span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
   .foot { grid-area: foot; font-size: .72em; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .foot.failed { color: var(--bad); }
+  /* Tall tiles have room for a whole reason why an update failed: two lines, not one cut short. */
+  @container (min-height: 300px) {
+    .foot { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  }
 </style>
 </head>
 <body>
@@ -70,7 +92,9 @@
 </div>
 
 <!-- KEEP: the data lives in the file. Nothing is fetched: the page is pictured with no network. To keep the tile
-     live, a scheduled job rewrites this block (and "updated") and saves the file at the same path. -->
+     live, a scheduled job rewrites this block and saves the file at the same path. "updated" always carries its
+     time zone ("…Z" or "+01:00"): the phone shows it in its own time. "error": a short reason when the last update
+     failed (the last good numbers stay); null when it worked. -->
 <script type="application/json" id="data">
 {
   "title": "Revenue this week",
@@ -79,19 +103,28 @@
   "trend": "up",
   "series": [8.1, 9.4, 8.8, 10.2, 11.0, 10.6, 12.5],
   "rows": [["Stripe", "$9,120"], ["App Store", "$2,410"], ["Other", "$950"]],
-  "updated": "2026-11-03T09:30:00"
+  "updated": "2026-11-03T15:30:00Z",
+  "error": null
 }
 </script>
 <script>
 (function () {
   var d = JSON.parse(document.getElementById("data").textContent);
   function text(id, v) { document.getElementById(id).textContent = v == null ? "" : v; }
-  text("title", d.title); text("big", d.value); text("delta", d.delta);
+  text("title", d.title); text("delta", d.delta);
+  // KEEP: never a blank tile: no number yet says so.
+  var big = document.getElementById("big");
+  if (d.value == null || d.value === "") { big.textContent = "No data yet"; big.className = "big empty"; } else { text("big", d.value); }
   document.getElementById("delta").className = "delta " + (d.trend || "");
+  // A time, not "5 min ago": the tile is a picture, redrawn now and then, not every minute.
+  var when = "";
   if (d.updated) {
     var t = new Date(d.updated);
-    text("foot", isNaN(t) ? d.updated : "Updated " + t.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }));
+    when = isNaN(t) ? d.updated : t.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
   }
+  var foot = document.getElementById("foot");
+  if (d.error) { foot.textContent = "Couldn’t update" + (when ? " · last " + when : "") + " · " + d.error; foot.className = "foot failed"; }
+  else if (when) { foot.textContent = "Updated " + when; }
   var list = document.getElementById("list");
   (d.rows || []).forEach(function (r) {
     var row = document.createElement("div"); row.className = "row";
@@ -107,10 +140,19 @@
     var line = pts.map(function (p, i) { return (i ? "L" : "M") + p[0].toFixed(2) + " " + p[1].toFixed(2); }).join(" ");
     document.getElementById("chart").innerHTML =
       '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
-      '<path d="' + line + ' L' + W + ' ' + H + ' L0 ' + H + ' Z" fill="var(--accent)" opacity=".14"/>' +
-      '<path d="' + line + '" fill="none" stroke="var(--accent)" stroke-width="2.2" vector-effect="non-scaling-stroke"' +
+      '<path d="' + line + ' L' + W + ' ' + H + ' L0 ' + H + ' Z" fill="var(--tint)" opacity=".14"/>' +
+      '<path d="' + line + '" fill="none" stroke="var(--tint)" stroke-width="2.2" vector-effect="non-scaling-stroke"' +
       ' stroke-linejoin="round" stroke-linecap="round"/></svg>';
   }
+  // KEEP: a number too wide for its tile shrinks to fit ("$1,234,567" in a Small tile), never cut or wrapped.
+  function fit(el) {
+    el.style.fontSize = "";
+    for (var size = parseFloat(getComputedStyle(el).fontSize), i = 0; i < 30 && el.scrollWidth > el.parentNode.clientWidth && size > 12; i++) {
+      size -= 1; el.style.fontSize = size + "px";
+    }
+  }
+  fit(big);
+  addEventListener("resize", function () { fit(big); });
 })();
 </script>
 </body>

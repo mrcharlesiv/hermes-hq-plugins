@@ -103,6 +103,26 @@ def test_the_tile_has_a_plain_name(title, ok):
     assert (named == []) == ok, named
 
 
+@pytest.mark.parametrize("stamp, ok", [
+    ("2026-11-03T15:30:00Z", True),
+    ("2026-11-03T10:30:00-05:00", True),
+    ("2026-11-03T15:30:00", False),
+    ("2026-11-03 15:30", False),
+])
+def test_the_updated_time_carries_its_zone(stamp, ok):
+    page = (f'<meta name="viewport" content="width=device-width"><style>html,body{{height:100%;width:100%;overflow:hidden}}</style>'
+            f'<script type="application/json" id="data">{{"updated": "{stamp}"}}</script>')
+    problems, _ = check_tile.static_problems(page)
+    zoned = [p for p in problems if "time zone" in p]
+    assert (zoned == []) == ok, zoned
+
+
+def test_an_entrance_animation_is_warned_about():
+    page = '<meta name="viewport" content="width=device-width"><style>@keyframes grow{from{height:0}}.bar{animation: grow 1s}</style>'
+    _, warnings = check_tile.static_problems(page)
+    assert any("animates" in w for w in warnings), warnings
+
+
 def test_a_link_to_tap_is_fine_and_a_page_with_no_viewport_or_fill_is_not():
     problems, _ = check_tile.static_problems('<a href="https://example.com">Open</a>')
     assert not any("network" in p for p in problems)
@@ -138,4 +158,4 @@ def test_drawn_at_every_size_the_template_fits_and_a_phone_page_does_not(tmp_pat
                      '<h1 style="font-size:40px">Revenue</h1><p>' + "Lots of words. " * 80 + "</p></body>")
     problems, note = check_tile.render_problems(str(phone), check_tile.find_chrome(), None)
     assert note is None
-    assert any(p.startswith("small tile") and "scrolls" in p for p in problems), problems
+    assert any(p.startswith("small (") and "scrolls" in p for p in problems), problems

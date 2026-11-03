@@ -24,9 +24,10 @@ import tempfile
 
 # The windows the app draws a tile's page in: the tile's real size in points, as a Home Screen widget is drawn
 # (name, width, height, look). A phone has two ~175 pt columns; an iPad or a Mac has more, so Extra Large is wide there.
-SHAPES = [("small", 175, 175, "light"), ("small", 175, 175, "dark"), ("medium", 360, 175, "light"),
-          ("medium", 360, 175, "dark"), ("large", 360, 360, "light"), ("extra-large", 360, 550, "dark"),
-          ("extra-large on an iPad or Mac", 760, 570, "light")]
+SHAPES = [("small", 175, 175, "light"), ("small", 175, 175, "dark"), ("small on a small phone", 161, 161, "light"),
+          ("medium", 362, 175, "light"), ("medium", 362, 175, "dark"), ("large", 362, 382, "light"),
+          ("extra-large", 362, 589, "dark"), ("card on Artifacts", 260, 140, "light"), ("card on Tiles", 370, 210, "dark"),
+          ("extra-large on an iPad or Mac", 760, 570, "light"), ("opened full screen on a phone", 402, 780, "dark")]
 MAX_BYTES = 1_500_000
 SHEET_WIDTH = 760
 
@@ -68,10 +69,10 @@ def static_problems(html):
         problems.append("nothing fills the window (no 100vh/100vw, 100% or 100cqh/100cqw on the page): it will sit small in the tile")
     if not re.search(r'overflow\s*:\s*hidden', html):
         warnings.append("html/body don't say overflow: hidden; a page that scrolls is pictured from its top only")
-    for m in re.finditer(r'(?<![-\w])(?:min-)?width\s*:\s*(\d{3,})px', html):
+    for m in re.finditer(r'(?<![-\w(])(?:min-)?width\s*:\s*(\d{3,})px', html):
         if int(m.group(1)) > 150:
             problems.append(f"fixed width {m.group(1)}px: wider than a Small tile (~160-195 pt); use %, fr, cqw or vw")
-    for m in re.finditer(r'(?<![-\w])(?:min-)?height\s*:\s*(\d{3,})px', html):
+    for m in re.finditer(r'(?<![-\w(])(?:min-)?height\s*:\s*(\d{3,})px', html):
         if int(m.group(1)) > 150:
             problems.append(f"fixed height {m.group(1)}px: taller than a Small or Medium tile (~160-195 pt); use %, fr, cqh or vh")
     for m in re.finditer(r'<(?:svg|canvas|img)\b[^>]*\bwidth\s*=\s*["\']?(\d{3,})(?!%)', html, re.I):
@@ -80,6 +81,14 @@ def static_problems(html):
     px_fonts = [int(v) for v in re.findall(r'font-size\s*:\s*(\d+)px', html)]
     if px_fonts and not re.search(r'font-size\s*:\s*clamp\(|font-size\s*:[^;]*(?:vmin|vw|vh|cq)', html):
         warnings.append("every font size is in px: text won't grow in a Large tile or shrink in a Medium one (use clamp() with vmin/cqmin, then em)")
+    # The picture is taken 0.7 s after the page loads: anything that animates in is caught halfway.
+    if re.search(r"@keyframes|\banimation\s*:|\.animate\s*\(|requestAnimationFrame", html):
+        warnings.append("animates (an animation or @keyframes): the app pictures the tile 0.7 s after it loads, so a chart that grows in "
+                        "is caught halfway; draw the finished state at once")
+    # "updated" with no time zone is read as the phone's own time: a bot on a UTC server shows the wrong hour.
+    for m in re.finditer(r'"(?:updated|updated_at|as_of|time)"\s*:\s*"(\d{4}-\d\d-\d\d[T ]\d\d:\d\d(?::\d\d(?:\.\d+)?)?)"', html):
+        problems.append(f'"{m.group(1)}" has no time zone: write it with one ("…Z" or "+01:00", e.g. Python '
+                        "datetime.now().astimezone().isoformat(timespec='seconds')) so the phone shows its own time")
     if "prefers-color-scheme" not in html:
         warnings.append("no dark look (@media (prefers-color-scheme: dark)): the tile is drawn in the app's light or dark look")
     return problems, warnings
@@ -104,7 +113,7 @@ def find_chrome():
 
 # Appended to a copy of the page: after the page's own scripts settle (the app waits 0.7 s), measure the window and
 # tell the sheet holding it.
-PROBE = """
+PROBE = r"""
 <script>
 setTimeout(function(){
   // innerWidth/innerHeight: a page with no <!doctype> (quirks mode) reports its whole height as clientHeight.
@@ -119,6 +128,22 @@ setTimeout(function(){
     var own=false; for (var c=e.firstChild;c;c=c.nextSibling) if(c.nodeType===3&&c.nodeValue.trim()){own=true;break}
     if (own && parseFloat(getComputedStyle(e).fontSize) < 9) tiny++; }
   if (cut) out.push(cut + " element(s) run past the window's edge (first: " + first + ")");
+  // Text hard to read on its background (under 3:1), and text cut off inside its box.
+  function rgb(c){ var m=c&&c.match(/[\d.]+/g); return m&&m.length>=3 ? [+m[0],+m[1],+m[2],m.length>3?+m[3]:1] : null; }
+  function lum(c){ return [c[0],c[1],c[2]].map(function(v){ v/=255; return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4); })
+    .reduce(function(a,v,i){ return a+v*[0.2126,0.7152,0.0722][i]; },0); }
+  function back(e){ for (var n=e;n&&n.nodeType===1;n=n.parentElement){ var b=rgb(getComputedStyle(n).backgroundColor); if (b&&b[3]>0.5) return b; }
+    return matchMedia("(prefers-color-scheme: dark)").matches ? [0,0,0,1] : [255,255,255,1]; }
+  var faint=0, faintFirst="", clipped=0, clippedFirst="";
+  for (var j=0;j<all.length;j++){ var el=all[j], st=getComputedStyle(el), rr=el.getBoundingClientRect();
+    if (rr.width<1||rr.height<1||st.visibility==="hidden"||+st.opacity===0) continue;
+    var mine=false; for (var k=el.firstChild;k;k=k.nextSibling) if(k.nodeType===3&&k.nodeValue.trim()){mine=true;break}
+    if (!mine) continue;
+    var fg=rgb(st.color), bg=back(el);
+    if (fg&&bg){ var a=lum(fg), b=lum(bg), ratio=(Math.max(a,b)+0.05)/(Math.min(a,b)+0.05); if (ratio<3){ faint++; if(!faintFirst) faintFirst=label(el)+" "+ratio.toFixed(1)+":1"; } }
+    if (st.overflow!=="visible" && (el.scrollWidth>el.clientWidth+1)){ clipped++; if(!clippedFirst) clippedFirst=label(el)+" \u201c"+el.textContent.trim().slice(0,30)+"\u201d"; } }
+  if (faint) out.push(faint + " piece(s) of text too faint to read on their background (first: " + faintFirst + "; aim for 4.5:1)");
+  if (clipped) out.push("cut: " + clipped + " piece(s) of text cut off with \u2026 (first: " + clippedFirst + ")");
   if (tiny) out.push(tiny + " piece(s) of text smaller than 9 pt: unreadable in this tile");
   var text=document.body ? document.body.innerText.trim().length : 0;
   if (!text && !document.querySelector("svg,canvas,img")) out.push("draws nothing (no text or picture)");
@@ -158,7 +183,7 @@ def render_problems(path, chrome, shots):
         with open(host, "w", encoding="utf-8") as f:
             f.write(sheet(SHAPES).replace('src="tile.html', f'src="{os.path.basename(tile)}'))
         try:
-            height = 2600   # every size, wrapped two or three across
+            height = 3700   # every size, wrapped two or three across
             base = [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-sandbox", "--no-first-run",
                     "--allow-file-access-from-files", "--force-device-scale-factor=2", f"--window-size={SHEET_WIDTH + 32},{height}",
                     "--virtual-time-budget=3000", f"--user-data-dir={tmp}/profile"]
@@ -171,9 +196,14 @@ def render_problems(path, chrome, shots):
             if not m:
                 return [], f"couldn't draw it with {name} (the page never finished); the file checks above still apply"
             found = json.loads(m.group(1).replace("&quot;", '"').replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">"))
-            problems = []
+            problems, cuts = [], []
             for i, (shape, w, h, look) in enumerate(SHAPES):
-                problems += [f"{shape} tile ({w}×{h}, {look}): {p}" for p in found.get(str(i), [])]
+                for p in found.get(str(i), []):
+                    line = f"{shape} ({w}×{h}, {look}): {p.removeprefix('cut: ')}"
+                    # Text ending in "…" is a choice (a long name in a Small tile); worth a look, not a failure.
+                    (cuts if p.startswith("cut: ") else problems).append(line)
+            if cuts:
+                problems.append("WARN " + "; ".join(cuts))
             if shots:
                 os.makedirs(shots, exist_ok=True)
                 try:
@@ -212,7 +242,8 @@ def main():
         if chrome:
             shots = args.shots or os.path.splitext(path)[0] + "-tiles"
             found, note = render_problems(path, chrome, shots)
-            problems += found
+            problems += [p for p in found if not p.startswith("WARN ")]
+            warnings += [p[5:] for p in found if p.startswith("WARN ")]
         else:
             note = "no Chrome/Chromium here, so the page wasn't drawn; check the sizing rules by reading the file"
     for p in problems:
