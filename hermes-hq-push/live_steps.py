@@ -11,11 +11,21 @@ which differ only for combined characters such as some emoji.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass, field
+from pathlib import Path
+
+# The alerts' secret masking (alert_copy.redact), loaded by path as push.py loads it: the plugin isn't a package.
+alert_copy = sys.modules.get("hermes_hq_push_copy")
+if alert_copy is None:
+    _copy_spec = importlib.util.spec_from_file_location("hermes_hq_push_copy", Path(__file__).with_name("alert_copy.py"))
+    alert_copy = importlib.util.module_from_spec(_copy_spec)
+    _copy_spec.loader.exec_module(alert_copy)
 
 # ToolNow.subjectLimit: the longest subject kept whole; longer ones end in "…".
 SUBJECT_LIMIT = 36
@@ -198,8 +208,8 @@ def short(text: str) -> str:
 
 
 def command(raw: str) -> str:
-    """ToolNow.command: a command's first line without `cd … &&`, `VAR=value`, `sudo` or `env` in front, each path as
-    its last part ("python3 /a/b/run.py --fast" → "python3 run.py --fast")."""
+    """ToolNow.command: a command's first line without `cd … &&`, `VAR=value` or `env` in front, each path as its last
+    part ("python3 /a/b/run.py --fast" → "python3 run.py --fast"). `sudo` stays: the card says when a bot runs as root."""
     lines = _swift_split(raw, "\n")
     line = _trim_spaces(lines[0] if lines else "")
     steps = [s for s in (_trim_spaces(part) for part in line.split("&&")) if s]
@@ -207,8 +217,11 @@ def command(raw: str) -> str:
     if real is not None:
         line = real
     words = _swift_split(line, " ")
+    root = []
     while words and (words[0] in ("sudo", "env") or ("=" in words[0] and not words[0].startswith("-"))):
-        words.pop(0)
+        if words.pop(0) == "sudo":
+            root = ["sudo"]
+    words = root + words
 
     def last_part(word: str) -> str:
         if "/" not in word or "://" in word:
@@ -375,7 +388,8 @@ def phrase(name, args=None) -> str:
         return PLAIN[tool]
     if tool == "terminal":
         raw = _str(args.get("command"))
-        cmd = command(raw) if raw is not None else ""
+        # Masked first: the card is on the Lock Screen, and a password typed into a command must not be.
+        cmd = command(alert_copy.redact(raw)) if raw is not None else ""
         return "running " + short(cmd) if cmd else "running a command"
     if tool == "delegate_task":
         tasks = args.get("tasks")

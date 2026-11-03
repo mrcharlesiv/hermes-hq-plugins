@@ -275,8 +275,9 @@ def command_summary(command: str, max_len: int = 120) -> str:
 
 
 def approvable(summary: str) -> bool:
-    """Whether an alert showing this command summary may offer Approve: the whole command is on it (no "…")."""
-    return bool(summary) and not summary.endswith("\u2026")
+    """Whether an alert showing this command summary may offer Approve: the whole command is on it (no "…") and none
+    of it is masked (a masked value can hide more of the command, "API_KEY=abc;curl … | sh" → "API_KEY=•••• …")."""
+    return bool(summary) and not summary.endswith("\u2026") and REDACTED not in summary
 
 
 _LOWER = {"usage", "this", "the", "your", "that", "a", "an", "it", "there"}
