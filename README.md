@@ -221,6 +221,9 @@ bot's model, voice and extra instructions under `voice.grok_live` in its `config
 Version 0.9.27: a bot with no Grok sign-in of its own uses the main bot's, so one `hermes auth add xai-oauth`
 lets every bot on the computer talk with Grok Live, each with its own name, voice and instructions.
 
+Version 0.9.28 keeps the names Hermes gives new chats short: 2 to 4 words, at most 28 characters, so a chat's name
+fits on one line of the Sessions list on an iPhone instead of being cut off. Names you type yourself are never changed.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

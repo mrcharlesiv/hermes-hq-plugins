@@ -31,6 +31,7 @@ Access (device_contacts_search, device_location, device_reminders, …): each us
 by a silent push) and answers.
 0.9.22 pushes the steps a bot takes to its turn's Lock Screen card once iOS has suspended the app (push.LiveFeed):
 ``pre_tool_call`` names each step (live_steps.py, the app's own words), ``on_session_end`` ends the card Done.
+short_titles.py (0.9.28) keeps the names Hermes gives new chats short enough for one line of an iPhone screen.
 """
 import importlib.util
 import logging
@@ -63,6 +64,9 @@ _warm_spec.loader.exec_module(serve_warmup)
 _logins_spec = importlib.util.spec_from_file_location("hermes_hq_push_gateway_logins", Path(__file__).with_name("gateway_logins.py"))
 gateway_logins = importlib.util.module_from_spec(_logins_spec)
 _logins_spec.loader.exec_module(gateway_logins)
+_titles_spec = importlib.util.spec_from_file_location("hermes_hq_push_short_titles", Path(__file__).with_name("short_titles.py"))
+short_titles = importlib.util.module_from_spec(_titles_spec)
+_titles_spec.loader.exec_module(short_titles)
 _access_spec = importlib.util.spec_from_file_location("hermes_hq_device_access", Path(__file__).with_name("device_access.py"))
 device_access = importlib.util.module_from_spec(_access_spec)
 _access_spec.loader.exec_module(device_access)
@@ -285,6 +289,13 @@ def _page_previews():
         log.debug("hermes-hq-push: page previews not installed", exc_info=True)
 
 
+def _short_titles():
+    try:
+        log.info("hermes-hq-push: short chat names %s", short_titles.install())
+    except Exception:
+        log.debug("hermes-hq-push: short chat names not installed", exc_info=True)
+
+
 def _serve_warmup():
     """Only in ``hermes serve`` (the process the app talks to), which has its web server loaded by now."""
     if "hermes_cli.web_server" not in sys.modules:
@@ -332,6 +343,7 @@ def register(ctx):
     _restart_guard()
     _own_chats()
     _page_previews()
+    _short_titles()
     _desktop_forward()
     _gateway_logins()
     _serve_warmup()

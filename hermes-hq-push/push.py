@@ -474,11 +474,13 @@ def status_body(root: Path, sender) -> dict:
     added by dashboard/plugin_api.py from terminal.status): the /terminal websocket opens a shell on this computer for the
     app's Terminal page (terminal.py); `terminalOff`: plugin-data's terminal.off turns it off. 0.9.26 adds
     GET /voice/grok-live/status and POST /voice/grok-live/session (grok_live.py), their own routes rather than fields
-    here: the app probes them directly to mint the Grok Live voice session's short-lived xAI token."""
+    here: the app probes them directly to mint the Grok Live voice session's short-lived xAI token. `shortTitles`
+    (0.9.28): the names Hermes gives new chats are 2 to 4 words and at most 28 characters, one line of an iPhone
+    screen (short_titles.py)."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "liveSteps": True, "liveEnds": True, "liveQuick": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "liveSteps": True, "liveEnds": True, "liveQuick": True, "shortTitles": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -861,7 +863,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.27"
+PLUGIN_VERSION = "0.9.28"
 
 
 class Relay:
