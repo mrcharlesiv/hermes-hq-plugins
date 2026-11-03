@@ -85,6 +85,24 @@ def test_what_breaks_a_tile_is_named(page, says):
     assert any(says in p for p in problems), problems
 
 
+@pytest.mark.parametrize("title, ok", [
+    ("Revenue This Week", True),
+    ("Calls & Meetings · Today", True),
+    ("", False),
+    ("Tile title", False),
+    ("revenue-week.html", False),
+    ("revenue-week", False),
+    ("calls_this_week", False),
+    ("A name far too long to sit under a small tile on the phone", False),
+])
+def test_the_tile_has_a_plain_name(title, ok):
+    head = (f'<title>{title}</title><meta name="viewport" content="width=device-width">'
+            '<style>html,body{height:100%;width:100%;overflow:hidden}</style>')
+    problems, _ = check_tile.static_problems(head)
+    named = [p for p in problems if "<title>" in p]
+    assert (named == []) == ok, named
+
+
 def test_a_link_to_tap_is_fine_and_a_page_with_no_viewport_or_fill_is_not():
     problems, _ = check_tile.static_problems('<a href="https://example.com">Open</a>')
     assert not any("network" in p for p in problems)

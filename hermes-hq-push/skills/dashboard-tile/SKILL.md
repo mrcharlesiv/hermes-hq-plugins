@@ -38,7 +38,9 @@ first (one number, a few words, maybe a tiny chart), then let bigger tiles show 
    beside the chart; tall (`max-aspect-ratio: 4/5`) has room for a list. Hide extras rather than shrinking them.
 6. **Light and dark.** Colours as CSS variables with `@media (prefers-color-scheme: dark)`; the app draws the tile
    in the look it's in. `<meta name="color-scheme" content="light dark">`.
-7. `<meta name="viewport" content="width=device-width, initial-scale=1">`, and a `<title>` (the tile's name).
+7. `<meta name="viewport" content="width=device-width, initial-scale=1">`, and a `<title>`: **the tile's name in the
+   app**, in plain words and Title Case, such as `Revenue This Week` or `Calls Today`. Never a file name, no `.html`,
+   no dashes or underscores, at most 40 characters.
 8. Scripts must finish drawing within half a second of loading; the picture is taken then.
 
 ## Steps
@@ -56,8 +58,8 @@ first (one number, a few words, maybe a tiny chart), then let bigger tiles show 
    MEDIA:/absolute/path/to/tile.html
    ```
 
-   Tell them: hold the card and choose **Pin to Dashboard**, then pick its size. (If they asked from the Dashboard's
-   **New Tile**, the app pins it for them.)
+   Tell them: hold the card and choose **Pin as Tile**, then pick its size. (If they asked from **Tiles › New Tile**,
+   the app pins it for them.)
 
 ## Keeping it live
 
@@ -70,8 +72,12 @@ schedule** with a scheduled job (cron), never by fetching from the page:
   Schedule a job that runs it. Run it once yourself first and run the check again.
 - When the data needs you (reading mail, judging something), schedule a job whose prompt is: "Update the Dashboard
   tile `<path>` with the dashboard-tile skill: <what to show>. Keep the path and the look. Reply [SILENT]."
-- Choose a sensible interval (every 15 minutes for live numbers, hourly or daily for most things), and tell the
-  person how often it updates and how to change it.
+- Choose a sensible interval (every 15 minutes for live numbers, hourly or daily for most things).
+- **Write the job's id into the page** (and keep it there each time the page is rewritten), so the app's tile menu
+  can change how often it runs, update it now, or pause it:
+  `<meta name="hq-tile-job" content="<job id>">` in the `<head>`. Make one job per tile.
+- Tell the person how often it updates, and that they can change it from the tile: hold it (or open it and tap the
+  clock) and choose **How Often**.
 
 The app redraws pinned tiles when you rewrite the file during a chat with it, when the person pulls to refresh,
 and when it next opens the Dashboard after the file changed.

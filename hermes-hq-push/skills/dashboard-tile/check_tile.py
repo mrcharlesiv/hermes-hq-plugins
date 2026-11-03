@@ -37,6 +37,17 @@ def static_problems(html):
         problems.append(f"the file is {len(html) // 1000} KB; keep a tile under {MAX_BYTES // 1_000_000} MB (pictures small, or drawn in SVG)")
     if not re.search(r'<meta[^>]+name=["\']viewport["\'][^>]*width=device-width', html, re.I):
         problems.append('no <meta name="viewport" content="width=device-width, initial-scale=1">: the page is laid out 980 wide and shrunk')
+    # The tile's name in the app is the page's <title> (Hermes HQ: "Revenue This Week", not "revenue.html").
+    m = re.search(r"<title[^>]*>([\s\S]*?)</title>", html, re.I)
+    title = " ".join(m.group(1).split()) if m else ""
+    if not title:
+        problems.append('no <title>: the app names the tile from it; give it a plain name such as "Revenue This Week"')
+    elif title.lower() in ("tile title", "title", "untitled", "document", "tile"):
+        problems.append(f'the <title> is still "{title}": name the tile in plain words, such as "Revenue This Week"')
+    elif re.search(r"\.html?\b|[/\\]|^[\w-]+_[\w_-]+$|^[a-z0-9]+(-[a-z0-9]+)+$", title, re.I):
+        problems.append(f'the <title> "{title}" reads as a file name: the app shows it as the tile\'s name, so use plain words ("Revenue This Week")')
+    elif len(title) > 40:
+        problems.append(f'the <title> is {len(title)} characters: keep the tile\'s name to 40 or fewer (it sits under a small tile)')
     # Anything from the network: scripts, styles, fonts, pictures, fetch/XHR, iframes.
     for m in re.finditer(r'\b(?:src|href)\s*=\s*["\'](https?:)?//[^"\']+', html, re.I):
         tag = html.rfind("<", 0, m.start())

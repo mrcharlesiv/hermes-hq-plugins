@@ -32,7 +32,7 @@ by a silent push) and answers.
 0.9.22 pushes the steps a bot takes to its turn's Lock Screen card once iOS has suspended the app (push.LiveFeed):
 ``pre_tool_call`` names each step (live_steps.py, the app's own words), ``on_session_end`` ends the card Done.
 short_titles.py (0.9.28) keeps the names Hermes gives new chats short enough for one line of an iPhone screen.
-skills/dashboard-tile (0.9.30) is a skill offered to every bot (hermes-hq-push:dashboard-tile): how to make a page for the
+skills/dashboard-tile (0.9.30; plain tile names and the tile's job in 0.9.31) is a skill offered to every bot (hermes-hq-push:dashboard-tile): how to make a page for the
 app's Dashboard that fills its tile at any size, a starter template, and check_tile.py, which draws it at every size.
 """
 import importlib.util
