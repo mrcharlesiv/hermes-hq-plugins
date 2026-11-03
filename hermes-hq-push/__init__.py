@@ -32,6 +32,8 @@ by a silent push) and answers.
 0.9.22 pushes the steps a bot takes to its turn's Lock Screen card once iOS has suspended the app (push.LiveFeed):
 ``pre_tool_call`` names each step (live_steps.py, the app's own words), ``on_session_end`` ends the card Done.
 short_titles.py (0.9.28) keeps the names Hermes gives new chats short enough for one line of an iPhone screen.
+skills/dashboard-tile (0.9.30) is a skill offered to every bot (hermes-hq-push:dashboard-tile): how to make a page for the
+app's Dashboard that fills its tile at any size, a starter template, and check_tile.py, which draws it at every size.
 """
 import importlib.util
 import logging
@@ -289,6 +291,24 @@ def _page_previews():
         log.debug("hermes-hq-push: page previews not installed", exc_info=True)
 
 
+# The Dashboard tile skill (skills/dashboard-tile): how to make a page that fills a tile in the app's Dashboard at any
+# size and stays fresh. Offered to every bot as "hermes-hq-push:dashboard-tile"; read-only, never copied into skills/.
+DASHBOARD_SKILL = Path(__file__).resolve().parent / "skills" / "dashboard-tile" / "SKILL.md"
+
+
+def _dashboard_skill(ctx):
+    if not hasattr(ctx, "register_skill"):   # a Hermes before plugin skills
+        log.info("hermes-hq-push: dashboard tile skill not offered (this Hermes has no plugin skills)")
+        return
+    try:
+        ctx.register_skill("dashboard-tile", DASHBOARD_SKILL,
+                           "Make a live tile for the Hermes HQ app's Dashboard: an HTML page that fills its tile at "
+                           "any size, checked at every size, kept fresh by a scheduled job.")
+        log.info("hermes-hq-push: dashboard tile skill offered")
+    except Exception:
+        log.warning("hermes-hq-push: dashboard tile skill not offered", exc_info=True)
+
+
 def _short_titles():
     try:
         log.info("hermes-hq-push: short chat names %s", short_titles.install())
@@ -339,6 +359,7 @@ def register(ctx):
     ctx.register_hook("pre_llm_call", pre_llm_call)
     ctx.register_hook("on_session_end", on_session_end)
     _device_tools(ctx)
+    _dashboard_skill(ctx)
     _desktop_theme()
     _restart_guard()
     _own_chats()

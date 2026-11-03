@@ -286,7 +286,7 @@ def live_body(**extra):
 def test_routes(client, tmp_path, monkeypatch):
     status = client.get(f"{BASE}/status").json()
     assert status["liveSteps"] is True and status["liveEnds"] is True and status["liveQuick"] is True
-    assert status["pluginVersion"] == "0.9.28"
+    assert status["pluginVersion"] == "0.9.30"
     # Not registered for notifications yet.
     missing = client.put(f"{BASE}/live/{PHONE}/{ACTIVITY}", json=live_body())
     assert missing.status_code == 404 and "detail" in missing.json()

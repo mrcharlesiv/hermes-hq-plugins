@@ -1,0 +1,114 @@
+<!doctype html>
+<!-- Hermes HQ Dashboard tile starter (hermes-hq-push:dashboard-tile). Replace DATA and the look freely; keep the
+     sizing rules marked KEEP: they are what make the page fill any tile, from a wide strip to a tall card. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- KEEP: lay out at the window's own width, never zoomed -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Tile title</title>
+<style>
+  /* ---- KEEP: the window is the tile. Fill it exactly, never scroll. ---- */
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { container-type: size; }   /* cqw / cqh / cqmin below are the tile's own size */
+  .tile {
+    width: 100cqw; height: 100cqh;
+    padding: clamp(10px, 7cqmin, 28px);
+    display: grid; gap: clamp(4px, 3cqmin, 14px);
+    grid-template-rows: auto auto 1fr auto;
+    grid-template-areas: "head" "value" "chart" "foot";
+    /* The page is drawn at the tile's real size: px here are points on screen. 13 px in a Small tile (~175 pt),
+       growing to 20 px in a Large one. Every size below is in em, so it all follows. */
+    font-size: clamp(13px, 4.5cqmin + 5px, 20px);
+  }
+  /* Wide tiles (Medium, wide screens): words on the left, chart on the right. */
+  @container (min-aspect-ratio: 8/5) {
+    .tile { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); grid-template-rows: auto auto 1fr auto;
+            grid-template-areas: "head chart" "value chart" ". chart" "foot chart"; }
+  }
+  /* Tall tiles (Extra Large on a phone): room for the list. */
+  @container (max-aspect-ratio: 4/5) {
+    .tile { grid-template-rows: auto auto minmax(0, 1fr) auto auto; grid-template-areas: "head" "value" "chart" "list" "foot"; }
+    .list { display: grid !important; }
+  }
+  .head, .value, .foot, .list { min-width: 0; }
+  .chart { grid-area: chart; min-height: 0; min-width: 0; }
+  .chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  /* ---- end KEEP ---- */
+
+  /* ---- The look: change anything below to suit the person. ---- */
+  :root { --bg: #f6f6f3; --ink: #17181a; --ink2: #6b6e75; --accent: #2f6fed; --good: #1a9b55; --bad: #d64545; --line: rgba(0,0,0,.08); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121417; --ink: #f2f3f5; --ink2: #9aa0a8; --accent: #6ea0ff; --good: #3ccf7e; --bad: #ff6b6b; --line: rgba(255,255,255,.1); }
+  }
+  body { background: var(--bg); color: var(--ink);
+         font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  .head { grid-area: head; display: flex; align-items: baseline; justify-content: space-between; gap: .5em; }
+  .title { font-size: .85em; font-weight: 600; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .value { grid-area: value; display: flex; align-items: baseline; gap: .4em; flex-wrap: wrap; }
+  .big { font-size: 2.2em; font-weight: 700; letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+  .delta { font-size: .85em; font-weight: 600; }
+  .delta.up { color: var(--good); } .delta.down { color: var(--bad); }
+  .list { grid-area: list; display: none; gap: .35em; font-size: .8em; }
+  .row { display: flex; justify-content: space-between; gap: 1em; border-top: 1px solid var(--line); padding-top: .35em; }
+  .row span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .foot { grid-area: foot; font-size: .72em; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<div class="tile">
+  <div class="head"><div class="title" id="title"></div></div>
+  <div class="value"><div class="big" id="big"></div><div class="delta" id="delta"></div></div>
+  <div class="chart" id="chart"></div>
+  <div class="list" id="list"></div>
+  <div class="foot" id="foot"></div>
+</div>
+
+<!-- KEEP: the data lives in the file. Nothing is fetched: the page is pictured with no network. To keep the tile
+     live, a scheduled job rewrites this block (and "updated") and saves the file at the same path. -->
+<script type="application/json" id="data">
+{
+  "title": "Revenue this week",
+  "value": "$12,480",
+  "delta": "+8.2%",
+  "trend": "up",
+  "series": [8.1, 9.4, 8.8, 10.2, 11.0, 10.6, 12.5],
+  "rows": [["Stripe", "$9,120"], ["App Store", "$2,410"], ["Other", "$950"]],
+  "updated": "2026-11-03T09:30:00"
+}
+</script>
+<script>
+(function () {
+  var d = JSON.parse(document.getElementById("data").textContent);
+  function text(id, v) { document.getElementById(id).textContent = v == null ? "" : v; }
+  text("title", d.title); text("big", d.value); text("delta", d.delta);
+  document.getElementById("delta").className = "delta " + (d.trend || "");
+  if (d.updated) {
+    var t = new Date(d.updated);
+    text("foot", isNaN(t) ? d.updated : "Updated " + t.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }));
+  }
+  var list = document.getElementById("list");
+  (d.rows || []).forEach(function (r) {
+    var row = document.createElement("div"); row.className = "row";
+    row.innerHTML = "<span></span><span></span>";
+    row.firstChild.textContent = r[0]; row.lastChild.textContent = r[1];
+    list.appendChild(row);
+  });
+  // KEEP: a chart drawn in a viewBox stretches to whatever box the layout gives it (no fixed pixel size).
+  var s = d.series || [];
+  if (s.length > 1) {
+    var lo = Math.min.apply(null, s), hi = Math.max.apply(null, s), span = hi - lo || 1, W = 100, H = 40;
+    var pts = s.map(function (v, i) { return [i * W / (s.length - 1), H - 3 - (v - lo) / span * (H - 6)]; });
+    var line = pts.map(function (p, i) { return (i ? "L" : "M") + p[0].toFixed(2) + " " + p[1].toFixed(2); }).join(" ");
+    document.getElementById("chart").innerHTML =
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
+      '<path d="' + line + ' L' + W + ' ' + H + ' L0 ' + H + ' Z" fill="var(--accent)" opacity=".14"/>' +
+      '<path d="' + line + '" fill="none" stroke="var(--accent)" stroke-width="2.2" vector-effect="non-scaling-stroke"' +
+      ' stroke-linejoin="round" stroke-linecap="round"/></svg>';
+  }
+})();
+</script>
+</body>
+</html>
