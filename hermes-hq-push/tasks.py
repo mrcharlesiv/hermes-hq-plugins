@@ -50,6 +50,7 @@ NOTES_MAX = 4000
 STATUS_NOTE_MAX = 160
 NOTE_MAX = 500
 DUE_MAX = 40
+_UNSET = object()  # tasks_update left `due` out (None clears it)
 START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
 
 DEFAULT_SETTINGS = {"capture": "auto", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
@@ -461,12 +462,14 @@ class Store:
         return updated
 
     def update_bot(self, task_id: str, profile: str, *, status=None, status_note=None, done_steps=None,
-                  add_steps=None, made=None, note=None, who=None, prep=None) -> dict:
+                  add_steps=None, made=None, note=None, who=None, prep=None, due=_UNSET) -> dict:
         """``tasks_update``: no ``rev`` (the tool contract has none — the bot always applies to the current
         task). Enforces docs/tasks.md's rules in code: a bot may only mark ``done`` a task it owns alone
         (``who == "bot"``), and may not change a ``who == "me"`` task except to add ``note`` — or to take a part
         of it (``who="together"`` with at least one step of its own in ``add_steps``), which makes it this
-        bot's together task (0.9.33: the user said "help me with this", or the bot just added it in chat)."""
+        bot's together task (0.9.33: the user said "help me with this", or the bot just added it in chat).
+        ``due`` (already resolved; ``None`` clears it) only on a task this bot added or owns: Hermes set the
+        owner's first task for tomorrow and then couldn't put it right (2026-11-04)."""
         changing = (status is not None or status_note is not None or done_steps or add_steps or made
                     or prep is not None)
         with closing(self._write_db()) as db, db:
@@ -484,6 +487,9 @@ class Store:
             elif who is not None and who != task["who"]:
                 raise TaskError(403, "A bot can only change who on the user's own task, to 'together', by taking "
                                      "a part of it.")
+            if due is not _UNSET and task["created_by"] != profile and not taking_part and not (
+                    task["who"] in ("bot", "together") and task["bot"] == profile):
+                raise TaskError(403, "Only the user can change the date of a task they added.")
             if task["who"] == "me" and changing and not taking_part:
                 raise TaskError(403, "This is the user's own task; a bot may only add a note to it, or take a "
                                      "part of it (who='together' with your steps in add_steps).")
@@ -508,6 +514,8 @@ class Store:
                 patch["who"], patch["bot"] = "together", profile
             if prep is not None:
                 patch["prep"] = bool(prep) and (patch.get("who") or task["who"]) in ("bot", "together")
+            if due is not _UNSET:
+                patch["due"] = due
             updated = self._merge(task, patch, profile, note=note or ("took a part" if taking_part else None))
             self._write(db, updated)
             self._bump_rev(db)
@@ -767,9 +775,9 @@ RESEND_AFTER = 12
 MAX_LISTED = 5
 
 
-HELP_RULE = ("Then take the part you can do (find, sort, compare, summarize, check, draft): who='together', steps "
-             "yours then theirs, and start yours, in this reply if quick, else prep=true + start_now=true. Say what "
-             "you'll have ready. Keep it theirs alone only if no part is yours.")
+HELP_RULE = ("If part of it is yours to do (find, sort, check, draft), take it: who='together', your steps then "
+             "theirs; start yours now (quick: in this reply; long: prep=true + start_now=true; another bot: ask it, "
+             "status='working'). Say what you'll have ready.")
 
 
 def _capture_line(capture: str) -> str:
@@ -896,9 +904,11 @@ UPDATE_SCHEMA = _schema(
     "set status 'done' on a task that's yours alone (who='bot'); a 'together' task needs the user to finish it "
     "— set it 'ready' instead. A 'me' task is the user's: add a short note, or — when they ask you to help with it, "
     "or you just added it in this chat — take a part of it: who='together' with add_steps (yours who 'bot', then "
-    "theirs who 'me'), plus prep=true and start_now=true to start a long step in the background. Set status "
-    "'ready' with a one-line status_note when your part is done; set 'needs_you' with the question in "
-    "status_note when you need the user. Both push a notification to their phone. " + PREP_RULE,
+    "theirs who 'me'), plus prep=true and start_now=true to start a long step in the background. If another bot "
+    "does your part (you asked it with message_agent), keep the step yours and set status 'working' instead of "
+    "start_now, so the work isn't started twice. Set status 'ready' with a one-line status_note when your part is "
+    "done; set 'needs_you' with the question in status_note when you need the user. Both push a notification to "
+    "their phone. You can fix due on a task you added. " + PREP_RULE,
     {"id": {"type": "string", "description": "Required: the task's id."},
      "status": {"type": "string", "enum": list(STATUSES)},
      "status_note": {"type": "string", "description": "One short line, e.g. \"Number and a Dec 9 slot\"."},
@@ -914,6 +924,7 @@ UPDATE_SCHEMA = _schema(
      "who": {"type": "string", "enum": ["together"], "description": "Take a part of the user's own task (with your "
              "steps in add_steps)."},
      "prep": {"type": "boolean", "description": "Get your part ready ahead of time."},
+     "due": {"type": "string", "description": "Only on a task you added or own. " + DUE_HELP},
      "start_now": START_NOW},
     ("id",))
 
@@ -977,12 +988,16 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
             return json.dumps({"error": "Say which task: its id."}, ensure_ascii=False)
         before = store.get(task_id) or {}
         try:
+            due = resolve_due(args.get("due"), store.clock()) if "due" in args else _UNSET
             task = store.update_bot(task_id, bot, status=args.get("status"), status_note=args.get("status_note"),
                                     done_steps=args.get("done_steps"), add_steps=args.get("add_steps"),
                                     made=args.get("made"), note=args.get("note"), who=args.get("who"),
-                                    prep=args.get("prep"))
+                                    prep=args.get("prep"), due=due)
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
+        out = dict(task)
+        if due is not _UNSET and (said := due_said(task["due"], store.clock())):
+            out["due_said"] = said
         if task["status"] in ("ready", "needs_you") and before.get("status") != task["status"]:
             try:  # once per change: a later note or step on a task that's already ready doesn't alert again
                 notify(task, bot)
@@ -991,8 +1006,13 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         if task["prep"] or before.get("prep"):
             reconcile_prep_job(store, bot, bot_home(bot))
         if args.get("start_now"):
-            return json.dumps({**task, "start": start_prep_now(store, task, bot, bot_home(bot))}, ensure_ascii=False)
-        return json.dumps(task, ensure_ascii=False)
+            out["start"] = start_prep_now(store, task, bot, bot_home(bot))
+        elif task["status"] == "working" and before.get("status") != "working":
+            # Its part is under way some other way: done in this reply, or handed to another bot with message_agent
+            # (2026-11-04: Hermes asked Recruiting for the owner's prep sheet). The card says "Started" all the same.
+            out["start"] = ("started: the task shows your part is under way. Set it ready with a status_note when "
+                            "it's done (or when the bot you asked answers).")
+        return json.dumps(out, ensure_ascii=False)
 
     def handle_next_prep(args, **kwargs):
         return json.dumps(store_for().next_prep(profile()), ensure_ascii=False)

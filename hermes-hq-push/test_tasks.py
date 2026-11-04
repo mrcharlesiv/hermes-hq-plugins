@@ -675,3 +675,34 @@ def test_prep_job_route_reconciles_for_the_named_profile(client, tmp_path, monke
     assert resp.status_code == 200 and resp.json() == {"ok": True}
     with cron_jobs.use_cron_store(profile_home):
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None
+
+
+def test_bot_fixes_the_date_of_a_task_it_added_but_not_of_yours(tmp_path):
+    # 2026-11-04: Hermes set the owner's "today" task for tomorrow, saw it, and wasn't allowed to put it right.
+    s, ctx, notified = wired(tmp_path)
+    added = json.loads(ctx.tools["tasks_add"]({"title": "Go through the applications", "due": "tomorrow 17:00"}))
+    fixed = json.loads(ctx.tools["tasks_update"]({"id": added["id"], "due": "today 17:00"}))
+    today = datetime.fromtimestamp(s.clock()).date().isoformat()
+    assert fixed["due"].startswith(today + "T17:00:00") and fixed["due_said"].startswith("today (")
+    assert fixed["who"] == "me"  # still theirs: only the date moved
+    assert "error" in json.loads(ctx.tools["tasks_update"]({"id": added["id"], "due": "whenever"}))
+    theirs = s.create({"title": "Pick up dry cleaning", "due": today}, created_by="you", source={"kind": "app"})
+    refused = json.loads(ctx.tools["tasks_update"]({"id": theirs["id"], "due": "tomorrow"}))
+    assert "error" in refused and s.get(theirs["id"])["due"] == today
+    # Once it takes a part of their task, the date is its to keep right too.
+    took = json.loads(ctx.tools["tasks_update"]({"id": theirs["id"], "who": "together", "due": "tomorrow 9am",
+                                                 "add_steps": [{"title": "Find the ticket", "who": "bot"}]}))
+    assert took["who"] == "together" and "T09:00:00" in took["due"]
+    assert json.loads(ctx.tools["tasks_update"]({"id": theirs["id"], "due": None}))["due"] is None
+
+
+def test_handing_the_part_to_another_bot_counts_as_started(tmp_path):
+    # 2026-11-04: Hermes asked Recruiting (message_agent) for the prep sheet: no start_now, so no second run.
+    s, ctx, notified = wired(tmp_path)
+    task = json.loads(ctx.tools["tasks_add"]({"title": "Go through the applications"}))
+    took = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "who": "together", "status": "working", "add_steps": [
+        {"title": "Get Recruiting's prep sheet", "who": "bot"}, {"title": "Go through ADP", "who": "me"}]}))
+    assert took["start"].startswith("started") and took["status"] == "working"
+    assert s.next_prep("cro").get("stop")  # nothing queued for the prep job
+    again = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "note": "Recruiting is halfway"}))
+    assert "start" not in again  # only the change to working says it
