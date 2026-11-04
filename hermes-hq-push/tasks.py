@@ -46,6 +46,7 @@ LOG_CAP = 50
 STEPS_CAP = 50
 MADE_CAP = 50
 TITLE_MAX = 200
+STEP_TITLE_MAX = 120
 NOTES_MAX = 4000
 STATUS_NOTE_MAX = 160
 NOTE_MAX = 500
@@ -80,10 +81,38 @@ def _iso(clock: Callable[[], float]) -> str:
     return datetime.fromtimestamp(clock(), tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _clip(text: str, max_len: int) -> str:
+    """Cut at a word with "…", not mid-word: a 200-character step read "…with price range, drive time, and"."""
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len - 1]
+    space = cut.rfind(" ")
+    if space >= max_len * 0.6:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:-\u2013\u2014") + "\u2026"
+
+
 def _text(value, max_len: int) -> str:
+    """One line: every run of whitespace (line breaks too) is one space."""
     if not isinstance(value, str):
         return ""
-    return re.sub(r"\s+", " ", value).strip()[:max_len]
+    return _clip(re.sub(r"\s+", " ", value).strip(), max_len)
+
+
+def _lines(value, max_len: int) -> str:
+    """Text that keeps its line breaks (a task's notes, a made note): the app draws it as Markdown, so a shortlist
+    written one place per line stays that way. Before this, a note's lines were all run into one paragraph."""
+    if not isinstance(value, str):
+        return ""
+    lines = [re.sub(r"[ \t\f\v]+", " ", line).rstrip() for line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return _clip(re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), max_len)
+
+
+def _status_line(status: str, note: str) -> str:
+    """The activity line for a status change, in words ("Ready: 3 spots ready"), not the bare status."""
+    words = {"open": "Back to To Do", "working": "Started", "ready": "Ready", "needs_you": "Needs you", "done": "Done"}
+    line = words.get(status, status)
+    return f"{line}: {note}" if note and status in ("ready", "needs_you") else line
 
 
 def _clean_steps(value) -> list[dict]:
@@ -93,7 +122,7 @@ def _clean_steps(value) -> list[dict]:
     for item in value[:STEPS_CAP]:
         if not isinstance(item, dict):
             continue
-        title = _text(item.get("title"), TITLE_MAX)
+        title = _text(item.get("title"), STEP_TITLE_MAX)
         if not title:
             continue
         who = item.get("who") if item.get("who") in ("me", "bot") else "bot"
@@ -110,10 +139,10 @@ def _clean_made(value) -> list[dict]:
         if not isinstance(item, dict):
             continue
         title = _text(item.get("title"), TITLE_MAX)
-        ref = _text(item.get("ref"), 2000)
+        kind = item.get("kind") if item.get("kind") in MADE_KINDS else "note"
+        ref = _lines(item.get("ref"), 2000) if kind == "note" else _text(item.get("ref"), 2000)
         if not title and not ref:
             continue
-        kind = item.get("kind") if item.get("kind") in MADE_KINDS else "note"
         out.append({"id": _text(item.get("id"), 64) or new_id(), "title": title, "kind": kind, "ref": ref})
     return out
 
@@ -387,7 +416,7 @@ class Store:
         prep = bool(fields.get("prep")) and who in ("bot", "together")
         now = _iso(self.clock)
         row = {
-            "id": new_id(), "rev": 1, "title": title, "notes": _text(fields.get("notes"), NOTES_MAX),
+            "id": new_id(), "rev": 1, "title": title, "notes": _lines(fields.get("notes"), NOTES_MAX),
             "who": who, "bot": bot, "status": "open", "status_note": "",
             "due": _text(fields.get("due"), DUE_MAX) or None, "repeat": repeat, "prep": int(prep),
             "steps": json.dumps(_clean_steps(fields.get("steps"))), "made": "[]", "source": json.dumps(source),
@@ -427,7 +456,7 @@ class Store:
                 raise TaskError(400, f"status must be one of {', '.join(STATUSES)}.")
             updated["status"] = status
             updated["done_at"] = now if status == "done" else None
-            log_entries.append({"at": now, "by": by, "text": status})
+            log_entries.append({"at": now, "by": by, "text": _status_line(status, updated.get("status_note") or "")})
         if note:
             log_entries.append({"at": now, "by": by, "text": _text(note, NOTE_MAX)})
         if updated["status"] == "done" and updated["who"] == "me" and updated.get("repeat"):
@@ -639,7 +668,7 @@ PREP_JOB_PROMPT = (
     "retry or explain, just end the turn. Otherwise it gives you one task: do research and prepare drafts for it "
     "only. Never send, book, buy, pay, post or delete anything, and never act on or finish the user's own steps in "
     "a together task. When you have something (or need the user), call tasks_update: list anything you made with "
-    "made, tick off your own finished steps with done_steps, then set status to 'ready' with one short status_note "
+    "made (a note in Markdown, one line per item), tick off your own finished steps with done_steps, then set status to 'ready' with one short status_note "
     "for what's ready, or to 'needs_you' with the question in status_note if it needs the user to decide, pay, "
     "approve or act instead of you finishing it. Then call tasks_next_prep again, and keep going until it says stop."
 )
@@ -871,7 +900,14 @@ LIST_SCHEMA = _schema(
     {"scope": {"type": "string", "enum": ["mine", "all"], "description": "Default 'mine'."},
      "include_done": {"type": "boolean", "description": "Include finished tasks too (default false)."}})
 
-STEP_TITLE = "A few words, like \"Shortlist 3 lunch spots\"; details go in the task's notes."
+STEP_TITLE = ("A few words, like \"Shortlist 3 lunch spots\" (at most 120 characters); details go in the task's "
+              "notes or a made note.")
+MADE_ITEMS = {"type": "object", "properties": {
+    "title": {"type": "string", "description": "A few words, like \"Lunch shortlist\"."},
+    "kind": {"type": "string", "enum": list(MADE_KINDS)},
+    "ref": {"type": "string", "description": "file: its full path. link: the URL. note: the text, in Markdown, one "
+            "line per item (\"- **North Italia**: 5 min, $25, book online\"); a long table goes in a file instead."}},
+    "required": ["title"]}
 START_NOW = {"type": "boolean", "description": "Start your step now as a background Task prep run (needs prep=true "
              "and your own step): for work too long to do in this reply. It alerts the user when it's ready."}
 
@@ -919,10 +955,7 @@ UPDATE_SCHEMA = _schema(
                        "title": {"type": "string", "description": STEP_TITLE},
                        "who": {"type": "string", "enum": ["me", "bot"]}},
                        "required": ["title"]}},
-     "made": {"type": "array", "description": "A file, link or note you made for this task.",
-              "items": {"type": "object", "properties": {
-                  "title": {"type": "string"}, "kind": {"type": "string", "enum": list(MADE_KINDS)},
-                  "ref": {"type": "string"}}, "required": ["title"]}},
+     "made": {"type": "array", "description": "A file, link or note you made for this task.", "items": MADE_ITEMS},
      "note": {"type": "string", "description": "A short log line."},
      "who": {"type": "string", "enum": ["together"], "description": "Take a part of the user's own task (with your "
              "steps in add_steps)."},

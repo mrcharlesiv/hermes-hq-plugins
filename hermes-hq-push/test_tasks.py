@@ -712,3 +712,36 @@ def test_handing_the_part_to_another_bot_counts_as_started(tmp_path):
     assert s.next_prep("cro").get("stop")  # nothing queued for the prep job
     again = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "note": "Recruiting is halfway"}))
     assert "start" not in again  # only the change to working says it
+
+
+def test_a_bots_note_keeps_its_lines_and_long_words_end_at_a_word(tmp_path):
+    # 2026-11-04 owner: "the way that some of the work was presented … needs to be improved". The shortlist the bot
+    # made came out as one paragraph (every line break was run into a space), and its 200-character step stopped at
+    # "…drive time, and".
+    s, ctx, notified = wired(tmp_path)
+    task = json.loads(ctx.tools["tasks_add"]({"title": "Pick a lunch spot", "notes": "Office: 100 Main St\n\n\n\nFriday  noon"}))
+    assert s.get(task["id"])["notes"] == "Office: 100 Main St\n\nFriday noon"
+    shortlist = "- **Elm & Oak**: 5 min, $25\r\n- **Copper Kettle**: 5 min, $$  \n"
+    long_step = "Shortlist 3 lunch spots near the office for Friday: group-friendly, takes reservations or large-party " \
+                "walk-ins, about an hour, with price range, drive time, and parking"
+    done = json.loads(ctx.tools["tasks_update"]({
+        "id": task["id"], "who": "together", "add_steps": [{"title": long_step, "who": "bot"}],
+        "made": [{"title": "Lunch shortlist", "kind": "note", "ref": shortlist},
+                 {"title": "Shortlist file", "kind": "file", "ref": "/tmp/lunch\nshortlist.md"}]}))
+    saved = s.get(done["id"])
+    assert saved["made"][0]["ref"] == "- **Elm & Oak**: 5 min, $25\n- **Copper Kettle**: 5 min, $$"
+    assert saved["made"][1]["ref"] == "/tmp/lunch shortlist.md"  # a path stays one line
+    step = saved["steps"][0]["title"]
+    assert len(step) <= tasks.STEP_TITLE_MAX and step.endswith("…") and not step.endswith(" …")
+    assert long_step.startswith(step[:-1]) and long_step[len(step) - 1] == " "  # cut between words
+
+
+def test_the_activity_says_a_status_change_in_words(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    task = s.create({"title": "Lunch", "who": "together", "bot": "cro", "prep": True}, created_by="you",
+                    source={"kind": "app"})
+    json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "working"}))
+    json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "ready", "status_note": "3 spots ready"}))
+    lines = [entry["text"] for entry in s.get(task["id"])["log"]]
+    assert lines[-2:] == ["Started", "Ready: 3 spots ready"]
+    assert "working" not in lines and "ready" not in lines
