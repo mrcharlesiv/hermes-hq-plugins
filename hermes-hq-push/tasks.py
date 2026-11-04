@@ -1,4 +1,4 @@
-"""Tasks (0.9.32): a shared to-do list between the owner and their bots (docs/tasks.md). Some tasks are the
+"""Tasks (0.9.32; 0.9.33: bots take their part, due words, start now): a shared to-do list between the owner and their bots (docs/tasks.md). Some tasks are the
 owner's own (``who: "me"``, a bot never touches them except to add a note), some are a bot's (``who: "bot"``), and
 some are split into steps the owner and a bot each do (``who: "together"``). A bot flags a task ``prep: true`` to
 get it ready ahead of time (research and drafts only: never send, book, buy, pay, post or delete), and tells the
@@ -50,6 +50,7 @@ NOTES_MAX = 4000
 STATUS_NOTE_MAX = 160
 NOTE_MAX = 500
 DUE_MAX = 40
+START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
 
 DEFAULT_SETTINGS = {"capture": "auto", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
                     "prep_every_hours": 3}
@@ -146,6 +147,87 @@ def _parse_due(due):
         return datetime.strptime(due, "%Y-%m-%d"), False
     except ValueError:
         return None
+
+
+_DAY_WORDS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_DUE_WORDS = re.compile(r"(today|tonight|tomorrow|" + "|".join(_DAY_WORDS) + r")(?:\s+(?:at\s+)?(.+))?")
+_CLOCK = re.compile(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?")
+DUE_HELP = ("due takes \"today\", \"tomorrow\" or a weekday, with an optional time (\"today 17:00\", "
+            "\"friday 9am\"), or a date (YYYY-MM-DD) or moment (YYYY-MM-DDTHH:MM) in the user's local time.")
+
+
+def _clock_minutes(text: str) -> int | None:
+    match = _CLOCK.fullmatch(text.strip().lower())
+    if not match:
+        return None
+    hour, minute, half = int(match.group(1)), int(match.group(2) or 0), (match.group(3) or "").replace(".", "")
+    if half:
+        if not 1 <= hour <= 12:
+            return None
+        hour = hour % 12 + (12 if half == "pm" else 0)
+    if hour > 23 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def resolve_due(value, now: float) -> str | None:
+    """A bot's ``due`` as stored: "today"/"tomorrow"/a weekday (+ an optional time) become a date or a moment
+    with the gateway's own offset, a moment without an offset gets it too, and a date stays a date. Raises
+    ``TaskError(400)`` for one it can't read (the bot is told how to say it). Build 755's first capture stored
+    "tomorrow" for "today": the bot copied the example date in the old description, and nothing told it the date."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not isinstance(value, str):
+        raise TaskError(400, "Couldn't read that due date. " + DUE_HELP)
+    text = value.strip()
+    today = datetime.fromtimestamp(now).date()
+    words = _DUE_WORDS.fullmatch(text.lower())
+    if words:
+        word, clock = words.group(1), words.group(2)
+        day = today
+        if word == "tomorrow":
+            day = today + timedelta(days=1)
+        elif word in _DAY_WORDS:
+            day = today + timedelta(days=(_DAY_WORDS.index(word) - today.weekday()) % 7)
+        if word == "tonight" and not clock:
+            clock = "20:00"
+        if not clock:
+            return day.isoformat()
+        minutes = _clock_minutes(clock)
+        if minutes is None:
+            raise TaskError(400, f"Couldn't read the time \"{clock}\". " + DUE_HELP)
+        moment = datetime(day.year, day.month, day.day, minutes // 60, minutes % 60).astimezone()
+        return moment.isoformat(timespec="seconds")
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        pass
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00") if text.endswith("Z") else text)
+    except ValueError:
+        raise TaskError(400, f"Couldn't read the due date \"{text}\". " + DUE_HELP) from None
+    if moment.tzinfo is None:
+        moment = moment.astimezone()  # a wall time: the gateway's own zone, offset for that very date
+    return moment.isoformat(timespec="seconds")
+
+
+def due_said(due, now: float) -> str | None:
+    """The stored due in words, from the gateway's today: "today (Wed Nov 4), 5:00 PM", "tomorrow (Thu Nov 5)",
+    "Fri Nov 13". Goes back to the bot with every add, so what it tells the user matches the card."""
+    parsed = _parse_due(due)
+    if not parsed:
+        return None
+    moment, has_time = parsed
+    if has_time and moment.tzinfo is not None:
+        moment = moment.astimezone(datetime.fromtimestamp(now).astimezone().tzinfo)
+    day = moment.date()
+    today = datetime.fromtimestamp(now).date()
+    stamp = f"{day.strftime('%a %b')} {day.day}"
+    gap = (day - today).days
+    words = {0: f"today ({stamp})", 1: f"tomorrow ({stamp})", -1: f"yesterday ({stamp})"}.get(gap, stamp)
+    if has_time:
+        words += ", " + moment.strftime("%I:%M %p").lstrip("0")
+    return words
 
 
 def roll_forward(due, repeat: str, now: Callable[[], float] = time.time) -> str | None:
@@ -379,18 +461,32 @@ class Store:
         return updated
 
     def update_bot(self, task_id: str, profile: str, *, status=None, status_note=None, done_steps=None,
-                  add_steps=None, made=None, note=None) -> dict:
+                  add_steps=None, made=None, note=None, who=None, prep=None) -> dict:
         """``tasks_update``: no ``rev`` (the tool contract has none — the bot always applies to the current
         task). Enforces docs/tasks.md's rules in code: a bot may only mark ``done`` a task it owns alone
-        (``who == "bot"``), and may not change a ``who == "me"`` task at all except to add ``note``."""
-        changing = status is not None or status_note is not None or done_steps or add_steps or made
+        (``who == "bot"``), and may not change a ``who == "me"`` task except to add ``note`` — or to take a part
+        of it (``who="together"`` with at least one step of its own in ``add_steps``), which makes it this
+        bot's together task (0.9.33: the user said "help me with this", or the bot just added it in chat)."""
+        changing = (status is not None or status_note is not None or done_steps or add_steps or made
+                    or prep is not None)
         with closing(self._write_db()) as db, db:
             row = db.execute(f"select {','.join(COLUMNS)} from tasks where id=?", (task_id,)).fetchone()
             if row is None:
                 raise TaskError(404, "No such task.")
             task = _row_to_task(row)
-            if task["who"] == "me" and changing:
-                raise TaskError(403, "This is the user's own task; a bot may only add a note to it.")
+            taking_part = task["who"] == "me" and who == "together"
+            if taking_part:
+                if task["status"] == "done":
+                    raise TaskError(403, "That task is already done.")
+                if not any(s["who"] == "bot" for s in _clean_steps(add_steps)):
+                    raise TaskError(400, "To take a part of the user's task, list your step(s) in add_steps "
+                                         "(who 'bot'), and theirs (who 'me').")
+            elif who is not None and who != task["who"]:
+                raise TaskError(403, "A bot can only change who on the user's own task, to 'together', by taking "
+                                     "a part of it.")
+            if task["who"] == "me" and changing and not taking_part:
+                raise TaskError(403, "This is the user's own task; a bot may only add a note to it, or take a "
+                                     "part of it (who='together' with your steps in add_steps).")
             if status == "done" and task["who"] != "bot":
                 raise TaskError(403, "Only a task that is yours alone (who: bot) can be marked done; a "
                                      "together task needs the user to finish it.")
@@ -408,7 +504,11 @@ class Store:
                 patch["steps"] = (patch.get("steps") or task["steps"]) + _clean_steps(add_steps)
             if made:
                 patch["made"] = task["made"] + _clean_made(made)
-            updated = self._merge(task, patch, profile, note=note)
+            if taking_part:
+                patch["who"], patch["bot"] = "together", profile
+            if prep is not None:
+                patch["prep"] = bool(prep) and (patch.get("who") or task["who"]) in ("bot", "together")
+            updated = self._merge(task, patch, profile, note=note or ("took a part" if taking_part else None))
             self._write(db, updated)
             self._bump_rev(db)
         return updated
@@ -459,21 +559,49 @@ class Store:
     def _today(self) -> str:
         return time.strftime("%Y-%m-%d", self.local_now())
 
+    def prep_runs_left(self) -> int:
+        settings = self.get_settings()
+        with closing(self._db()) as db:
+            row = db.execute("select count from prep_runs where day=?", (self._today(),)).fetchone()
+        return max(0, settings["prep_per_day"] - (row[0] if row else 0))
+
+    def ask_start_now(self, task_id: str, profile: str) -> None:
+        """A user in chat wants this task's bot part started now: the next ``next_prep`` for ``profile`` hands it
+        out first, quiet hours or not (they're up and asked), within the next ``START_NOW_TTL`` seconds."""
+        with closing(self._write_db()) as db, db:
+            db.execute("insert into meta (key, value) values (?, ?) on conflict(key) do update set value=excluded.value",
+                       (f"start_now:{profile}", json.dumps({"id": task_id, "at": self.clock()})))
+
+    def _take_start_now(self, db, profile: str) -> str | None:
+        row = db.execute("select value from meta where key=?", (f"start_now:{profile}",)).fetchone()
+        if not row:
+            return None
+        db.execute("delete from meta where key=?", (f"start_now:{profile}",))
+        try:
+            asked = json.loads(row[0])
+        except ValueError:
+            return None
+        fresh = self.clock() - float(asked.get("at") or 0) < START_NOW_TTL
+        return str(asked.get("id") or "") if fresh else None
+
     def next_prep(self, profile: str) -> dict:
         """``tasks_next_prep``: the next open ``prep`` task assigned to ``profile``, or ``{"stop": reason}``
         (quiet hours, today's cap across every bot, or none left for this bot). Handing one out counts
-        against the daily cap and marks it ``working`` so the same call doesn't hand it out twice."""
+        against the daily cap and marks it ``working`` so the same call doesn't hand it out twice. A task the
+        user just asked to start now (``ask_start_now``) comes first and isn't held for quiet hours."""
         settings = self.get_settings()
-        if self._quiet_now(settings):
-            return {"stop": f"it's quiet hours ({settings['quiet_start']}–{settings['quiet_end']})"}
         today = self._today()
         with closing(self._write_db()) as db, db:
+            asked = self._take_start_now(db, profile)
+            if not asked and self._quiet_now(settings):
+                return {"stop": f"it's quiet hours ({settings['quiet_start']}–{settings['quiet_end']})"}
             row = db.execute("select count from prep_runs where day=?", (today,)).fetchone()
             if (row[0] if row else 0) >= settings["prep_per_day"]:
                 return {"stop": f"today's prep limit ({settings['prep_per_day']} runs) is reached"}
             picked = db.execute(f"""select {','.join(COLUMNS)} from tasks where bot=? and prep=1
                 and who in ('bot','together') and status in ('open','working')
-                order by (status='working'), (due is null), due, created_at limit 1""", (profile,)).fetchone()
+                order by (id=?) desc, (status='working'), (due is null), due, created_at limit 1""",
+                (profile, asked or "")).fetchone()
             if picked is None:
                 return {"stop": f"no open prep tasks for {profile}"}
             task = _row_to_task(picked)
@@ -605,6 +733,30 @@ def reconcile_prep_job(store: Store, profile: str, home=None) -> None:
         log.debug("hermes-hq-push: tasks prep job not reconciled", exc_info=True)
 
 
+def start_prep_now(store: Store, task: dict, profile: str, home=None) -> str:
+    """``start_now``: run ``profile``'s Task prep job at the scheduler's next tick, with this task first. Returns
+    the line the bot reads back (started, or why not and what to do instead). Best-effort, never raises."""
+    if not task.get("prep") or task.get("who") not in ("bot", "together") or task.get("status") not in OPEN_STATUSES:
+        return "not started: only an open bot or together task with prep=true can start now."
+    if store.prep_runs_left() <= 0:
+        return ("not started: today's prep runs are used up, so it waits for tomorrow. If your step is quick, do "
+                "it in this reply instead.")
+    store.ask_start_now(task["id"], profile)
+    try:
+        with _cron_home(home):
+            ensure_prep_job(store.get_settings().get("prep_every_hours", DEFAULT_SETTINGS["prep_every_hours"]))
+            from cron import jobs as cron_jobs
+            if cron_jobs.trigger_job(PREP_JOB_NAME) is None:
+                raise LookupError("no Task prep job")
+    except Exception:
+        log.debug("hermes-hq-push: tasks prep not started now", exc_info=True)
+        return ("not started: your Task prep job couldn't be started now; it runs at its next scheduled time. If "
+                "your step is quick, do it in this reply instead.")
+    return ("started: your Task prep job is working on your step in the background now (usually within a minute "
+            "or two). It sets the task ready, which alerts the user, when your part is done. Tell them what you'll "
+            "have ready; don't do the same work again in this reply.")
+
+
 # ---------------------------------------------------------------------------
 # pre_llm_call's note (docs/tasks.md #5): tiny on purpose (every token here rides every turn it's added to).
 # ---------------------------------------------------------------------------
@@ -615,12 +767,28 @@ RESEND_AFTER = 12
 MAX_LISTED = 5
 
 
+HELP_RULE = ("Then take the part you can do (find, sort, compare, summarize, check, draft): who='together', steps "
+             "yours then theirs, and start yours, in this reply if quick, else prep=true + start_now=true. Say what "
+             "you'll have ready. Keep it theirs alone only if no part is yours.")
+
+
 def _capture_line(capture: str) -> str:
+    """0.9.32 said only "add it and say so", and the bots did exactly that: the task went on the list with no offer
+    of help (owner, build 755: "it just added it to my to-do list. I think we can do better")."""
     if capture == "auto":
-        return "When the user says they need to do something, add it to Tasks with tasks_add and say so."
+        return "When the user says they need to do something, add it to Tasks with tasks_add. " + HELP_RULE
     if capture == "ask":
-        return "When the user says they need to do something, offer to add it to Tasks before you do."
+        return ("When the user says they need to do something, offer to add it to Tasks, and say which part of it "
+                "you'd do for them.")
     return ""
+
+
+def today_line(now: float) -> str:
+    """The gateway's own date and time, so "today" and "tomorrow" mean the user's (build 755: "today" was saved as
+    the next day — nothing told the bot the date)."""
+    moment = datetime.fromtimestamp(now).astimezone()
+    return (f"Now: {moment.strftime('%A')}, {moment.strftime('%b')} {moment.day}, {moment.year}, "
+            f"{moment.strftime('%I:%M %p').lstrip('0')} {moment.strftime('%Z')}.")
 
 
 def _not_typed(message: str) -> bool:
@@ -669,7 +837,7 @@ def context_for(*, store: Store, profile: str, platform: str = "", parent_sessio
         lines.append(capture)
     if not lines:
         return None
-    return f"{MARK} {' '.join(lines)}]"
+    return f"{MARK} {today_line(store.clock())} {' '.join(lines)}]"
 
 
 # ---------------------------------------------------------------------------
@@ -695,22 +863,30 @@ LIST_SCHEMA = _schema(
     {"scope": {"type": "string", "enum": ["mine", "all"], "description": "Default 'mine'."},
      "include_done": {"type": "boolean", "description": "Include finished tasks too (default false)."}})
 
+START_NOW = {"type": "boolean", "description": "Start your step now as a background Task prep run (needs prep=true "
+             "and your own step): for work too long to do in this reply. It alerts the user when it's ready."}
+
 ADD_SCHEMA = _schema(
     "tasks_add",
     "Add something to the shared Tasks list. Use this when the user says they need to do something (\"I need to "
-    "call the vet\"), or to add a task of your own or one you'll split with them. who: 'me' (their own to-do; "
-    "you never touch it again except to add a note), 'bot' (you'll do it), 'together' (steps split between you "
-    "and them, each step's own who). prep=true flags it for your Task prep job to get ready ahead of time. "
-    + PREP_RULE + " Returns the task, plus how to undo it.",
+    "call the vet\"), or to add a task of your own or one you'll split with them. Don't stop at adding it: look "
+    "for the part you can do (find, sort, compare, summarize, check, draft). If there is one, add it as "
+    "who='together' with steps — yours (who 'bot') first, then theirs (who 'me') — and start yours: do it in this "
+    "reply if it's quick, or set prep=true and start_now=true if it's long. Use who='me' only when no part is "
+    "yours. who: 'me' (their own to-do; you don't touch it except to add a note, or to take a part of it with "
+    "tasks_update), 'bot' (you'll do all of it), 'together' (steps split between you). "
+    + PREP_RULE + " Returns the task, the due date in words (say it the same way to the user), and how to undo it.",
     {"title": {"type": "string", "description": "Required."},
      "who": {"type": "string", "enum": list(WHO), "description": "Default 'me'."},
      "notes": {"type": "string"},
-     "due": {"type": "string", "description": "\"2026-11-05\" or \"2026-11-05T17:00:00-06:00\"."},
+     "due": {"type": "string", "description": "Best as words: \"today 17:00\", \"tomorrow\", \"friday 9am\"; or "
+             "YYYY-MM-DD / YYYY-MM-DDTHH:MM in the user's local time."},
      "steps": {"type": "array", "description": "who='together': each step is yours or the user's.",
                "items": {"type": "object", "properties": {
                    "title": {"type": "string"}, "who": {"type": "string", "enum": ["me", "bot"]}},
                    "required": ["title"]}},
-     "prep": {"type": "boolean", "description": "Get it ready ahead of time (who 'bot' or 'together' only)."},
+     "prep": {"type": "boolean", "description": "Get your part ready ahead of time (who 'bot' or 'together' only)."},
+     "start_now": START_NOW,
      "bot": {"type": "string", "description": "Which bot (profile) it's for; default: you."}},
     ("title",))
 
@@ -718,7 +894,9 @@ UPDATE_SCHEMA = _schema(
     "tasks_update",
     "Move a shared task along: note what you made, tick off your own steps, or ask for the user. You can only "
     "set status 'done' on a task that's yours alone (who='bot'); a 'together' task needs the user to finish it "
-    "— set it 'ready' instead. You can't change a 'me' task at all except to add a short note. Set status "
+    "— set it 'ready' instead. A 'me' task is the user's: add a short note, or — when they ask you to help with it, "
+    "or you just added it in this chat — take a part of it: who='together' with add_steps (yours who 'bot', then "
+    "theirs who 'me'), plus prep=true and start_now=true to start a long step in the background. Set status "
     "'ready' with a one-line status_note when your part is done; set 'needs_you' with the question in "
     "status_note when you need the user. Both push a notification to their phone. " + PREP_RULE,
     {"id": {"type": "string", "description": "Required: the task's id."},
@@ -732,7 +910,11 @@ UPDATE_SCHEMA = _schema(
               "items": {"type": "object", "properties": {
                   "title": {"type": "string"}, "kind": {"type": "string", "enum": list(MADE_KINDS)},
                   "ref": {"type": "string"}}, "required": ["title"]}},
-     "note": {"type": "string", "description": "A short log line; the only change allowed on a 'me' task."}},
+     "note": {"type": "string", "description": "A short log line."},
+     "who": {"type": "string", "enum": ["together"], "description": "Take a part of the user's own task (with your "
+             "steps in add_steps)."},
+     "prep": {"type": "boolean", "description": "Get your part ready ahead of time."},
+     "start_now": START_NOW},
     ("id",))
 
 NEXT_PREP_SCHEMA = _schema(
@@ -768,13 +950,24 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         args = _as_dict(args)
         source = {"kind": "chat", "profile": bot, "session_id": str(session_id or "")}
         try:
-            task = store.create(args, created_by=bot, source=source)
+            fields = {**args, "due": resolve_due(args.get("due"), store.clock())}
+            task = store.create(fields, created_by=bot, source=source)
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
+        home = bot_home(task["bot"]) if task["bot"] else None
         if task["prep"]:
-            reconcile_prep_job(store, bot, bot_home(bot))
-        return json.dumps({**task, "undo": "Say 'undo' and I'll remove it, or tap Undo in the app"},
-                          ensure_ascii=False)
+            reconcile_prep_job(store, task["bot"], home)
+        out = {**task, "undo": "Say 'undo' and I'll remove it, or tap Undo in the app"}
+        said = due_said(task["due"], store.clock())
+        if said:
+            out["due_said"] = said
+        if args.get("start_now"):
+            out["start"] = start_prep_now(store, task, task["bot"] or bot, home)
+        elif task["who"] == "me":
+            out["next"] = ("Is part of this yours to do (find, sort, compare, summarize, check, draft)? Then take it "
+                           "now: tasks_update with this id, who='together', add_steps (yours, then theirs), and do "
+                           "it in this reply, or prep=true + start_now=true if it's long.")
+        return json.dumps(out, ensure_ascii=False)
 
     def handle_update(args, **kwargs):
         store, bot = store_for(), profile()
@@ -786,7 +979,8 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         try:
             task = store.update_bot(task_id, bot, status=args.get("status"), status_note=args.get("status_note"),
                                     done_steps=args.get("done_steps"), add_steps=args.get("add_steps"),
-                                    made=args.get("made"), note=args.get("note"))
+                                    made=args.get("made"), note=args.get("note"), who=args.get("who"),
+                                    prep=args.get("prep"))
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
         if task["status"] in ("ready", "needs_you") and before.get("status") != task["status"]:
@@ -794,8 +988,10 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
                 notify(task, bot)
             except Exception:
                 log.debug("hermes-hq-push: tasks push not sent", exc_info=True)
-        if task["prep"]:
+        if task["prep"] or before.get("prep"):
             reconcile_prep_job(store, bot, bot_home(bot))
+        if args.get("start_now"):
+            return json.dumps({**task, "start": start_prep_now(store, task, bot, bot_home(bot))}, ensure_ascii=False)
         return json.dumps(task, ensure_ascii=False)
 
     def handle_next_prep(args, **kwargs):

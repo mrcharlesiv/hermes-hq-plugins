@@ -37,7 +37,9 @@ app's Dashboard that fills its tile at any size, a starter template, and check_t
 tasks.py (0.9.32) is a shared to-do list between the owner and their bots: tools tasks_list, tasks_add, tasks_update
 and tasks_next_prep (toolset hq_tasks), a tiny pre_llm_call note of the open tasks a bot shares with the owner, a
 push (kind "task") when a bot sets a task ready or needs_you, and the "Task prep" scheduled job a bot with open
-prep tasks gets (and loses once it has none). Never touches Hermes's Kanban.
+prep tasks gets (and loses once it has none). Never touches Hermes's Kanban. 0.9.33: the note carries the date and
+asks a bot to take its part of what the user needs to do (who "together", its step started now with start_now), and
+due takes words ("today 17:00") and is said back.
 """
 import importlib.util
 import logging

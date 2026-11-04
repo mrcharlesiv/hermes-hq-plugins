@@ -288,7 +288,7 @@ def test_context_note_lists_at_most_five_and_truncates_long_titles(tmp_path):
                  created_by="you", source={"kind": "app"})
     note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
     assert note.count(" (open)") == 5 and ", +2 more" in note
-    assert len(note) < 600
+    assert len(note) < 720  # 0.9.33 added the date and the take-your-part rule (once per 12 messages)
 
 
 def test_context_note_skipped_when_nothing_to_say(tmp_path):
@@ -463,6 +463,139 @@ def test_reconcile_puts_the_job_in_that_bots_own_schedule(tmp_path):
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None
     with cron_jobs.use_cron_store(cro_home):
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None
+
+
+# ---------------------------------------------------------------------------
+# 0.9.33: due words and the due said back, a bot taking its part, start now
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timedelta
+
+
+def test_due_words_resolve_against_the_gateways_today():
+    now = 1_700_000_000.0  # a Tuesday
+    today = datetime.fromtimestamp(now).date()
+    assert tasks.resolve_due("today", now) == today.isoformat()
+    assert tasks.resolve_due("Tomorrow", now) == (today + timedelta(days=1)).isoformat()
+    five = tasks.resolve_due("today 5pm", now)
+    assert five.startswith(today.isoformat() + "T17:00:00") and len(five) == len("2026-11-04T17:00:00-06:00")
+    assert tasks.resolve_due("today at 17:30", now).startswith(today.isoformat() + "T17:30:00")
+    friday = datetime.fromisoformat(tasks.resolve_due("friday 9am", now))
+    assert friday.weekday() == 4 and 0 < (friday.date() - today).days < 7 and friday.hour == 9
+    assert tasks.resolve_due("2026-11-20", now) == "2026-11-20"
+    assert tasks.resolve_due("2026-11-20T08:15", now).startswith("2026-11-20T08:15:00")  # gets the local offset
+    assert tasks.resolve_due("2026-11-20T08:15:00+00:00", now) == "2026-11-20T08:15:00+00:00"
+    assert tasks.resolve_due(None, now) is None and tasks.resolve_due("  ", now) is None
+    for bad in ("soonish", "today 25:00", "today 13pm"):
+        with pytest.raises(tasks.TaskError):
+            tasks.resolve_due(bad, now)
+
+
+def test_due_said_names_the_day_the_card_shows():
+    now = 1_700_000_000.0
+    today = datetime.fromtimestamp(now).date()
+    assert tasks.due_said(tasks.resolve_due("today 5pm", now), now).startswith("today (")
+    assert tasks.due_said(tasks.resolve_due("today 5pm", now), now).endswith(", 5:00 PM")
+    assert tasks.due_said((today + timedelta(days=1)).isoformat(), now).startswith("tomorrow (")
+    assert tasks.due_said("not a date", now) is None
+
+
+def test_tasks_add_tool_saves_today_as_today_and_says_it_back(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    result = json.loads(ctx.tools["tasks_add"]({"title": "Go through the applications", "due": "today 17:00"}))
+    today = datetime.fromtimestamp(s.clock()).date().isoformat()
+    assert result["due"].startswith(today + "T17:00:00") and result["due_said"].startswith("today (")
+    bad = json.loads(ctx.tools["tasks_add"]({"title": "X", "due": "whenever"}))
+    assert "error" in bad and "today 17:00" in bad["error"]
+    assert len(s.list_all()) == 1  # the unreadable one wasn't saved
+
+
+def test_tasks_add_tool_nudges_the_bot_to_take_its_part_of_a_me_task(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    mine = json.loads(ctx.tools["tasks_add"]({"title": "Call the vet"}))
+    assert "who='together'" in mine["next"]
+    shared = json.loads(ctx.tools["tasks_add"]({"title": "Review applications", "who": "together", "steps": [
+        {"title": "Rank them", "who": "bot"}, {"title": "Review the shortlist", "who": "me"}]}))
+    assert "next" not in shared and shared["bot"] == "cro"
+
+
+def test_bot_takes_a_part_of_the_users_task(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    task = json.loads(ctx.tools["tasks_add"]({"title": "Go through the applications"}))
+    no_step = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "who": "together",
+                                                    "add_steps": [{"title": "Review", "who": "me"}]}))
+    assert "error" in no_step and s.get(task["id"])["who"] == "me"
+    took = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "who": "together", "prep": True, "add_steps": [
+        {"title": "Rank the 167 and flag mismatches", "who": "bot"}, {"title": "Review the shortlist", "who": "me"}]}))
+    assert took["who"] == "together" and took["bot"] == "cro" and took["prep"] is True
+    assert [st["who"] for st in took["steps"]] == ["bot", "me"] and took["log"][-1]["text"] == "took a part"
+
+
+def test_bot_still_cannot_otherwise_change_a_users_task(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    task = json.loads(ctx.tools["tasks_add"]({"title": "Call the vet"}))
+    for change in ({"status": "ready"}, {"prep": True}, {"who": "bot", "add_steps": [{"title": "Call", "who": "bot"}]}):
+        assert "error" in json.loads(ctx.tools["tasks_update"]({"id": task["id"], **change}))
+    assert s.get(task["id"])["who"] == "me" and not s.get(task["id"])["prep"]
+    done = s.update_route(task["id"], s.get(task["id"])["rev"], {"status": "done"})
+    late = json.loads(ctx.tools["tasks_update"]({"id": done["id"], "who": "together",
+                                                 "add_steps": [{"title": "Help", "who": "bot"}]}))
+    assert "error" in late  # a finished task stays theirs
+
+
+def test_start_now_goes_first_even_in_quiet_hours_but_not_past_the_cap(tmp_path):
+    s = store(tmp_path, hour=23)  # quiet hours
+    older = s.create(bot_task(title="Older", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    asked = s.create(bot_task(title="Asked", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    assert "quiet hours" in s.next_prep("cro")["stop"]
+    s.ask_start_now(asked["id"], "cro")
+    assert s.next_prep("cro")["title"] == "Asked"
+    assert "quiet hours" in s.next_prep("cro")["stop"]  # the ask is used once; the rest wait for morning
+    s.put_settings({"prep_per_day": 1})
+    s.ask_start_now(older["id"], "cro")
+    assert "limit" in s.next_prep("cro")["stop"]
+    assert s.prep_runs_left() == 0
+
+
+def test_a_stale_start_now_is_ignored(tmp_path):
+    clock = [1_700_000_000.0]
+    when = time.struct_time((2026, 11, 4, 23, 0, 0, 2, 308, 0))
+    s = tasks.Store(tmp_path / "tasks.db", clock=lambda: clock[0], local_now=lambda: when)
+    task = s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    s.ask_start_now(task["id"], "cro")
+    clock[0] += tasks.START_NOW_TTL + 1
+    assert "quiet hours" in s.next_prep("cro")["stop"]
+
+
+def test_start_prep_now_refuses_what_cannot_start(tmp_path):
+    s = store(tmp_path)
+    plain = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    assert tasks.start_prep_now(s, plain, "cro").startswith("not started: only")
+    prepped = s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    s.put_settings({"prep_per_day": 0})
+    assert "used up" in tasks.start_prep_now(s, prepped, "cro")
+
+
+@needs_cron
+def test_start_prep_now_runs_that_bots_job_at_the_next_tick(tmp_path):
+    s = store(tmp_path)
+    task = s.create(together(prep=True, steps=[{"title": "Rank", "who": "bot"}]), created_by="cro",
+                    source={"kind": "chat", "profile": "cro"})
+    home = tmp_path / "cro-home"
+    said = tasks.start_prep_now(s, task, "cro", home)
+    assert said.startswith("started")
+    with cron_jobs.use_cron_store(home):
+        job = cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME)
+        assert job is not None and job.get("manual_run_at")
+    assert s.next_prep("cro")["id"] == task["id"]
+
+
+def test_context_note_says_the_date_and_asks_the_bot_to_take_its_part(tmp_path):
+    s = store(tmp_path)
+    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="I need to do the taxes")
+    moment = datetime.fromtimestamp(s.clock())
+    assert f"Now: {moment.strftime('%A')}, {moment.strftime('%b')} {moment.day}, {moment.year}" in note
+    assert "who='together'" in note and "start_now=true" in note
 
 
 # ---------------------------------------------------------------------------
