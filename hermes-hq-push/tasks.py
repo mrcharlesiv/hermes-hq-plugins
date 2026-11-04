@@ -54,7 +54,10 @@ DUE_MAX = 40
 _UNSET = object()  # tasks_update left `due` out (None clears it)
 START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
 
-DEFAULT_SETTINGS = {"capture": "ask", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
+# "enabled" (0.9.35, owner 2026-11-04: "a way for users to be able to turn off the tasks feature entirely"): False
+# hides the four tools from every bot (check_fn), drops the pre-turn note and every bot's Task prep job. The list
+# itself is kept, so turning Tasks back on brings it all back.
+DEFAULT_SETTINGS = {"enabled": True, "capture": "ask", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
                     "prep_every_hours": 3}
 
 COLUMNS = ("id", "rev", "title", "notes", "who", "bot", "status", "status_note", "due", "repeat", "prep",
@@ -421,6 +424,14 @@ class Store:
                 return task
         return None
 
+    def enabled(self) -> bool:
+        """Tasks is on (Settings › Tasks in the app); off hides the tools, the note and the prep jobs."""
+        return self.get_settings().get("enabled", True) is not False
+
+    def bots_with_tasks(self) -> list[str]:
+        with closing(self._db()) as db:
+            return [row[0] for row in db.execute("select distinct bot from tasks where bot is not null and bot != ''")]
+
     def open_prep_count(self, bot: str) -> int:
         with closing(self._db()) as db:
             row = db.execute("select count(*) from tasks where bot=? and prep=1 and who in ('bot','together')"
@@ -594,6 +605,8 @@ class Store:
 
     def put_settings(self, fields: dict) -> dict:
         current = self.get_settings()
+        if isinstance(fields.get("enabled"), bool):
+            current["enabled"] = fields["enabled"]
         if fields.get("capture") in ("ask", "auto", "off"):
             current["capture"] = fields["capture"]
         value = fields.get("prep_per_day")
@@ -791,7 +804,7 @@ def reconcile_prep_job(store: Store, profile: str, home=None) -> None:
     alter the answer; never raises."""
     try:
         with _cron_home(home):
-            if store.open_prep_count(profile) > 0:
+            if store.enabled() and store.open_prep_count(profile) > 0:
                 ensure_prep_job(store.get_settings().get("prep_every_hours", DEFAULT_SETTINGS["prep_every_hours"]))
             else:
                 remove_prep_job()
@@ -906,6 +919,8 @@ def context_for(*, store: Store, profile: str, platform: str = "", parent_sessio
     if _not_typed(user_message) or _recently_noted(conversation_history):
         return None
     settings = store.get_settings()
+    if settings.get("enabled", True) is False:
+        return None
     mine = [t for t in store.list_all() if t["bot"] == profile and t["status"] != "done"]
     mine.sort(key=lambda t: t["created_at"])
     lines = []
@@ -1105,13 +1120,23 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         return json.dumps(out, ensure_ascii=False)
 
     def handle_next_prep(args, **kwargs):
-        return json.dumps(store_for().next_prep(profile()), ensure_ascii=False)
+        store = store_for()
+        if not store.enabled():
+            return json.dumps({"task": None, "note": "Tasks is turned off. Nothing to prepare."})
+        return json.dumps(store.next_prep(profile()), ensure_ascii=False)
 
-    ctx.register_tool(name="tasks_list", toolset="hq_tasks", schema=LIST_SCHEMA, handler=handle_list,
+    def on() -> bool:
+        """The tools exist only while Tasks is on; a store that can't be read counts as on (as before 0.9.35)."""
+        try:
+            return store_for().enabled()
+        except Exception:
+            return True
+
+    ctx.register_tool(name="tasks_list", toolset="hq_tasks", check_fn=on, schema=LIST_SCHEMA, handler=handle_list,
                       description=LIST_SCHEMA["description"], emoji="🗒️")
-    ctx.register_tool(name="tasks_add", toolset="hq_tasks", schema=ADD_SCHEMA, handler=handle_add,
+    ctx.register_tool(name="tasks_add", toolset="hq_tasks", check_fn=on, schema=ADD_SCHEMA, handler=handle_add,
                       description=ADD_SCHEMA["description"], emoji="➕")
-    ctx.register_tool(name="tasks_update", toolset="hq_tasks", schema=UPDATE_SCHEMA, handler=handle_update,
+    ctx.register_tool(name="tasks_update", toolset="hq_tasks", check_fn=on, schema=UPDATE_SCHEMA, handler=handle_update,
                       description=UPDATE_SCHEMA["description"], emoji="✅")
-    ctx.register_tool(name="tasks_next_prep", toolset="hq_tasks", schema=NEXT_PREP_SCHEMA,
+    ctx.register_tool(name="tasks_next_prep", toolset="hq_tasks", check_fn=on, schema=NEXT_PREP_SCHEMA,
                       handler=handle_next_prep, description=NEXT_PREP_SCHEMA["description"], emoji="🧪")

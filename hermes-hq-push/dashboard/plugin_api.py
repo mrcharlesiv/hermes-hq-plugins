@@ -450,6 +450,7 @@ class TaskPatchIn(BaseModel):
 
 
 class SettingsIn(BaseModel):
+    enabled: bool | None = None
     capture: str | None = Field(default=None, pattern="^(ask|auto|off)$")
     prep_per_day: int | None = Field(default=None, ge=0, le=100)
     quiet_start: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -499,7 +500,15 @@ def tasks_settings_get():
 
 @router.put("/tasks/settings")
 def tasks_settings_put(body: SettingsIn):
-    return _tasks_store().put_settings(body.model_dump(exclude_unset=True))
+    store = _tasks_store()
+    before = store.enabled()
+    saved = store.put_settings(body.model_dump(exclude_unset=True))
+    if store.enabled() != before:   # on or off: every bot's Task prep job follows (removed off, back on if it has prep)
+        for bot in store.bots_with_tasks():
+            home = tasks.bot_home(bot)
+            if home is not None:
+                tasks.reconcile_prep_job(store, bot, home)
+    return saved
 
 
 @router.post("/tasks/prep-job/{profile}")

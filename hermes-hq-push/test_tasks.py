@@ -296,6 +296,35 @@ def test_context_note_lists_at_most_five_and_truncates_long_titles(tmp_path):
     assert len(note) < 1250  # 0.9.34's ask-first rule (once per 12 messages, app chats only)
 
 
+# 0.9.35, owner 2026-11-04: "a way for users to be able to turn off the tasks feature entirely".
+def test_tasks_off_drops_the_note_the_tools_and_the_prep_job(tmp_path, monkeypatch):
+    s = store(tmp_path)
+    s.create(bot_task(prep=True), created_by="you", source={"kind": "app"})
+    assert s.enabled() and tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    ctx = FakeCtx()
+    tasks.register_tools(ctx, lambda: s, lambda: "cro", lambda task, prof: None)
+    assert set(ctx.checks) == {"tasks_list", "tasks_add", "tasks_update", "tasks_next_prep"}
+    assert all(check() for check in ctx.checks.values())
+
+    saved = s.put_settings({"enabled": False})
+    assert saved["enabled"] is False and not s.enabled()
+    assert tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi") is None
+    assert not any(check() for check in ctx.checks.values())   # no bot sees the tools
+    assert json.loads(ctx.tools["tasks_next_prep"]({}))["task"] is None
+    removed, ensured = [], []
+    monkeypatch.setattr(tasks, "remove_prep_job", lambda: removed.append(1))
+    monkeypatch.setattr(tasks, "ensure_prep_job", lambda hours: ensured.append(hours))
+    tasks.reconcile_prep_job(s, "cro")
+    assert removed and not ensured
+    assert len(s.list_all()) == 1   # the list is kept
+    assert s.bots_with_tasks() == ["cro"]
+
+    s.put_settings({"enabled": True, "capture": "nonsense"})
+    assert s.enabled() and all(check() for check in ctx.checks.values())
+    tasks.reconcile_prep_job(s, "cro")
+    assert ensured
+
+
 def test_context_note_skipped_when_nothing_to_say(tmp_path):
     s = store(tmp_path)
     s.put_settings({"capture": "off"})
@@ -341,10 +370,12 @@ def test_context_note_scopes_to_this_bot_and_skips_done(tmp_path):
 class FakeCtx:
     def __init__(self):
         self.tools = {}
+        self.checks = {}
 
     def register_tool(self, name, toolset, schema, handler, check_fn=None, is_async=False, emoji="", description=""):
         assert toolset == "hq_tasks" and schema["name"] == name
         self.tools[name] = handler
+        self.checks[name] = check_fn
 
 
 def wired(tmp_path, profile_name="cro", hour=10):
