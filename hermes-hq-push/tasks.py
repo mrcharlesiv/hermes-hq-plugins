@@ -30,7 +30,7 @@ import re
 import sqlite3
 import time
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -527,7 +527,11 @@ def ensure_prep_job(hours) -> None:
         return
     try:
         if job is None:
-            cron_jobs.create_job(prompt=PREP_JOB_PROMPT, schedule=schedule, name=PREP_JOB_NAME, deliver="local")
+            try:  # the dashboard's own path: saves the job and registers its first run with the scheduler
+                from cron.scheduler import create_job_with_scheduler_registration as create
+            except Exception:
+                create = cron_jobs.create_job
+            create(prompt=PREP_JOB_PROMPT, schedule=schedule, name=PREP_JOB_NAME, deliver="local")
             log.info("hermes-hq-push: tasks prep job created (%s)", schedule)
             return
         updates = {}
@@ -553,14 +557,50 @@ def remove_prep_job() -> None:
         log.debug("hermes-hq-push: tasks prep job not removed", exc_info=True)
 
 
-def reconcile_prep_job(store: Store, profile: str) -> None:
-    """Ensure or remove ``profile``'s job to match whether it still has open prep tasks right now. Best-effort:
-    called after a tool call that could change the answer; never raises."""
+@contextmanager
+def _cron_home(home):
+    """Point Hermes's cron store (and HERMES_HOME) at one bot's home for the block, so the job lands in that bot's
+    own schedule even in ``hermes serve``, one process for every bot. ``None`` keeps whatever is active (tests).
+    Uses cron.jobs.use_cron_store and hermes_constants' override, not the dashboard's private helper."""
+    if home is None:
+        yield
+        return
+    from cron import jobs as cron_jobs
+    token = None
     try:
-        if store.open_prep_count(profile) > 0:
-            ensure_prep_job(store.get_settings().get("prep_every_hours", DEFAULT_SETTINGS["prep_every_hours"]))
-        else:
-            remove_prep_job()
+        from hermes_constants import set_hermes_home_override
+        token = set_hermes_home_override(str(home))
+    except Exception:
+        log.debug("hermes-hq-push: no HERMES_HOME override in this Hermes", exc_info=True)
+    try:
+        with cron_jobs.use_cron_store(home):
+            yield
+    finally:
+        if token is not None:
+            from hermes_constants import reset_hermes_home_override
+            reset_hermes_home_override(token)
+
+
+def bot_home(profile: str):
+    """``profile``'s Hermes home (``default`` = the root bot), or ``None`` when Hermes can't say."""
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        return Path(get_profile_dir(profile))
+    except Exception:
+        log.debug("hermes-hq-push: no home for %s", profile, exc_info=True)
+        return None
+
+
+def reconcile_prep_job(store: Store, profile: str, home=None) -> None:
+    """Ensure or remove ``profile``'s job to match whether it still has open prep tasks right now, in ``home``'s
+    schedule (``bot_home(profile)``; ``None`` = the active one). Best-effort: called after a change that could
+    alter the answer; never raises."""
+    try:
+        with _cron_home(home):
+            if store.open_prep_count(profile) > 0:
+                ensure_prep_job(store.get_settings().get("prep_every_hours", DEFAULT_SETTINGS["prep_every_hours"]))
+            else:
+                remove_prep_job()
     except Exception:
         log.debug("hermes-hq-push: tasks prep job not reconciled", exc_info=True)
 
@@ -732,7 +772,7 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
         if task["prep"]:
-            reconcile_prep_job(store, bot)
+            reconcile_prep_job(store, bot, bot_home(bot))
         return json.dumps({**task, "undo": "Say 'undo' and I'll remove it, or tap Undo in the app"},
                           ensure_ascii=False)
 
@@ -742,19 +782,20 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         task_id = str(args.get("id") or "")
         if not task_id:
             return json.dumps({"error": "Say which task: its id."}, ensure_ascii=False)
+        before = store.get(task_id) or {}
         try:
             task = store.update_bot(task_id, bot, status=args.get("status"), status_note=args.get("status_note"),
                                     done_steps=args.get("done_steps"), add_steps=args.get("add_steps"),
                                     made=args.get("made"), note=args.get("note"))
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
-        if task["status"] in ("ready", "needs_you"):
-            try:
+        if task["status"] in ("ready", "needs_you") and before.get("status") != task["status"]:
+            try:  # once per change: a later note or step on a task that's already ready doesn't alert again
                 notify(task, bot)
             except Exception:
                 log.debug("hermes-hq-push: tasks push not sent", exc_info=True)
         if task["prep"]:
-            reconcile_prep_job(store, bot)
+            reconcile_prep_job(store, bot, bot_home(bot))
         return json.dumps(task, ensure_ascii=False)
 
     def handle_next_prep(args, **kwargs):

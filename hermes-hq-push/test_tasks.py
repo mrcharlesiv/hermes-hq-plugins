@@ -444,6 +444,27 @@ def test_reconcile_prep_job_follows_whether_open_prep_tasks_remain(tmp_path):
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None  # no open prep tasks left: job removed
 
 
+def test_ready_alerts_once_not_again_for_a_later_note(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    task = json.loads(ctx.tools["tasks_add"]({"title": "Find venues", "who": "bot"}))
+    ctx.tools["tasks_update"]({"id": task["id"], "status": "ready", "status_note": "3 venues"})
+    ctx.tools["tasks_update"]({"id": task["id"], "note": "Added prices"})  # still ready: no second alert
+    ctx.tools["tasks_update"]({"id": task["id"], "status": "needs_you", "status_note": "Budget?"})
+    assert [t["status"] for t, _ in notified] == ["ready", "needs_you"]
+
+
+@needs_cron
+def test_reconcile_puts_the_job_in_that_bots_own_schedule(tmp_path):
+    s = store(tmp_path, hour=10)
+    s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    cro_home, other = tmp_path / "cro-home", tmp_path / "other-home"
+    with cron_jobs.use_cron_store(other):  # the process's active schedule belongs to another bot
+        tasks.reconcile_prep_job(s, "cro", cro_home)
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None
+    with cron_jobs.use_cron_store(cro_home):
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None
+
+
 # ---------------------------------------------------------------------------
 # The dashboard routes
 # ---------------------------------------------------------------------------

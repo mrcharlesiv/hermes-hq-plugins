@@ -509,12 +509,13 @@ def tasks_prep_job(profile: str):
     tool call that could change the answer; this route lets the app force the same reconcile for one profile from
     here, e.g. right after changing a task's prep flag or bot through the routes above, or Tasks settings)."""
     try:
-        from hermes_cli.profiles import get_profile_dir
-        from hermes_cli import web_server_cron as cron_web
-        home = Path(get_profile_dir(profile))
-        with cron_web._cron_store_scope(home):
-            tasks.reconcile_prep_job(_tasks_store(), profile)
+        home = tasks.bot_home(profile)
+        if home is None:
+            raise HTTPException(404, "no such bot")
+        tasks.reconcile_prep_job(_tasks_store(), profile, home)
         return {"ok": True}
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(503, f"couldn't reconcile the job: {type(error).__name__}") from None
 
