@@ -906,7 +906,7 @@ MADE_ITEMS = {"type": "object", "properties": {
     "title": {"type": "string", "description": "A few words, like \"Lunch shortlist\"."},
     "kind": {"type": "string", "enum": list(MADE_KINDS)},
     "ref": {"type": "string", "description": "file: its full path. link: the URL. note: the text, in Markdown, one "
-            "line per item (\"- **North Italia**: 5 min, $25, book online\"); a long table goes in a file instead."}},
+            "line per item (\"- **Elm & Oak**: 5 min, $25, book online\"); a long table goes in a file instead."}},
     "required": ["title"]}
 START_NOW = {"type": "boolean", "description": "Start your step now as a background Task prep run (needs prep=true "
              "and your own step): for work too long to do in this reply. It alerts the user when it's ready."}
