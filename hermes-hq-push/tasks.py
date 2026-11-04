@@ -57,11 +57,18 @@ START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hou
 # "enabled" (0.9.35, owner 2026-11-04: "a way for users to be able to turn off the tasks feature entirely"): False
 # hides the four tools from every bot (check_fn), drops the pre-turn note and every bot's Task prep job. The list
 # itself is kept, so turning Tasks back on brings it all back.
+# "group"/"sort" (0.9.36, owner 2026-11-04: "can we create sections? And an easy way to move the tasks amongst the
+# sections"): how the app lays the page out — "smart" groups (Needs You, Today, …) or "sections" (the user's own, in
+# meta 'sections'), and the order inside each — kept here so the iPhone and the Mac show the same page.
 DEFAULT_SETTINGS = {"enabled": True, "capture": "ask", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
-                    "prep_every_hours": 3}
+                    "prep_every_hours": 3, "group": "smart", "sort": "smart"}
+GROUPS = ("smart", "sections")
+SORTS = ("smart", "due", "added")
+SECTIONS_CAP = 50
+SECTION_NAME_MAX = 60
 
 COLUMNS = ("id", "rev", "title", "notes", "who", "bot", "status", "status_note", "due", "repeat", "prep",
-           "steps", "made", "source", "created_at", "updated_at", "done_at", "created_by", "log")
+           "steps", "made", "source", "created_at", "updated_at", "done_at", "created_by", "log", "section", "position")
 
 
 class TaskError(ValueError):
@@ -82,6 +89,14 @@ def new_id() -> str:
 
 def _iso(clock: Callable[[], float]) -> str:
     return datetime.fromtimestamp(clock(), tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _seconds(iso: str) -> float:
+    """A task's place before anyone dragged it: when it was added (so new tasks go to the bottom)."""
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
 
 
 def _clip(text: str, max_len: int) -> str:
@@ -303,7 +318,7 @@ def same_task(a: str, b: str) -> bool:
     return wa == wb or len(wa & wb) / len(wa | wb) >= 0.75
 
 
-def compact(task: dict) -> dict:
+def compact(task: dict, sections: dict | None = None) -> dict:
     """A task trimmed for ``tasks_list``: the fields a bot needs to talk about it, nothing it doesn't (long
     notes clipped, empty fields left out) — this rides the model's context on every call."""
     out = {"id": task["id"], "title": task["title"], "who": task["who"], "bot": task["bot"],
@@ -313,6 +328,8 @@ def compact(task: dict) -> dict:
             out[key] = task[key]
     if task.get("prep"):
         out["prep"] = True
+    if task.get("section") and sections and task["section"] in sections:
+        out["section"] = sections[task["section"]]
     if task.get("notes"):
         out["notes"] = task["notes"][:200]
     if task.get("steps"):
@@ -326,6 +343,7 @@ def _row_to_task(row) -> dict:
     task = dict(zip(COLUMNS, row))
     task["rev"] = int(task["rev"])
     task["prep"] = bool(task["prep"])
+    task["position"] = float(task["position"] or 0)
     for key in ("steps", "made", "source", "log"):
         task[key] = json.loads(task[key] or ("[]" if key != "source" else "{}"))
     return task
@@ -363,6 +381,13 @@ class Store:
             """)
             if db.execute("select 1 from meta where key='rev'").fetchone() is None:
                 db.execute("insert into meta (key, value) values ('rev', '0')")
+            have = {row[1] for row in db.execute("pragma table_info(tasks)")}
+            if "section" not in have:   # 0.9.36: the user's own sections, and each task's place in its section
+                db.execute("alter table tasks add column section text")
+            if "position" not in have:
+                db.execute("alter table tasks add column position real")
+                for task_id, made in db.execute("select id, created_at from tasks").fetchall():
+                    db.execute("update tasks set position=? where id=?", (_seconds(made), task_id))
 
     def _db(self) -> sqlite3.Connection:
         # isolation_level=None (autocommit): no implicit BEGIN before a write, so every write path below opens
@@ -411,7 +436,8 @@ class Store:
         current = self.rev()
         if since is not None and since >= current:
             return {"rev": current, "unchanged": True}
-        return {"rev": current, "tasks": self.list_all(), "settings": self.get_settings()}
+        return {"rev": current, "tasks": self.list_all(), "settings": self.get_settings(),
+                "sections": self.get_sections()}
 
     def find_open_twin(self, title: str) -> dict | None:
         """An open task that is ``title`` in other words ("Call the dentist" / "call dentist"), so a bot's
@@ -461,8 +487,12 @@ class Store:
             "due": _text(fields.get("due"), DUE_MAX) or None, "repeat": repeat, "prep": int(prep),
             "steps": json.dumps(_clean_steps(fields.get("steps"))), "made": "[]", "source": json.dumps(source),
             "created_at": now, "updated_at": now, "done_at": None, "created_by": created_by, "log": "[]",
+            "section": None, "position": self.clock(),
         }
         with closing(self._write_db()) as db, db:
+            row["section"] = self._section_id(db, fields.get("section"))
+            if isinstance(fields.get("position"), (int, float)) and not isinstance(fields.get("position"), bool):
+                row["position"] = float(fields["position"])
             db.execute(f"insert into tasks ({','.join(row)}) values ({','.join('?' * len(row))})",
                       list(row.values()))
             self._bump_rev(db)
@@ -483,6 +513,10 @@ class Store:
         for key in ("title", "notes", "who", "bot", "status_note", "due", "repeat"):
             if key in patch:
                 updated[key] = patch[key]
+        if "section" in patch:
+            updated["section"] = patch["section"] or None
+        if isinstance(patch.get("position"), (int, float)) and not isinstance(patch.get("position"), bool):
+            updated["position"] = float(patch["position"])
         if "prep" in patch and patch["prep"] is not None:
             updated["prep"] = bool(patch["prep"])
         if "steps" in patch and patch["steps"] is not None:
@@ -511,10 +545,11 @@ class Store:
 
     def _write(self, db, task: dict) -> None:
         db.execute("""update tasks set rev=?, title=?, notes=?, who=?, bot=?, status=?, status_note=?, due=?,
-            repeat=?, prep=?, steps=?, made=?, updated_at=?, done_at=?, log=? where id=?""",
+            repeat=?, prep=?, steps=?, made=?, updated_at=?, done_at=?, log=?, section=?, position=? where id=?""",
             (task["rev"], task["title"], task["notes"], task["who"], task["bot"], task["status"],
              task["status_note"], task["due"], task["repeat"], int(task["prep"]), json.dumps(task["steps"]),
-             json.dumps(task["made"]), task["updated_at"], task["done_at"], json.dumps(task["log"]), task["id"]))
+             json.dumps(task["made"]), task["updated_at"], task["done_at"], json.dumps(task["log"]),
+             task.get("section"), float(task.get("position") or 0), task["id"]))
 
     def update_route(self, task_id: str, rev: int, patch: dict, by: str = "you") -> dict:
         """``PATCH /tasks/{id}``: a stale ``rev`` raises ``TaskError(409, {"task": current})``."""
@@ -525,13 +560,16 @@ class Store:
             task = _row_to_task(row)
             if int(rev) != task["rev"]:
                 raise TaskError(409, {"task": task})
+            if "section" in patch:
+                patch["section"] = self._section_id(db, patch["section"], by_id=True)
             updated = self._merge(task, patch, by)
             self._write(db, updated)
             self._bump_rev(db)
         return updated
 
     def update_bot(self, task_id: str, profile: str, *, status=None, status_note=None, done_steps=None,
-                  add_steps=None, made=None, note=None, who=None, prep=None, due=_UNSET) -> dict:
+                  add_steps=None, made=None, note=None, who=None, prep=None, due=_UNSET,
+                  section=_UNSET) -> dict:
         """``tasks_update``: no ``rev`` (the tool contract has none — the bot always applies to the current
         task). Enforces docs/tasks.md's rules in code: a bot may only mark ``done`` a task it owns alone
         (``who == "bot"``), and may not change a ``who == "me"`` task except to add ``note`` — or to take a part
@@ -585,6 +623,8 @@ class Store:
                 patch["prep"] = bool(prep) and (patch.get("who") or task["who"]) in ("bot", "together")
             if due is not _UNSET:
                 patch["due"] = due
+            if section is not _UNSET:   # filing a task is never "changing" it: fine on the user's own too
+                patch["section"] = self._section_id(db, section)
             updated = self._merge(task, patch, profile, note=note or ("took a part" if taking_part else None))
             self._write(db, updated)
             self._bump_rev(db)
@@ -618,10 +658,69 @@ class Store:
         value = fields.get("prep_every_hours")
         if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 24:
             current["prep_every_hours"] = value
+        if fields.get("group") in GROUPS:
+            current["group"] = fields["group"]
+        if fields.get("sort") in SORTS:
+            current["sort"] = fields["sort"]
         with closing(self._write_db()) as db, db:
             db.execute("insert into meta (key, value) values ('settings', ?) on conflict(key) do update"
                        " set value=excluded.value", (json.dumps(current),))
         return current
+
+    # -- sections (0.9.36): the user's own, in order; a task's ``section`` is one of their ids, or none ------------
+
+    @staticmethod
+    def _read_sections(db) -> list[dict]:
+        row = db.execute("select value from meta where key='sections'").fetchone()
+        try:
+            saved = json.loads(row[0]) if row else []
+        except ValueError:
+            return []
+        return [s for s in saved if isinstance(s, dict) and s.get("id") and s.get("name")]
+
+    def get_sections(self) -> list[dict]:
+        with closing(self._db()) as db:
+            return self._read_sections(db)
+
+    def _section_id(self, db, value, by_id: bool = False) -> str | None:
+        """A section id from an id (the app) or a name (a bot says "Groceries"); unknown or empty is none."""
+        text = _text(value, SECTION_NAME_MAX) if value is not None else ""
+        if not text:
+            return None
+        sections = self._read_sections(db)
+        for s in sections:
+            if s["id"] == text:
+                return s["id"]
+        if by_id:
+            raise TaskError(400, "No such section.")
+        wanted = text.casefold()
+        return next((s["id"] for s in sections if s["name"].casefold() == wanted), None)
+
+    def put_sections(self, sections: list) -> dict:
+        """``PUT /tasks/sections``: the whole list, in order (new ones without an id get one). A section left out
+        is deleted, and its tasks go back to no section; they're never deleted with it."""
+        clean, seen = [], set()
+        for s in sections[:SECTIONS_CAP]:
+            if not isinstance(s, dict):
+                continue
+            name = _text(s.get("name"), SECTION_NAME_MAX)
+            sid = _text(s.get("id"), 64) or new_id()
+            if not name or sid in seen:
+                continue
+            seen.add(sid)
+            clean.append({"id": sid, "name": name})
+        with closing(self._write_db()) as db, db:
+            db.execute("insert into meta (key, value) values ('sections', ?) on conflict(key) do update"
+                       " set value=excluded.value", (json.dumps(clean, ensure_ascii=False),))
+            gone = [row[0] for row in db.execute("select distinct section from tasks where section is not null")
+                    if row[0] not in seen]
+            for sid in gone:
+                db.execute("update tasks set section=null, rev=rev+1 where section=?", (sid,))
+            rev = self._bump_rev(db)
+        return {"rev": rev, "sections": clean}
+
+    def section_names(self) -> dict:
+        return {s["id"]: s["name"] for s in self.get_sections()}
 
     # -- prep (docs/tasks.md #3): quiet hours, the daily cap, handing out the next task -----------------------
 
@@ -954,8 +1053,8 @@ LIST_SCHEMA = _schema(
     "tasks_list",
     "The shared Tasks list between you and the user. scope 'mine' (default): only tasks assigned to you "
     "(including the user's half of a 'together' task with you); scope 'all': every bot's tasks too. Returns "
-    "compact JSON: {tasks: [...]}, each with id, title, who, bot, status, and (only when set) status_note, due, "
-    "repeat, prep, steps, made, notes.",
+    "compact JSON: {tasks: [...], sections}, each with id, title, who, bot, status, and (only when set) status_note, "
+    "due, repeat, prep, section, steps, made, notes. sections: the user's own section names, when they have some.",
     {"scope": {"type": "string", "enum": ["mine", "all"], "description": "Default 'mine'."},
      "include_done": {"type": "boolean", "description": "Include finished tasks too (default false)."}})
 
@@ -967,6 +1066,9 @@ MADE_ITEMS = {"type": "object", "properties": {
     "ref": {"type": "string", "description": "file: its full path. link: the URL. note: the text, in Markdown, one "
             "line per item (\"- **Elm & Oak**: 5 min, $25, book online\"); a long table goes in a file instead."}},
     "required": ["title"]}
+SECTION = {"type": "string", "description": "One of the user's own sections on the Tasks page, by name (tasks_list "
+           "lists them), when they ask for it to go there; empty takes it out of its section. Sections are theirs: "
+           "you can't make new ones."}
 START_NOW = {"type": "boolean", "description": "Start your step now as a background Task prep run (needs prep=true "
              "and your own step): for work too long to do in this reply. It alerts the user when it's ready."}
 
@@ -992,7 +1094,8 @@ ADD_SCHEMA = _schema(
                    "required": ["title"]}},
      "prep": {"type": "boolean", "description": "Get your part ready ahead of time (who 'bot' or 'together' only)."},
      "start_now": START_NOW,
-     "bot": {"type": "string", "description": "Which bot (profile) it's for; default: you."}},
+     "bot": {"type": "string", "description": "Which bot (profile) it's for; default: you."},
+     "section": SECTION},
     ("title",))
 
 UPDATE_SCHEMA = _schema(
@@ -1022,7 +1125,8 @@ UPDATE_SCHEMA = _schema(
              "steps in add_steps)."},
      "prep": {"type": "boolean", "description": "Get your part ready ahead of time."},
      "due": {"type": "string", "description": "Only on a task you added or own. " + DUE_HELP},
-     "start_now": START_NOW},
+     "start_now": START_NOW,
+     "section": SECTION},
     ("id",))
 
 NEXT_PREP_SCHEMA = _schema(
@@ -1051,7 +1155,11 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
             tasks = [t for t in tasks if t["bot"] == bot]
         if not include_done:
             tasks = [t for t in tasks if t["status"] != "done"]
-        return json.dumps({"tasks": [compact(t) for t in tasks]}, ensure_ascii=False)
+        names = store.section_names()
+        out = {"tasks": [compact(t, names) for t in tasks]}
+        if names:
+            out["sections"] = list(names.values())
+        return json.dumps(out, ensure_ascii=False)
 
     def handle_add(args, session_id="", **kwargs):
         store, bot = store_for(), profile()
@@ -1093,7 +1201,8 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
             task = store.update_bot(task_id, bot, status=args.get("status"), status_note=args.get("status_note"),
                                     done_steps=args.get("done_steps"), add_steps=args.get("add_steps"),
                                     made=args.get("made"), note=args.get("note"), who=args.get("who"),
-                                    prep=args.get("prep"), due=due)
+                                    prep=args.get("prep"), due=due,
+                                    section=args["section"] if "section" in args else _UNSET)
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
         out = dict(task)

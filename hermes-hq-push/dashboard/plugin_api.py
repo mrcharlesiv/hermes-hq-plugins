@@ -432,6 +432,8 @@ class TaskIn(BaseModel):
     prep: bool = False
     steps: list[StepIn] = Field(default_factory=list, max_length=50)
     source: SourceIn | None = None
+    section: str | None = Field(default=None, max_length=64)
+    position: float | None = None
 
 
 class TaskPatchIn(BaseModel):
@@ -447,6 +449,8 @@ class TaskPatchIn(BaseModel):
     prep: bool | None = None
     steps: list[StepIn] | None = None
     made: list[MadeIn] | None = None
+    section: str | None = Field(default=None, max_length=64)
+    position: float | None = None
 
 
 class SettingsIn(BaseModel):
@@ -456,6 +460,17 @@ class SettingsIn(BaseModel):
     quiet_start: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     quiet_end: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     prep_every_hours: int | None = Field(default=None, ge=1, le=24)
+    group: str | None = Field(default=None, pattern="^(smart|sections)$")
+    sort: str | None = Field(default=None, pattern="^(smart|due|added)$")
+
+
+class SectionIn(BaseModel):
+    id: str = Field(default="", max_length=64)
+    name: str = Field(max_length=60)
+
+
+class SectionsIn(BaseModel):
+    sections: list[SectionIn] = Field(default_factory=list, max_length=50)
 
 
 @router.get("/tasks")
@@ -509,6 +524,17 @@ def tasks_settings_put(body: SettingsIn):
             if home is not None:
                 tasks.reconcile_prep_job(store, bot, home)
     return saved
+
+
+@router.get("/tasks/sections")
+def tasks_sections_get():
+    return {"sections": _tasks_store().get_sections()}
+
+
+@router.put("/tasks/sections")
+def tasks_sections_put(body: SectionsIn):
+    """The user's own sections, the whole list in order (0.9.36); one left out is deleted, its tasks kept."""
+    return _tasks_store().put_sections([s.model_dump() for s in body.sections])
 
 
 @router.post("/tasks/prep-job/{profile}")

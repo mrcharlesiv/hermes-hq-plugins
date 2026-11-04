@@ -810,3 +810,77 @@ def test_tasks_add_tool_gives_back_the_open_twin_instead_of_adding_it_again(tmp_
     s.update_route(first["id"], first["rev"], {"status": "done"})
     later = json.loads(ctx.tools["tasks_add"]({"title": "Call the dentist"}))
     assert "already" not in later and len(s.list_all()) == 2  # a done one doesn't count
+
+
+# ---------------------------------------------------------------------------
+# Sections (0.9.36, owner 2026-11-04: "can we create sections? And an easy way to move the tasks amongst the
+# sections")
+# ---------------------------------------------------------------------------
+
+def test_sections_put_in_order_and_new_ones_get_ids(tmp_path):
+    s = store(tmp_path)
+    out = s.put_sections([{"name": "Home"}, {"name": "  Work  "}, {"name": ""}])
+    assert [x["name"] for x in out["sections"]] == ["Home", "Work"]
+    assert all(x["id"] for x in out["sections"])
+    assert s.list_response(None)["sections"] == out["sections"]
+
+
+def test_move_and_reorder_a_task_by_patch(tmp_path):
+    s = store(tmp_path)
+    home = s.put_sections([{"name": "Home"}])["sections"][0]
+    a, b = s.create(me(), "you", {}), s.create(me(title="Water plants"), "you", {})
+    assert a["section"] is None and a["position"] == 1_700_000_000.0
+    moved = s.update_route(b["id"], b["rev"], {"section": home["id"], "position": 5.5})
+    assert moved["section"] == home["id"] and moved["position"] == 5.5
+    with pytest.raises(tasks.TaskError) as error:
+        s.update_route(a["id"], a["rev"], {"section": "nope"})
+    assert error.value.status_code == 400
+    back = s.update_route(b["id"], moved["rev"], {"section": None})
+    assert back["section"] is None
+
+
+def test_deleting_a_section_keeps_its_tasks(tmp_path):
+    s = store(tmp_path)
+    home = s.put_sections([{"name": "Home"}])["sections"][0]
+    task = s.create({**me(), "section": home["id"]}, "you", {})
+    assert task["section"] == home["id"]
+    rev = s.rev()
+    s.put_sections([])
+    kept = s.get(task["id"])
+    assert kept is not None and kept["section"] is None and kept["rev"] == task["rev"] + 1 and s.rev() > rev
+
+
+def test_an_old_list_gets_the_new_columns(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "tasks.db")
+    db.executescript("""create table tasks (id text primary key, rev integer not null, title text not null,
+        notes text not null default '', who text not null, bot text, status text not null,
+        status_note text not null default '', due text, repeat text, prep integer not null default 0,
+        steps text not null default '[]', made text not null default '[]', source text not null default '{}',
+        created_at text not null, updated_at text not null, done_at text, created_by text not null,
+        log text not null default '[]');
+        insert into tasks (id, rev, title, who, status, created_at, updated_at, created_by)
+        values ('t1', 1, 'Old one', 'me', 'open', '2026-11-01T10:00:00Z', '2026-11-01T10:00:00Z', 'you');""")
+    db.commit()
+    db.close()
+    old = store(tmp_path).get("t1")
+    assert old["section"] is None and old["position"] > 1_700_000_000
+
+
+def test_bots_file_by_section_name_and_see_the_names(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    s.put_sections([{"name": "Groceries"}])
+    added = json.loads(ctx.tools["tasks_add"]({"title": "Buy oat milk", "section": "groceries"}))
+    listed = json.loads(ctx.tools["tasks_list"]({"scope": "all"}))
+    assert listed["sections"] == ["Groceries"]
+    assert listed["tasks"][0]["section"] == "Groceries"
+    moved = json.loads(ctx.tools["tasks_update"]({"id": added["id"], "section": ""}))
+    assert moved["section"] is None   # a bot may file the user's own task; empty takes it out
+
+
+def test_group_and_sort_settings(tmp_path):
+    s = store(tmp_path)
+    assert s.get_settings()["group"] == "smart" and s.get_settings()["sort"] == "smart"
+    saved = s.put_settings({"group": "sections", "sort": "due"})
+    assert saved["group"] == "sections" and saved["sort"] == "due"
+    assert s.put_settings({"group": "weird"})["group"] == "sections"
