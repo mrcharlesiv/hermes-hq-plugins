@@ -54,7 +54,7 @@ DUE_MAX = 40
 _UNSET = object()  # tasks_update left `due` out (None clears it)
 START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
 
-DEFAULT_SETTINGS = {"capture": "auto", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
+DEFAULT_SETTINGS = {"capture": "ask", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
                     "prep_every_hours": 3}
 
 COLUMNS = ("id", "rev", "title", "notes", "who", "bot", "status", "status_note", "due", "repeat", "prep",
@@ -282,6 +282,24 @@ def roll_forward(due, repeat: str, now: Callable[[], float] = time.time) -> str 
     return nxt.isoformat() if has_time else nxt.strftime("%Y-%m-%d")
 
 
+_FILLER = {"a", "an", "the", "to", "my", "our", "for", "of", "and", "on", "in", "at", "with", "some", "this",
+           "that", "it", "me", "up"}
+
+
+def _title_words(title: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", title.lower().replace("\u2019", "'").replace("'", "")) if w not in _FILLER}
+
+
+def same_task(a: str, b: str) -> bool:
+    """Two titles for the same to-do: the same words once fillers go ("Call the dentist" / "call dentist"), or
+    nearly so ("Go through the open job applications" / "… in ADP"; three quarters of the words shared). "Call mom"
+    and "Call mom about the Dec trip" stay two tasks."""
+    wa, wb = _title_words(a), _title_words(b)
+    if not wa or not wb:
+        return False
+    return wa == wb or len(wa & wb) / len(wa | wb) >= 0.75
+
+
 def compact(task: dict) -> dict:
     """A task trimmed for ``tasks_list``: the fields a bot needs to talk about it, nothing it doesn't (long
     notes clipped, empty fields left out) — this rides the model's context on every call."""
@@ -391,6 +409,17 @@ class Store:
         if since is not None and since >= current:
             return {"rev": current, "unchanged": True}
         return {"rev": current, "tasks": self.list_all(), "settings": self.get_settings()}
+
+    def find_open_twin(self, title: str) -> dict | None:
+        """An open task that is ``title`` in other words ("Call the dentist" / "call dentist"), so a bot's
+        ``tasks_add`` doesn't put the same thing on the list twice (0.9.34: "cautious of too many things making it
+        on the task list")."""
+        if not title:
+            return None
+        for task in self.list_all():
+            if task["status"] != "done" and same_task(task["title"], title):
+                return task
+        return None
 
     def open_prep_count(self, bot: str) -> int:
         with closing(self._db()) as db:
@@ -809,14 +838,29 @@ HELP_RULE = ("If part of it is yours to do (find, sort, check, draft), take it: 
              "status='working'). Say what you'll have ready.")
 
 
+# 0.9.34, owner 2026-11-04: "I would like for it to ask some questions about some things that it could do so that
+# the user can decide what it goes out and does", and "I would be as cautious of too many things making it on the
+# task list". Ask First (the default): nothing goes on the list without the user's yes, and the yes says what the bot
+# does. One clarify card (the app's question card) with a multi-select of what the bot could do.
+OFFER_RULE = ("When the user says they have to do something later (a real to-do: not an idea, a wish, or something "
+              "you do in this reply), don't add it yet. Answer them first, then ask once with the clarify tool: "
+              "one question like 'Want help with \"<a few words>\"?', multi_select=true, choices: up to 3 things "
+              "you could do for it (find, compare, check, draft; a few words each, best first), and last 'Just add "
+              "it to my list'. Ask when it's due in a second question only if they didn't say. Then tasks_add: what "
+              "they picked as your steps (who='together', yours first, start them), or who='me' for 'Just add it'. "
+              "If they skip or say no, add nothing and don't offer it again. If they asked you to add it ('remind "
+              "me…', 'put it on my list'), add it without asking. At most one offer per reply; without clarify, ask "
+              "in one short line.")
+
+
 def _capture_line(capture: str) -> str:
     """0.9.32 said only "add it and say so", and the bots did exactly that: the task went on the list with no offer
-    of help (owner, build 755: "it just added it to my to-do list. I think we can do better")."""
+    of help (owner, build 755: "it just added it to my to-do list. I think we can do better"). 0.9.33's Automatic
+    took a part without asking; 0.9.34's Ask First (the default) asks what to do first (``OFFER_RULE``)."""
     if capture == "auto":
         return "When the user says they need to do something, add it to Tasks with tasks_add. " + HELP_RULE
     if capture == "ask":
-        return ("When the user says they need to do something, offer to add it to Tasks, and say which part of it "
-                "you'd do for them.")
+        return OFFER_RULE
     return ""
 
 
@@ -913,13 +957,13 @@ START_NOW = {"type": "boolean", "description": "Start your step now as a backgro
 
 ADD_SCHEMA = _schema(
     "tasks_add",
-    "Add something to the shared Tasks list. Use this when the user says they need to do something (\"I need to "
-    "call the vet\"), or to add a task of your own or one you'll split with them. Don't stop at adding it: look "
-    "for the part you can do (find, sort, compare, summarize, check, draft). If there is one, add it as "
-    "who='together' with steps — yours (who 'bot') first, then theirs (who 'me') — and start yours: do it in this "
-    "reply if it's quick, or set prep=true and start_now=true if it's long. Use who='me' only when no part is "
-    "yours. who: 'me' (their own to-do; you don't touch it except to add a note, or to take a part of it with "
-    "tasks_update), 'bot' (you'll do all of it), 'together' (steps split between you). "
+    "Add something to the shared Tasks list: a thing the user needs to do (\"I need to call the vet\"), once they "
+    "said yes to it (ask first, unless they asked you to add it or the Tasks note says to add it), or a task of "
+    "your own. The parts you'll do for it go in as your steps: who='together', yours (who 'bot') first, then "
+    "theirs (who 'me'), and start yours: do it in this reply if it's quick, or set prep=true and start_now=true "
+    "if it's long. who: 'me' (their own to-do; you don't touch it except to add a note, or to take a part of it "
+    "with tasks_update), 'bot' (you'll do all of it), 'together' (steps split between you). If it's already on "
+    "the list you get that task back as 'already' and nothing is added: update it instead. "
     + PREP_RULE + " Returns the task, the due date in words (say it the same way to the user), and how to undo it.",
     {"title": {"type": "string", "description": "Required."},
      "who": {"type": "string", "enum": list(WHO), "description": "Default 'me'."},
@@ -940,8 +984,10 @@ UPDATE_SCHEMA = _schema(
     "tasks_update",
     "Move a shared task along: note what you made, tick off your own steps, or ask for the user. You can only "
     "set status 'done' on a task that's yours alone (who='bot'); a 'together' task needs the user to finish it "
-    "— set it 'ready' instead. A 'me' task is the user's: add a short note, or — when they ask you to help with it, "
-    "or you just added it in this chat — take a part of it: who='together' with add_steps (yours who 'bot', then "
+    "— set it 'ready' instead. A 'me' task is the user's: add a short note, or — when they ask you to help with it "
+    "(first ask which parts with one clarify card: multi_select, up to 3 things you could do, best first, unless "
+    "they already said), or you just added it in this chat — take a part of it: who='together' with add_steps "
+    "(yours who 'bot', then "
     "theirs who 'me'), plus prep=true and start_now=true to start a long step in the background. If another bot "
     "does your part (you asked it with message_agent), keep the step yours and set status 'working' instead of "
     "start_now, so the work isn't started twice. Set status 'ready' with a one-line status_note when your part is "
@@ -996,6 +1042,10 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         store, bot = store_for(), profile()
         args = _as_dict(args)
         source = {"kind": "chat", "profile": bot, "session_id": str(session_id or "")}
+        twin = store.find_open_twin(_text(args.get("title"), TITLE_MAX))
+        if twin:
+            return json.dumps({"already": compact(twin), "note": "This is already on their list, so nothing was "
+                               "added. Update it with tasks_update if something changed."}, ensure_ascii=False)
         try:
             fields = {**args, "due": resolve_due(args.get("due"), store.clock())}
             task = store.create(fields, created_by=bot, source=source)
@@ -1010,7 +1060,7 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
             out["due_said"] = said
         if args.get("start_now"):
             out["start"] = start_prep_now(store, task, task["bot"] or bot, home)
-        elif task["who"] == "me":
+        elif task["who"] == "me" and store.get_settings().get("capture") == "auto":
             out["next"] = ("Is part of this yours to do (find, sort, compare, summarize, check, draft)? Then take it "
                            "now: tasks_update with this id, who='together', add_steps (yours, then theirs), and do "
                            "it in this reply, or prep=true + start_now=true if it's long.")

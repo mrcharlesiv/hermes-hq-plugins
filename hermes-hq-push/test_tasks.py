@@ -278,7 +278,12 @@ def test_context_note_lists_open_tasks_and_the_default_capture_line(tmp_path):
     note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
     assert note.startswith(tasks.MARK) and note.endswith("]")
     assert "Call the vet about Max's shots (open)" in note
-    assert "tasks_add" in note  # default capture=auto
+    # 0.9.34: Ask First is the default: one clarify card offering what the bot could do, nothing added without a yes.
+    assert "clarify" in note and "multi_select=true" in note and "Just add it to my list" in note
+    assert "add nothing" in note
+    s.put_settings({"capture": "auto"})
+    auto = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    assert "add it to Tasks with tasks_add" in auto and "clarify" not in auto
 
 
 def test_context_note_lists_at_most_five_and_truncates_long_titles(tmp_path):
@@ -288,7 +293,7 @@ def test_context_note_lists_at_most_five_and_truncates_long_titles(tmp_path):
                  created_by="you", source={"kind": "app"})
     note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
     assert note.count(" (open)") == 5 and ", +2 more" in note
-    assert len(note) < 720  # 0.9.33 added the date and the take-your-part rule (once per 12 messages)
+    assert len(note) < 1250  # 0.9.34's ask-first rule (once per 12 messages, app chats only)
 
 
 def test_context_note_skipped_when_nothing_to_say(tmp_path):
@@ -510,8 +515,11 @@ def test_tasks_add_tool_saves_today_as_today_and_says_it_back(tmp_path):
     assert len(s.list_all()) == 1  # the unreadable one wasn't saved
 
 
-def test_tasks_add_tool_nudges_the_bot_to_take_its_part_of_a_me_task(tmp_path):
+def test_tasks_add_tool_nudges_the_bot_to_take_its_part_of_a_me_task_only_when_automatic(tmp_path):
     s, ctx, notified = wired(tmp_path)
+    asked = json.loads(ctx.tools["tasks_add"]({"title": "Pick up the dry cleaning"}))
+    assert "next" not in asked  # Ask First: they picked "Just add it", so the bot doesn't take a part anyway
+    s.put_settings({"capture": "auto"})
     mine = json.loads(ctx.tools["tasks_add"]({"title": "Call the vet"}))
     assert "who='together'" in mine["next"]
     shared = json.loads(ctx.tools["tasks_add"]({"title": "Review applications", "who": "together", "steps": [
@@ -596,12 +604,15 @@ def test_start_prep_now_runs_that_bots_job_at_the_next_tick(tmp_path):
     assert s.next_prep("cro")["id"] == task["id"]
 
 
-def test_context_note_says_the_date_and_asks_the_bot_to_take_its_part(tmp_path):
+def test_context_note_says_the_date_and_how_the_bot_takes_its_part(tmp_path):
     s = store(tmp_path)
     note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="I need to do the taxes")
     moment = datetime.fromtimestamp(s.clock())
     assert f"Now: {moment.strftime('%A')}, {moment.strftime('%b')} {moment.day}, {moment.year}" in note
-    assert "who='together'" in note and "start_now=true" in note
+    assert "who='together'" in note and "start them" in note  # Ask First: what they picked
+    s.put_settings({"capture": "auto"})
+    auto = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="I need to do the taxes")
+    assert "who='together'" in auto and "start_now=true" in auto
 
 
 # ---------------------------------------------------------------------------
@@ -745,3 +756,26 @@ def test_the_activity_says_a_status_change_in_words(tmp_path):
     lines = [entry["text"] for entry in s.get(task["id"])["log"]]
     assert lines[-2:] == ["Started", "Ready: 3 spots ready"]
     assert "working" not in lines and "ready" not in lines
+
+
+# 0.9.34, owner: "I would be as cautious of too many things making it on the task list": a bot's tasks_add doesn't
+# put the same to-do on the list twice.
+
+def test_same_task_matches_other_words_for_one_to_do_and_keeps_different_ones_apart():
+    assert tasks.same_task("Call the dentist", "call dentist")
+    assert tasks.same_task("Go through the open job applications", "Go through the open job applications in ADP")
+    assert tasks.same_task("Pick up Mom’s gift", "pick up moms gift")
+    assert not tasks.same_task("Call mom", "Call mom about the Dec trip")
+    assert not tasks.same_task("Renew passport", "Renew passport photos")
+    assert not tasks.same_task("", "Call mom")
+
+
+def test_tasks_add_tool_gives_back_the_open_twin_instead_of_adding_it_again(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    first = json.loads(ctx.tools["tasks_add"]({"title": "Call the dentist", "due": "tomorrow"}))
+    again = json.loads(ctx.tools["tasks_add"]({"title": "call dentist"}))
+    assert again["already"]["id"] == first["id"] and "nothing was added" in again["note"]
+    assert len(s.list_all()) == 1
+    s.update_route(first["id"], first["rev"], {"status": "done"})
+    later = json.loads(ctx.tools["tasks_add"]({"title": "Call the dentist"}))
+    assert "already" not in later and len(s.list_all()) == 2  # a done one doesn't count
