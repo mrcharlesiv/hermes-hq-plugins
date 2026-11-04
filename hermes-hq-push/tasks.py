@@ -871,6 +871,7 @@ LIST_SCHEMA = _schema(
     {"scope": {"type": "string", "enum": ["mine", "all"], "description": "Default 'mine'."},
      "include_done": {"type": "boolean", "description": "Include finished tasks too (default false)."}})
 
+STEP_TITLE = "A few words, like \"Shortlist 3 lunch spots\"; details go in the task's notes."
 START_NOW = {"type": "boolean", "description": "Start your step now as a background Task prep run (needs prep=true "
              "and your own step): for work too long to do in this reply. It alerts the user when it's ready."}
 
@@ -891,7 +892,8 @@ ADD_SCHEMA = _schema(
              "YYYY-MM-DD / YYYY-MM-DDTHH:MM in the user's local time."},
      "steps": {"type": "array", "description": "who='together': each step is yours or the user's.",
                "items": {"type": "object", "properties": {
-                   "title": {"type": "string"}, "who": {"type": "string", "enum": ["me", "bot"]}},
+                   "title": {"type": "string", "description": STEP_TITLE},
+                   "who": {"type": "string", "enum": ["me", "bot"]}},
                    "required": ["title"]}},
      "prep": {"type": "boolean", "description": "Get your part ready ahead of time (who 'bot' or 'together' only)."},
      "start_now": START_NOW,
@@ -914,7 +916,8 @@ UPDATE_SCHEMA = _schema(
      "status_note": {"type": "string", "description": "One short line, e.g. \"Number and a Dec 9 slot\"."},
      "done_steps": {"type": "array", "items": {"type": "string"}, "description": "ids of your own steps to tick."},
      "add_steps": {"type": "array", "items": {"type": "object", "properties": {
-                       "title": {"type": "string"}, "who": {"type": "string", "enum": ["me", "bot"]}},
+                       "title": {"type": "string", "description": STEP_TITLE},
+                       "who": {"type": "string", "enum": ["me", "bot"]}},
                        "required": ["title"]}},
      "made": {"type": "array", "description": "A file, link or note you made for this task.",
               "items": {"type": "object", "properties": {
@@ -996,6 +999,10 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
         out = dict(task)
+        if before.get("who") == "me" and task["who"] == "together":
+            # The app's "Hermes Is Helping" card keys on this: the log's last line is the bot's own note when it
+            # gave one (2026-11-04 live test: "Hermes taking the shortlist; …", so the card never showed).
+            out["took_part"] = True
         if due is not _UNSET and (said := due_said(task["due"], store.clock())):
             out["due_said"] = said
         if task["status"] in ("ready", "needs_you") and before.get("status") != task["status"]:

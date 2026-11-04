@@ -527,8 +527,14 @@ def test_bot_takes_a_part_of_the_users_task(tmp_path):
     assert "error" in no_step and s.get(task["id"])["who"] == "me"
     took = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "who": "together", "prep": True, "add_steps": [
         {"title": "Rank the 167 and flag mismatches", "who": "bot"}, {"title": "Review the shortlist", "who": "me"}]}))
-    assert took["who"] == "together" and took["bot"] == "cro" and took["prep"] is True
+    assert took["who"] == "together" and took["bot"] == "cro" and took["prep"] is True and took["took_part"] is True
     assert [st["who"] for st in took["steps"]] == ["bot", "me"] and took["log"][-1]["text"] == "took a part"
+    # With its own note (2026-11-04 live test) the log's last line is the note; took_part still tells the app.
+    other = json.loads(ctx.tools["tasks_add"]({"title": "Pick a spot for Friday's lunch"}))
+    noted = json.loads(ctx.tools["tasks_update"]({"id": other["id"], "who": "together", "note": "Hermes taking the shortlist",
+                                                  "add_steps": [{"title": "Shortlist 3 spots", "who": "bot"}]}))
+    assert noted["took_part"] is True and noted["log"][-1]["text"] == "Hermes taking the shortlist"
+    assert "took_part" not in json.loads(ctx.tools["tasks_update"]({"id": other["id"], "note": "later"}))
 
 
 def test_bot_still_cannot_otherwise_change_a_users_task(tmp_path):
