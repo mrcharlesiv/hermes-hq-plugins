@@ -332,13 +332,19 @@ def ask_line(ask: str, detail: str = "") -> str:
 def alert(kind: str, sender: str, text: str = "", previews: bool = True, about: str = "", ask: str = "") -> dict:
     """``{title, body}`` for an APNs alert. ``text`` is the reply or the command awaiting approval; ``about`` an
     approval's description. An ``input`` alert (a bot waiting for a password, login, code, secret or answer) says what
-    ``ask`` is for, ``text`` naming the site or question. Off, previews name only the sender."""
+    ``ask`` is for, ``text`` naming the site or question. A ``task`` alert (tasks.py: a bot set a shared task `ready`
+    or `needs_you`) carries only the task's title in ``text`` and its new status in ``about`` — never its notes,
+    steps or made items. Off, previews name only the sender."""
     who = clip(redact(re.sub(r"\s+", " ", sender or "").strip()), 60)
     if not previews:
         if kind == "approval":
             return {"body": f"{who} needs your approval" if who else "A request needs your approval"}
         if kind == "input":
             return {"body": f"{who} is waiting for your answer" if who else "A question is waiting for your answer"}
+        if kind == "task":
+            if about == "needs_you":
+                return {"body": f"{who} needs you" if who else "A bot needs you"}
+            return {"body": f"{who} has a task ready for you" if who else "A task is ready for you"}
         return {"body": f"New reply from {who}" if who else "New reply"}
     if kind == "input":
         return {"title": who or "Question", "body": ask_line(ask, text)}
@@ -347,4 +353,11 @@ def alert(kind: str, sender: str, text: str = "", previews: bool = True, about: 
         described = preview(about)
         line = f"Wants to run: {command}" if command else described or "Needs your approval"
         return {"title": who or "Approval needed", "body": line}
+    if kind == "task":
+        title = preview(text)
+        if about == "needs_you":
+            body = f"needs you: {title}" if title else "Needs you"
+        else:
+            body = f"{title} is ready for you" if title else "Ready for you"
+        return {"title": who or "Tasks", "body": body}
     return {"title": who or "New reply", "body": preview(text) or "New reply"}

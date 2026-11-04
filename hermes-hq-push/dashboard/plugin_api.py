@@ -76,6 +76,14 @@ else:
     sys.modules["hermes_hq_grok_live"] = grok_live
     _grok_live_spec.loader.exec_module(grok_live)
 
+if "hermes_hq_tasks" in sys.modules:
+    tasks = sys.modules["hermes_hq_tasks"]
+else:
+    _tasks_spec = importlib.util.spec_from_file_location("hermes_hq_tasks", Path(__file__).parents[1] / "tasks.py")
+    tasks = importlib.util.module_from_spec(_tasks_spec)
+    sys.modules["hermes_hq_tasks"] = tasks
+    _tasks_spec.loader.exec_module(tasks)
+
 _warm_spec = importlib.util.spec_from_file_location("hermes_hq_serve_warmup", Path(__file__).parents[1] / "serve_warmup.py")
 serve_warmup = importlib.util.module_from_spec(_warm_spec)
 _warm_spec.loader.exec_module(serve_warmup)
@@ -156,7 +164,8 @@ class ApprovalIn(BaseModel):
 @router.get("/status")
 def status():
     """The app probes this to offer push; a 404 means the plugin isn't installed or enabled."""
-    return {**push.status_body(push.data_dir(), push.sender_from_env()), **terminal.status(push.data_dir())}
+    return {**push.status_body(push.data_dir(), push.sender_from_env()), **terminal.status(push.data_dir()),
+            **tasks.status()}
 
 
 @router.put("/devices/{device_id}")
@@ -380,6 +389,134 @@ def device_result(device_id: str, request_id: str, body: ResultIn):
         return _device_store().complete(device_id, request_id, body.status, body.result, body.error)
     except device_access.AccessError as error:
         raise HTTPException(error.status_code, error.detail) from None
+
+
+# ---------------------------------------------------------------------------
+# Tasks (0.9.32, `tasks` in status): the shared to-do list's routes (tasks.py), same sign-in as every route here.
+# ---------------------------------------------------------------------------
+
+def _tasks_store():
+    return tasks.Store(push.data_dir() / "tasks.db")
+
+
+class StepIn(BaseModel):
+    id: str = Field(default="", max_length=64)
+    title: str = Field(max_length=200)
+    who: str = Field(default="bot", pattern="^(me|bot)$")
+    done: bool = False
+
+
+class MadeIn(BaseModel):
+    id: str = Field(default="", max_length=64)
+    title: str = Field(default="", max_length=200)
+    kind: str = Field(default="note", pattern="^(file|link|note)$")
+    ref: str = Field(default="", max_length=2000)
+
+
+class SourceIn(BaseModel):
+    """Where the app's own ``POST`` came from — stored verbatim on the task (``task["source"]``) so an importer
+    can tell its own earlier adds apart from everything else. ``kind: "reminders"`` (plus ``reminder_id``, the
+    EKReminder id) is Import from Reminders checking for a reminder it already added as a task, before adding it
+    again; anything else from the app is plain ``{"kind": "app"}``."""
+    kind: str = Field(default="app", pattern="^(app|reminders)$")
+    reminder_id: str = Field(default="", max_length=200)
+
+
+class TaskIn(BaseModel):
+    title: str = Field(max_length=200)
+    notes: str = Field(default="", max_length=4000)
+    who: str = Field(default="me", pattern="^(me|bot|together)$")
+    bot: str | None = Field(default=None, max_length=64)
+    due: str | None = Field(default=None, max_length=40)
+    repeat: str | None = Field(default=None, pattern="^(daily|weekdays|weekly|monthly|yearly)$")
+    prep: bool = False
+    steps: list[StepIn] = Field(default_factory=list, max_length=50)
+    source: SourceIn | None = None
+
+
+class TaskPatchIn(BaseModel):
+    rev: int
+    title: str | None = Field(default=None, max_length=200)
+    notes: str | None = Field(default=None, max_length=4000)
+    who: str | None = Field(default=None, pattern="^(me|bot|together)$")
+    bot: str | None = Field(default=None, max_length=64)
+    status: str | None = Field(default=None, pattern="^(open|working|ready|needs_you|done)$")
+    status_note: str | None = Field(default=None, max_length=160)
+    due: str | None = Field(default=None, max_length=40)
+    repeat: str | None = Field(default=None, pattern="^(daily|weekdays|weekly|monthly|yearly)$")
+    prep: bool | None = None
+    steps: list[StepIn] | None = None
+    made: list[MadeIn] | None = None
+
+
+class SettingsIn(BaseModel):
+    capture: str | None = Field(default=None, pattern="^(ask|auto|off)$")
+    prep_per_day: int | None = Field(default=None, ge=0, le=100)
+    quiet_start: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    quiet_end: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    prep_every_hours: int | None = Field(default=None, ge=1, le=24)
+
+
+@router.get("/tasks")
+def tasks_list(since: int | None = None):
+    """``{rev, tasks: [...], settings}``, or ``{rev, unchanged: true}`` once ``since`` is already current."""
+    return _tasks_store().list_response(since)
+
+
+@router.post("/tasks")
+def tasks_create(body: TaskIn):
+    """A partial Task (title required); the server fills id, rev and times, ``created_by`` is "you". ``source``
+    defaults to ``{"kind": "app"}``; Import from Reminders sends ``{"kind": "reminders", "reminder_id": ...}``
+    instead, so a later import can tell its own earlier adds apart from everything else and skip them."""
+    fields = body.model_dump(exclude={"source"})
+    source = body.source.model_dump() if body.source else {"kind": "app"}
+    try:
+        return _tasks_store().create(fields, created_by="you", source=source)
+    except tasks.TaskError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.patch("/tasks/{task_id}")
+def tasks_patch(task_id: str, body: TaskPatchIn):
+    """A stale ``rev`` is a 409 carrying the current task: ``{"task": <current>}``."""
+    patch = body.model_dump(exclude_unset=True, exclude={"rev"})
+    try:
+        return _tasks_store().update_route(task_id, body.rev, patch, by="you")
+    except tasks.TaskError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.delete("/tasks/{task_id}")
+def tasks_delete(task_id: str):
+    """Also how the app undoes a chat capture (the card's Undo, or saying "undo")."""
+    return _tasks_store().delete(task_id)
+
+
+@router.get("/tasks/settings")
+def tasks_settings_get():
+    return _tasks_store().get_settings()
+
+
+@router.put("/tasks/settings")
+def tasks_settings_put(body: SettingsIn):
+    return _tasks_store().put_settings(body.model_dump(exclude_unset=True))
+
+
+@router.post("/tasks/prep-job/{profile}")
+def tasks_prep_job(profile: str):
+    """Ensure or remove ``profile``'s "Task prep" scheduled job to match whether it still has open prep tasks
+    right now (tasks.ensure_prep_job/remove_prep_job normally run inside that bot's own process, right after a
+    tool call that could change the answer; this route lets the app force the same reconcile for one profile from
+    here, e.g. right after changing a task's prep flag or bot through the routes above, or Tasks settings)."""
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_cli import web_server_cron as cron_web
+        home = Path(get_profile_dir(profile))
+        with cron_web._cron_store_scope(home):
+            tasks.reconcile_prep_job(_tasks_store(), profile)
+        return {"ok": True}
+    except Exception as error:
+        raise HTTPException(503, f"couldn't reconcile the job: {type(error).__name__}") from None
 
 
 # ---------------------------------------------------------------------------

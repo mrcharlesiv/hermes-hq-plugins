@@ -34,6 +34,10 @@ by a silent push) and answers.
 short_titles.py (0.9.28) keeps the names Hermes gives new chats short enough for one line of an iPhone screen.
 skills/dashboard-tile (0.9.30; plain tile names and the tile's job in 0.9.31) is a skill offered to every bot (hermes-hq-push:dashboard-tile): how to make a page for the
 app's Dashboard that fills its tile at any size, a starter template, and check_tile.py, which draws it at every size.
+tasks.py (0.9.32) is a shared to-do list between the owner and their bots: tools tasks_list, tasks_add, tasks_update
+and tasks_next_prep (toolset hq_tasks), a tiny pre_llm_call note of the open tasks a bot shares with the owner, a
+push (kind "task") when a bot sets a task ready or needs_you, and the "Task prep" scheduled job a bot with open
+prep tasks gets (and loses once it has none). Never touches Hermes's Kanban.
 """
 import importlib.util
 import logging
@@ -72,6 +76,9 @@ _titles_spec.loader.exec_module(short_titles)
 _access_spec = importlib.util.spec_from_file_location("hermes_hq_device_access", Path(__file__).with_name("device_access.py"))
 device_access = importlib.util.module_from_spec(_access_spec)
 _access_spec.loader.exec_module(device_access)
+_tasks_spec = importlib.util.spec_from_file_location("hermes_hq_tasks", Path(__file__).with_name("tasks.py"))
+tasks = importlib.util.module_from_spec(_tasks_spec)
+_tasks_spec.loader.exec_module(tasks)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
@@ -169,16 +176,27 @@ def on_human_input_resolved(**kwargs):
 
 def pre_llm_call(platform="", parent_session_id="", user_message=None, conversation_history=None, **kwargs):
     # Only turns ``hermes serve`` runs: a card asked from a turn the messaging gateway runs in an app chat (another
-    # bot's message, a job's hand-off) can't reach the app and comes back undelivered.
+    # bot's message, a job's hand-off) can't reach the app and comes back undelivered. [tasks] The same restriction
+    # keeps the Tasks note out of cron runs and hand-offs: only a conversation with the user adds it.
     if not _serves_app_sessions():
         return None
+    notes = []
     try:
         note = ask_cards.context_for(data_dir=push.data_dir(), platform=platform, parent_session_id=parent_session_id,
                                      user_message=user_message, conversation_history=conversation_history)
+        if note:
+            notes.append(note)
     except Exception:
         log.debug("hermes-hq-push: ask-cards note skipped", exc_info=True)
-        return None
-    return {"context": note} if note else None
+    try:
+        note = tasks.context_for(store=_tasks_store(), profile=_profile(), platform=platform,
+                                 parent_session_id=parent_session_id, user_message=user_message,
+                                 conversation_history=conversation_history)
+        if note:
+            notes.append(note)
+    except Exception:
+        log.debug("hermes-hq-push: tasks note skipped", exc_info=True)
+    return {"context": " ".join(notes)} if notes else None
 
 
 def _desktop_theme():
@@ -350,6 +368,37 @@ def _device_tools(ctx):
         log.warning("hermes-hq-push: device access tools not registered", exc_info=True)
 
 
+def _tasks_store():
+    return tasks.Store(push.data_dir() / "tasks.db")
+
+
+def _tasks_notify(task: dict, profile: str) -> None:
+    """A bot set status ``ready``/``needs_you`` on a shared task: push it to the user's devices, sealed like any
+    other alert. Never the task's notes, steps or made items — only its title, and never logged or put on a Live
+    Activity card (device_access-style best effort: this never raises back into the tool call)."""
+    sender = _sender(profile)
+    _dispatcher_for().submit(push.Push(kind="task", profile=profile, request=task.get("id") or "",
+                                       sender=sender, text=(task.get("title") or "")[:200],
+                                       about=task.get("status") or ""))
+    log.info("hermes-hq-push: tasks push sent (%s)", task.get("status"))
+
+
+def _tasks_tools(ctx):
+    try:
+        tasks.register_tools(ctx, _tasks_store, _profile, _tasks_notify)
+    except Exception:
+        log.warning("hermes-hq-push: tasks tools not registered", exc_info=True)
+
+
+def _tasks_prep_job():
+    """Startup safety net: reconcile this bot's "Task prep" job against its tasks.db right now, in case it fell
+    out of sync (the job was removed by hand while prep tasks are still open, or vice versa)."""
+    try:
+        tasks.reconcile_prep_job(_tasks_store(), _profile())
+    except Exception:
+        log.debug("hermes-hq-push: tasks prep job not reconciled at load", exc_info=True)
+
+
 def register(ctx):
     ctx.register_hook("pre_approval_request", pre_approval_request)
     ctx.register_hook("post_approval_response", post_approval_response)
@@ -359,6 +408,7 @@ def register(ctx):
     ctx.register_hook("pre_llm_call", pre_llm_call)
     ctx.register_hook("on_session_end", on_session_end)
     _device_tools(ctx)
+    _tasks_tools(ctx)
     _dashboard_skill(ctx)
     _desktop_theme()
     _restart_guard()
@@ -368,3 +418,4 @@ def register(ctx):
     _desktop_forward()
     _gateway_logins()
     _serve_warmup()
+    _tasks_prep_job()

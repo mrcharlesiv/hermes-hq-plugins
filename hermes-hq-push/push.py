@@ -57,12 +57,12 @@ live_steps = importlib.util.module_from_spec(_steps_spec)
 sys.modules[_steps_spec.name] = live_steps  # its dataclass looks its module up there while it's made
 _steps_spec.loader.exec_module(live_steps)
 
-KINDS = ("turnDone", "approval", "outside", "input")
+KINDS = ("turnDone", "approval", "outside", "input", "task")
 TOPIC = "com.charlesmcdowell.dispatch"
 APPROVAL_CATEGORY = "DISPATCH_APPROVAL"
 CHOICES = ("once", "deny")
 # Notification Center order, as the app's local alerts: what needs an answer first.
-RELEVANCE = {"approval": 1.0, "input": 1.0, "turnDone": 0.6}
+RELEVANCE = {"approval": 1.0, "input": 1.0, "task": 0.8, "turnDone": 0.6}
 # on_human_input_request kinds an "input" alert covers: a bot waiting on a value (approvals have their own alert).
 ASKS = ("sudo", "clarify", "secret", "vault_unlock", "vault_save_login", "vault_code")
 APP_PLATFORMS = {"desktop", "tui"}
@@ -476,7 +476,9 @@ def status_body(root: Path, sender) -> dict:
     GET /voice/grok-live/status and POST /voice/grok-live/session (grok_live.py), their own routes rather than fields
     here: the app probes them directly to mint the Grok Live voice session's short-lived xAI token. `shortTitles`
     (0.9.28): the names Hermes gives new chats are 2 to 4 words and at most 28 characters, one line of an iPhone
-    screen (short_titles.py)."""
+    screen (short_titles.py). `tasks` (0.9.32, added by dashboard/plugin_api.py from tasks.status): the shared
+    Tasks list's routes (tasks.py); kind "task" (now in `kinds`) alerts when a bot sets a task `ready` or
+    `needs_you`, carrying only its title and never its notes, steps or made items."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
@@ -863,7 +865,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.31"
+PLUGIN_VERSION = "0.9.32"
 
 
 class Relay:

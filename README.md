@@ -224,6 +224,15 @@ lets every bot on the computer talk with Grok Live, each with its own name, voic
 Version 0.9.28 keeps the names Hermes gives new chats short: 2 to 4 words, at most 28 characters, so a chat's name
 fits on one line of the Sessions list on an iPhone instead of being cut off. Names you type yourself are never changed.
 
+Version 0.9.32 adds **Tasks**: a shared to-do list between you and your bots. A task is yours (a bot only ever adds
+a short note to it, never changes it), a bot's own, or split into steps for each of you. A bot can flag its own work
+`prep` to get it ready ahead of time with its `tasks_next_prep` tool — research and drafts only, never sending,
+booking, buying, paying, posting or deleting anything — and tells your phone when its part is `ready` or
+`needs_you`, with the Approve/Deny relay this plugin already sends everything else through. A bot with open prep
+work gets its own "Task prep" scheduled job every few hours (`prep_every_hours` in Tasks' settings), removed again
+once it has none left. Quiet hours and a daily cap on prep runs are also in Tasks' settings. Never touches Hermes's
+own Kanban, which stays a bot's separate, private to-do list.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
@@ -298,6 +307,10 @@ plugin folder: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_cron_wo
 `test_terminal.py` (the Terminal's shells, replay, takeover and limits) opens real shells on this computer, through
 the Mac and Linux runner and through the Windows one on a stand-in for Windows' pseudo-console:
 `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_terminal.py`.
+
+`test_tasks.py` (the Tasks store, its permission rules, the prep job and the routes) covers the store and tools with
+plain Python, but the "Task prep" job tests drive Hermes's own `cron.jobs` and the route tests need `fastapi`, so run
+the whole file the same way: `~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_tasks.py`.
 
 Tests that need `cryptography` or `fastapi` skip without them.
 

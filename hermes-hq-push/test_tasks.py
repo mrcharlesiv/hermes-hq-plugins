@@ -1,0 +1,523 @@
+"""Tasks (tasks.py): the shared to-do list's store, its permission rules, the prep job and the routes. The
+store/tool/note tests need only Python: ``python3 -m pytest -q test_tasks.py``. The prep-job tests drive the real
+Hermes ``cron.jobs`` module and the route tests need fastapi, so run the whole file with Hermes's own interpreter
+from the plugin folder: ``~/.hermes/hermes-agent/venv/bin/python -m pytest -q test_tasks.py``."""
+import importlib.util
+import json
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).parent
+
+if "hermes_hq_tasks" in sys.modules:
+    tasks = sys.modules["hermes_hq_tasks"]
+else:
+    _spec = importlib.util.spec_from_file_location("hermes_hq_tasks", HERE / "tasks.py")
+    tasks = importlib.util.module_from_spec(_spec)
+    sys.modules["hermes_hq_tasks"] = tasks
+    _spec.loader.exec_module(tasks)
+
+if "hermes_hq_push_core" in sys.modules:
+    push = sys.modules["hermes_hq_push_core"]
+else:
+    _push_spec = importlib.util.spec_from_file_location("hermes_hq_push_core", HERE / "push.py")
+    push = importlib.util.module_from_spec(_push_spec)
+    sys.modules["hermes_hq_push_core"] = push
+    _push_spec.loader.exec_module(push)
+
+HERMES_AGENT = os.environ.get("HERMES_AGENT", os.path.expanduser("~/.hermes/hermes-agent"))
+sys.path.insert(0, HERMES_AGENT)
+try:
+    from cron import jobs as cron_jobs
+    HAVE_CRON = True
+except Exception:
+    HAVE_CRON = False
+needs_cron = pytest.mark.skipif(not HAVE_CRON, reason="needs a Hermes checkout's cron module")
+
+
+# ---------------------------------------------------------------------------
+# A store at a fixed local time, for quiet-hours tests
+# ---------------------------------------------------------------------------
+
+def store(tmp_path, hour=10, minute=0, now=1_700_000_000.0):
+    when = time.struct_time((2026, 11, 4, hour, minute, 0, 2, 308, 0))
+    return tasks.Store(tmp_path / "tasks.db", clock=lambda: now, local_now=lambda: when)
+
+
+def me(**extra):
+    return {"title": "Call the vet", "who": "me", **extra}
+
+
+def bot_task(**extra):
+    return {"title": "Draft the email", "who": "bot", "bot": "cro", **extra}
+
+
+def together(**extra):
+    return {"title": "Plan the trip", "who": "together", "bot": "cro", **extra}
+
+
+# ---------------------------------------------------------------------------
+# The store: create/get, rev, the route's 409
+# ---------------------------------------------------------------------------
+
+def test_create_fills_in_defaults(tmp_path):
+    s = store(tmp_path)
+    task = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    assert task["id"] and task["rev"] == 1 and task["status"] == "open" and task["bot"] == "cro"
+    assert task["created_by"] == "cro" and task["created_at"] == task["updated_at"] and task["log"] == []
+    assert s.get(task["id"]) == task and s.rev() == 1
+
+
+def test_create_needs_a_title(tmp_path):
+    s = store(tmp_path)
+    with pytest.raises(tasks.TaskError) as exc:
+        s.create({"title": "   "}, created_by="you", source={"kind": "app"})
+    assert exc.value.status_code == 400
+
+
+def test_me_task_never_gets_a_bot_or_repeat_unless_asked(tmp_path):
+    s = store(tmp_path)
+    plain = s.create(me(), created_by="you", source={"kind": "app"})
+    assert plain["bot"] is None and plain["repeat"] is None
+    repeating = s.create(me(repeat="daily", due="2026-11-04"), created_by="you", source={"kind": "app"})
+    assert repeating["repeat"] == "daily"
+    bot_only = s.create({"title": "x", "who": "bot", "repeat": "daily"}, created_by="cro",
+                        source={"kind": "chat", "profile": "cro"})
+    assert bot_only["repeat"] is None and bot_only["bot"] == "cro"  # repeat only applies to who='me'
+
+
+def test_patch_conflict_on_stale_rev_carries_the_current_task(tmp_path):
+    s = store(tmp_path)
+    task = s.create(me(), created_by="you", source={"kind": "app"})
+    fresh = s.update_route(task["id"], task["rev"], {"title": "Call the vet about Max"})
+    with pytest.raises(tasks.TaskError) as exc:
+        s.update_route(task["id"], task["rev"], {"title": "a stale edit"})  # old rev, already moved on
+    assert exc.value.status_code == 409
+    assert exc.value.detail == {"task": fresh}
+
+
+def test_patch_distinguishes_unset_from_explicit_null(tmp_path):
+    s = store(tmp_path)
+    task = s.create(me(due="2026-11-04"), created_by="you", source={"kind": "app"})
+    untouched = s.update_route(task["id"], task["rev"], {"title": "renamed"})
+    assert untouched["due"] == "2026-11-04"  # due not mentioned: kept
+    cleared = s.update_route(task["id"], untouched["rev"], {"due": None})
+    assert cleared["due"] is None  # due mentioned as null: cleared
+
+
+def test_two_connections_writing_at_once_lose_nothing(tmp_path):
+    path = tmp_path / "tasks.db"
+    a, b = tasks.Store(path), tasks.Store(path)
+    task = a.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    errors = []
+
+    def write(which, text):
+        try:
+            which.update_bot(task["id"], "cro", note=text)
+        except Exception as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=write, args=(a if i % 2 else b, f"note {i}")) for i in range(10)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors
+    final = a.get(task["id"])
+    assert final["rev"] == 11  # create (1) + 10 updates, none clobbered by the other connection
+    assert len(final["log"]) == 10
+    assert {entry["text"] for entry in final["log"]} == {f"note {i}" for i in range(10)}
+
+
+# ---------------------------------------------------------------------------
+# Repeat roll-forward (docs/tasks.md #7)
+# ---------------------------------------------------------------------------
+
+def test_repeat_daily_reopens_with_the_next_due_date_and_unticks_steps(tmp_path):
+    s = store(tmp_path)
+    task = s.create(me(repeat="daily", due="2026-11-04",
+                       steps=[{"title": "bins to the curb", "who": "me", "done": True}]),
+                    created_by="you", source={"kind": "app"})
+    done = s.update_route(task["id"], task["rev"], {"status": "done"})
+    assert done["status"] == "open" and done["due"] == "2026-11-05" and done["done_at"] is None
+    assert all(not step["done"] for step in done["steps"])
+    assert any("repeats" in entry["text"] for entry in done["log"])
+
+
+def test_repeat_weekdays_skips_the_weekend(tmp_path):
+    s = store(tmp_path)
+    task = s.create(me(repeat="weekdays", due="2026-11-06"), created_by="you", source={"kind": "app"})  # a Friday
+    done = s.update_route(task["id"], task["rev"], {"status": "done"})
+    assert done["due"] == "2026-11-09"  # the next Monday, not Saturday
+
+
+def test_repeat_only_rolls_forward_for_a_me_task(tmp_path):
+    s = store(tmp_path)
+    task = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    done = s.update_bot(task["id"], "cro", status="done")
+    assert done["status"] == "done" and done["done_at"]  # no repeat field at all: stays done
+
+
+# ---------------------------------------------------------------------------
+# Bot tool permission rules, enforced in the store (docs/tasks.md), not only in the schema text
+# ---------------------------------------------------------------------------
+
+def test_bot_cannot_change_a_me_task_except_add_a_note(tmp_path):
+    s = store(tmp_path)
+    task = s.create(me(), created_by="you", source={"kind": "app"})
+    with pytest.raises(tasks.TaskError) as exc:
+        s.update_bot(task["id"], "cro", status="done")
+    assert exc.value.status_code == 403
+    with pytest.raises(tasks.TaskError):
+        s.update_bot(task["id"], "cro", status_note="found a slot")
+    noted = s.update_bot(task["id"], "cro", note="found a slot Tuesday 3pm")
+    assert noted["status"] == "open" and noted["log"][-1] == {"at": noted["updated_at"], "by": "cro",
+                                                               "text": "found a slot Tuesday 3pm"}
+
+
+def test_bot_can_only_finish_a_task_it_owns_alone(tmp_path):
+    s = store(tmp_path)
+    solo = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    pair = s.create(together(), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    assert s.update_bot(solo["id"], "cro", status="done")["status"] == "done"
+    with pytest.raises(tasks.TaskError) as exc:
+        s.update_bot(pair["id"], "cro", status="done")
+    assert exc.value.status_code == 403
+    ready = s.update_bot(pair["id"], "cro", status="ready", status_note="Flights found, pick one")
+    assert ready["status"] == "ready"
+
+
+def test_done_steps_only_ticks_the_bots_own_steps(tmp_path):
+    s = store(tmp_path)
+    task = s.create(together(steps=[{"id": "s1", "title": "book flight", "who": "bot"},
+                                    {"id": "s2", "title": "pack a bag", "who": "me"}]),
+                    created_by="cro", source={"kind": "chat", "profile": "cro"})
+    updated = s.update_bot(task["id"], "cro", done_steps=["s1", "s2"])
+    assert {step["id"]: step["done"] for step in updated["steps"]} == {"s1": True, "s2": False}
+
+
+def test_add_steps_and_made_accumulate(tmp_path):
+    s = store(tmp_path)
+    task = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    step1 = s.update_bot(task["id"], "cro", add_steps=[{"title": "draft v1"}])
+    step2 = s.update_bot(task["id"], "cro", add_steps=[{"title": "draft v2"}],
+                         made=[{"title": "draft.txt", "kind": "file", "ref": "/tmp/draft.txt"}])
+    assert [s["title"] for s in step2["steps"]] == ["draft v1", "draft v2"]
+    assert step2["made"][0]["title"] == "draft.txt"
+    assert step1["rev"] < step2["rev"]
+
+
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
+def test_settings_defaults_and_partial_updates(tmp_path):
+    s = store(tmp_path)
+    assert s.get_settings() == tasks.DEFAULT_SETTINGS
+    updated = s.put_settings({"prep_per_day": 3, "capture": "ask", "quiet_start": "not-a-time"})
+    assert updated["prep_per_day"] == 3 and updated["capture"] == "ask"
+    assert updated["quiet_start"] == tasks.DEFAULT_SETTINGS["quiet_start"]  # a bad value is ignored, not stored
+
+
+# ---------------------------------------------------------------------------
+# tasks_next_prep: quiet hours, the daily cap, and handing out one task at a time
+# ---------------------------------------------------------------------------
+
+def test_next_prep_stops_in_quiet_hours(tmp_path):
+    s = store(tmp_path, hour=23)
+    s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    assert s.next_prep("cro") == {"stop": "it's quiet hours (22:00–08:00)"}
+
+
+def test_next_prep_stops_when_none_left(tmp_path):
+    s = store(tmp_path, hour=10)
+    assert s.next_prep("cro") == {"stop": "no open prep tasks for cro"}
+
+
+def test_next_prep_marks_working_and_hands_out_the_next_one(tmp_path):
+    s = store(tmp_path, hour=10)
+    first = s.create(bot_task(title="A", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    s.create(bot_task(title="B", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    handed = s.next_prep("cro")
+    assert handed["status"] == "working" and handed["id"] == first["id"]
+    again = s.next_prep("cro")
+    assert again["id"] != handed["id"]  # already-working task isn't handed out a second time
+
+
+def test_next_prep_only_considers_this_bots_prep_tasks(tmp_path):
+    s = store(tmp_path, hour=10)
+    s.create(bot_task(bot="finance", prep=True), created_by="finance", source={"kind": "chat", "profile": "finance"})
+    assert s.next_prep("cro") == {"stop": "no open prep tasks for cro"}
+
+
+def test_next_prep_stops_at_the_daily_limit_across_calls(tmp_path):
+    s = store(tmp_path, hour=10)
+    s.put_settings({"prep_per_day": 2})
+    for i in range(3):
+        s.create(bot_task(title=f"T{i}", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    first = s.next_prep("cro")
+    s.update_bot(first["id"], "cro", status="ready", status_note="done")
+    second = s.next_prep("cro")
+    s.update_bot(second["id"], "cro", status="ready", status_note="done")
+    assert "stop" not in first and "stop" not in second
+    assert s.next_prep("cro") == {"stop": "today's prep limit (2 runs) is reached"}
+
+
+# ---------------------------------------------------------------------------
+# The pre_llm_call note: content, the capture line, the 5-task/truncation cap, resend suppression, and scope
+# ---------------------------------------------------------------------------
+
+def test_context_note_lists_open_tasks_and_the_default_capture_line(tmp_path):
+    s = store(tmp_path)
+    s.create(bot_task(title="Call the vet about Max's shots"), created_by="you", source={"kind": "app"})
+    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    assert note.startswith(tasks.MARK) and note.endswith("]")
+    assert "Call the vet about Max's shots (open)" in note
+    assert "tasks_add" in note  # default capture=auto
+
+
+def test_context_note_lists_at_most_five_and_truncates_long_titles(tmp_path):
+    s = store(tmp_path)
+    for i in range(7):
+        s.create(bot_task(title=f"Task number {i} has a fairly long title to check truncation works"),
+                 created_by="you", source={"kind": "app"})
+    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    assert note.count(" (open)") == 5 and ", +2 more" in note
+    assert len(note) < 600
+
+
+def test_context_note_skipped_when_nothing_to_say(tmp_path):
+    s = store(tmp_path)
+    s.put_settings({"capture": "off"})
+    assert tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi") is None
+
+
+def test_context_note_only_for_a_typed_app_chat(tmp_path):
+    s = store(tmp_path)
+    s.create(bot_task(), created_by="you", source={"kind": "app"})
+    for platform in ("telegram", "cron", "", "cli"):
+        assert tasks.context_for(store=s, profile="cro", platform=platform, user_message="hi") is None
+    assert tasks.context_for(store=s, profile="cro", platform="desktop", parent_session_id="20261101_x",
+                             user_message="hi") is None
+    assert tasks.context_for(store=s, profile="cro", platform="desktop",
+                             user_message='[Cronjob "Task prep" output]') is None
+
+
+def test_context_note_not_resent_while_still_recent(tmp_path):
+    s = store(tmp_path)
+    s.create(bot_task(), created_by="you", source={"kind": "app"})
+    sent = {"role": "user", "content": "hi", "api_content": "hi\n\n" + tasks.MARK + " capture line]"}
+    filler = [{"role": "assistant", "content": "ok"}] * (tasks.RESEND_AFTER - 1)
+    assert tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi",
+                             conversation_history=[sent, *filler]) is None
+    assert tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi",
+                             conversation_history=[sent, *filler, {"role": "user", "content": "x"}]) is not None
+
+
+def test_context_note_scopes_to_this_bot_and_skips_done(tmp_path):
+    s = store(tmp_path)
+    s.create(bot_task(bot="finance", title="Finance's own task"), created_by="finance",
+             source={"kind": "chat", "profile": "finance"})
+    done = s.create(bot_task(title="Already finished"), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    s.update_bot(done["id"], "cro", status="done")
+    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    assert note is not None and "Finance's own task" not in note and "Already finished" not in note
+
+
+# ---------------------------------------------------------------------------
+# The tools: register_tools wiring, permission errors as tool JSON, and the push hand-off
+# ---------------------------------------------------------------------------
+
+class FakeCtx:
+    def __init__(self):
+        self.tools = {}
+
+    def register_tool(self, name, toolset, schema, handler, check_fn=None, is_async=False, emoji="", description=""):
+        assert toolset == "hq_tasks" and schema["name"] == name
+        self.tools[name] = handler
+
+
+def wired(tmp_path, profile_name="cro", hour=10):
+    s = store(tmp_path, hour=hour)
+    ctx = FakeCtx()
+    notified = []
+    tasks.register_tools(ctx, lambda: s, lambda: profile_name, lambda task, prof: notified.append((task, prof)))
+    return s, ctx, notified
+
+
+def test_tasks_add_tool_returns_the_task_and_how_to_undo_it(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    result = json.loads(ctx.tools["tasks_add"]({"title": "Pick up dry cleaning", "who": "me"}, session_id="sess1"))
+    assert result["title"] == "Pick up dry cleaning" and result["source"]["session_id"] == "sess1"
+    assert result["undo"] == "Say 'undo' and I'll remove it, or tap Undo in the app"
+
+
+def test_tasks_add_tool_rejects_a_blank_title_as_tool_json(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    result = json.loads(ctx.tools["tasks_add"]({"title": "   "}))
+    assert "error" in result
+
+
+def test_tasks_update_tool_pushes_on_ready_and_needs_you_only(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    added = json.loads(ctx.tools["tasks_add"]({"title": "Find a vet appointment", "who": "bot"}))
+    json.loads(ctx.tools["tasks_update"]({"id": added["id"], "status": "working"}))
+    assert notified == []  # "working" never pushes
+    out = json.loads(ctx.tools["tasks_update"]({"id": added["id"], "status": "ready", "status_note": "Tuesday 3pm"}))
+    assert out["status"] == "ready" and len(notified) == 1
+    assert notified[0][0]["id"] == added["id"] and notified[0][1] == "cro"
+
+
+def test_tasks_update_tool_reports_permission_errors_as_json_not_an_exception(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    s.create(me(), created_by="you", source={"kind": "app"})
+    mine = s.list_all()[0]
+    out = json.loads(ctx.tools["tasks_update"]({"id": mine["id"], "status": "done"}))
+    assert "error" in out and notified == []
+
+
+def test_tasks_update_tool_needs_an_id(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    assert "error" in json.loads(ctx.tools["tasks_update"]({"status": "ready"}))
+
+
+def test_tasks_list_tool_scopes_to_mine_by_default_and_hides_done(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    mine_task = json.loads(ctx.tools["tasks_add"]({"title": "Mine", "who": "bot"}))
+    json.loads(ctx.tools["tasks_add"]({"title": "Theirs", "who": "bot", "bot": "finance"}))
+    ctx.tools["tasks_update"]({"id": mine_task["id"], "status": "done"})
+    mine = json.loads(ctx.tools["tasks_list"]({}))["tasks"]
+    assert mine == []  # done, and scope defaults to mine
+    everyone = json.loads(ctx.tools["tasks_list"]({"scope": "all", "include_done": True}))["tasks"]
+    assert {t["title"] for t in everyone} == {"Mine", "Theirs"}
+
+
+def test_tasks_next_prep_tool_round_trips_the_store(tmp_path):
+    s, ctx, notified = wired(tmp_path, hour=10)
+    assert json.loads(ctx.tools["tasks_next_prep"]({}))["stop"] == "no open prep tasks for cro"
+    json.loads(ctx.tools["tasks_add"]({"title": "Research flights", "who": "bot", "prep": True}))
+    handed = json.loads(ctx.tools["tasks_next_prep"]({}))
+    assert handed["status"] == "working" and handed["title"] == "Research flights"
+
+
+# ---------------------------------------------------------------------------
+# The Task prep job: create/reschedule/remove against the real cron module, isolated to a throwaway cron store
+# ---------------------------------------------------------------------------
+
+@needs_cron
+def test_ensure_prep_job_creates_then_is_idempotent_then_reschedules(tmp_path):
+    with cron_jobs.use_cron_store(tmp_path):
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None
+        tasks.ensure_prep_job(3)
+        job = cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME)
+        assert job is not None and job["schedule"]["minutes"] == 180 and job["enabled"]
+        tasks.ensure_prep_job(3)  # same hours again: still exactly one job, no duplicate
+        assert len(cron_jobs.list_jobs(include_disabled=True)) == 1
+        tasks.ensure_prep_job(6)  # settings changed: reschedules the same job
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME)["schedule"]["minutes"] == 360
+
+
+@needs_cron
+def test_remove_prep_job_is_a_no_op_when_there_is_none(tmp_path):
+    with cron_jobs.use_cron_store(tmp_path):
+        tasks.remove_prep_job()  # doesn't raise
+        tasks.ensure_prep_job(3)
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None
+        tasks.remove_prep_job()
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None
+
+
+@needs_cron
+def test_reconcile_prep_job_follows_whether_open_prep_tasks_remain(tmp_path):
+    s = store(tmp_path, hour=10)
+    task = s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    with cron_jobs.use_cron_store(tmp_path):
+        tasks.reconcile_prep_job(s, "cro")
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None
+        s.update_bot(task["id"], "cro", status="ready", status_note="done")
+        tasks.reconcile_prep_job(s, "cro")
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None  # no open prep tasks left: job removed
+
+
+# ---------------------------------------------------------------------------
+# The dashboard routes
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("HERMES_HQ_PUSH_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("HERMES_HQ_PUSH_RELAY_URL", "off")
+    push._watcher_started = True  # no reply watcher in a test
+    spec = importlib.util.spec_from_file_location("hermes_hq_push_api_tasks_under_test", HERE / "dashboard" / "plugin_api.py")
+    api = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api)
+    app = FastAPI()
+    app.include_router(api.router, prefix="/api/plugins/hermes-hq-push")
+    return TestClient(app)
+
+
+BASE = "/api/plugins/hermes-hq-push"
+
+
+def test_status_reports_tasks(client):
+    assert client.get(f"{BASE}/status").json()["tasks"] is True
+
+
+def test_task_routes_round_trip(client):
+    created = client.post(f"{BASE}/tasks", json={"title": "Buy stamps", "who": "me"}).json()
+    assert created["title"] == "Buy stamps" and created["created_by"] == "you" and created["rev"] == 1
+
+    listing = client.get(f"{BASE}/tasks").json()
+    assert listing["rev"] >= 1 and [t["id"] for t in listing["tasks"]] == [created["id"]] and "settings" in listing
+    unchanged = client.get(f"{BASE}/tasks", params={"since": listing["rev"]}).json()
+    assert unchanged == {"rev": listing["rev"], "unchanged": True}
+
+    patched = client.patch(f"{BASE}/tasks/{created['id']}",
+                           json={"rev": created["rev"], "status_note": "at the post office"})
+    assert patched.status_code == 200 and patched.json()["status_note"] == "at the post office"
+
+    conflict = client.patch(f"{BASE}/tasks/{created['id']}", json={"rev": created["rev"], "title": "stale"})
+    assert conflict.status_code == 409 and conflict.json()["detail"]["task"]["id"] == created["id"]
+
+    assert client.delete(f"{BASE}/tasks/{created['id']}").json() == {"ok": True}
+    assert client.get(f"{BASE}/tasks").json()["tasks"] == []
+
+
+def test_task_create_rejects_a_missing_title(client):
+    assert client.post(f"{BASE}/tasks", json={"who": "me"}).status_code == 422
+
+
+def test_task_create_source_defaults_to_app_but_accepts_reminders(client):
+    plain = client.post(f"{BASE}/tasks", json={"title": "Buy milk", "who": "me"}).json()
+    assert plain["source"] == {"kind": "app"}
+    imported = client.post(f"{BASE}/tasks", json={"title": "Dentist", "who": "me",
+                                                   "source": {"kind": "reminders", "reminder_id": "EK-123"}}).json()
+    assert imported["source"] == {"kind": "reminders", "reminder_id": "EK-123"}
+    assert client.post(f"{BASE}/tasks", json={"title": "x", "source": {"kind": "bogus"}}).status_code == 422
+
+
+def test_settings_routes(client):
+    assert client.get(f"{BASE}/tasks/settings").json() == tasks.DEFAULT_SETTINGS
+    updated = client.put(f"{BASE}/tasks/settings", json={"prep_per_day": 3, "capture": "ask"}).json()
+    assert updated["prep_per_day"] == 3 and updated["capture"] == "ask" and updated["quiet_start"] == "22:00"
+
+
+@needs_cron
+def test_prep_job_route_reconciles_for_the_named_profile(client, tmp_path, monkeypatch):
+    from hermes_cli import profiles as hermes_profiles
+    profile_home = tmp_path / "profiles" / "cro"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(hermes_profiles, "get_profile_dir", lambda name: str(profile_home))
+    client.post(f"{BASE}/tasks", json={"title": "Research flights", "who": "bot", "bot": "cro", "prep": True})
+    resp = client.post(f"{BASE}/tasks/prep-job/cro")
+    assert resp.status_code == 200 and resp.json() == {"ok": True}
+    with cron_jobs.use_cron_store(profile_home):
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None

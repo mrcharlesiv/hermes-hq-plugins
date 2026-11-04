@@ -89,6 +89,9 @@ def test_plugin_hook_returns_context(tmp_path, monkeypatch):
         import pytest
         pytest.skip("data dir override is named differently")
     plugin.ask_cards._clarify_cache[plugin.ask_cards._home()] = (True, 1e18)
+    # This test is about ask_cards' own note; tasks.py's own pre_llm_call note (test_tasks.py) is silenced here so
+    # the two modules' contributions to the shared hook stay independently testable.
+    monkeypatch.setattr(plugin.tasks, "context_for", lambda **kw: None)
     monkeypatch.setattr(plugin, "_serves_app_sessions", lambda: False)
     assert plugin.pre_llm_call(platform="desktop", user_message="hi", conversation_history=[]) is None
     monkeypatch.setattr(plugin, "_serves_app_sessions", lambda: True)
