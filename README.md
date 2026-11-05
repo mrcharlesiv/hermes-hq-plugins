@@ -221,6 +221,9 @@ bot's model, voice and extra instructions under `voice.grok_live` in its `config
 Version 0.9.27: a bot with no Grok sign-in of its own uses the main bot's, so one `hermes auth add xai-oauth`
 lets every bot on the computer talk with Grok Live, each with its own name, voice and instructions.
 
+Version 0.9.35: Grok Live runs on your Grok subscription only. An `XAI_API_KEY` is never used for it, not even as a
+fallback: a bot that has only a key borrows the main bot's Grok sign-in, and status says Subscription for every bot.
+
 Version 0.9.28 keeps the names Hermes gives new chats short: 2 to 4 words, at most 28 characters, so a chat's name
 fits on one line of the Sessions list on an iPhone instead of being cut off. Names you type yourself are never changed.
 
