@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 os.environ.setdefault("HERMES_HQ_BROWSER_OWN_CHROME", "0")  # fleet.py has its own tests (test_fleet)
-PLUGIN = Path(__file__).resolve().parents[1]
+PLUGIN = Path(__file__).resolve().parents[2] / "hermes-hq-browser"  # tests/hermes-hq-browser -> the plugin
 CHROME = next((p for p in ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                            "/Applications/Chromium.app/Contents/MacOS/Chromium",
                            shutil.which("chromium") or "", shutil.which("google-chrome") or "") if p and os.path.exists(p)), None)
@@ -437,12 +437,12 @@ class AgentTests(unittest.TestCase):
 
     def test_a_bot_signs_in_itself_before_handing_a_sign_in_over(self):
         for text in (self.agent.GUIDANCE, self.agent.NUDGE, self.agent.REMINDER, self.agent.ASK_SCHEMA["description"]):
-            self.assertIn("browser_vault_save_login", text)
+            self.assertIn("browser_vault save_login", text)
         self.assertLessEqual(len(self.agent.GUIDANCE), 1200)
         self.agent.after_tool(tool_name="browser_navigate", args={}, task_id="task-1", session_id="chat-1")
         refused = json.loads(self.agent.ask_user({"reason": "Please sign in to Microsoft Ads"}, task_id="task-1", session_id="chat-1"))
         self.assertEqual(refused["status"], "sign_in_yourself")
-        self.assertIn("browser_vault_save_login", refused["message"])
+        self.assertIn("browser_vault save_login", refused["message"])
         # Once the vault has been tried in this chat (or the person asked to do it), the hand-over goes ahead.
         self.agent.before_tool(tool_name="browser_vault_save_login", args={}, task_id="task-1", session_id="chat-1")
         self.assertNotEqual(self.agent._vault_at.get("chat-1"), None)
@@ -714,6 +714,18 @@ class NewHermesTests(unittest.TestCase):
         loop.join(3)
         self.assertFalse(loop.is_alive())
         self.assertEqual(self.published()[0]["status"], "ended")
+
+    def test_what_bots_read_names_only_tools_hermes_has(self):
+        """Hermes 0.22.5 and 0.22.7 have one browser_vault tool (action list/fill/save_login/enter_code/unlock), no
+        browser_vault_* tools; 0.22.6 and newer have no browser_navigate family."""
+        import re
+        actions = {"list", "fill", "save_login", "enter_code", "unlock"}
+        for text in (self.agent.GUIDANCE, self.agent.NUDGE, self.agent.REMINDER, self.agent.SIGN_IN,
+                     self.agent.ASK_SCHEMA["description"], self.agent.BLOCKED):
+            self.assertEqual(re.findall(r"browser_vault_\w+", text), [], text)
+            self.assertNotIn("browser_navigate", text)
+            self.assertNotIn("browser_snapshot", text)
+            self.assertTrue(set(re.findall(r"browser_vault (?!tool\b)(\w+)", text)) <= actions, text)
 
     def test_the_manifest_declares_every_hook_it_registers(self):
         import yaml

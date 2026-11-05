@@ -140,7 +140,7 @@ move to `/api/plugins/hermes-hq-browser`; the app falls back to the old routes f
 ## Tests
 
 ```sh
-cd hermes-hq-browser/tests
+cd tests/hermes-hq-browser   # in this repo; not inside the plugin, so installs don't copy it
 uv run --no-project --python 3.12 --with fastapi --with httpx --with websockets --with uvicorn --with psutil --with pyyaml python -m unittest -q test_browser test_fleet
 ```
 

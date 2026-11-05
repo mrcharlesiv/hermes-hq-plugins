@@ -735,8 +735,8 @@ ASK_SCHEMA = {
     "name": ASK_TOOL,
     "description": ("Last resort: hand your browser to the user and wait until they give it back. Only for what you "
                     "can't do yourself: a CAPTCHA, approving a payment or purchase, or a sign-in form the "
-                    "browser_vault_* tools can't reach. Never for an ordinary sign-in: sign in yourself with "
-                    "browser_vault_fill, or browser_vault_save_login to get the login from the user securely. They "
+                    "browser_vault tool can't reach. Never for an ordinary sign-in: sign in yourself with "
+                    "browser_vault fill, or browser_vault save_login to get the login from the user securely. They "
                     "control your browser from the Hermes HQ app; your browser tools are paused while they do. Returns "
                     "when they hand it back (take a fresh snapshot then), or after about six minutes if they haven't finished."),
     "parameters": {"type": "object", "properties": {
@@ -746,9 +746,9 @@ ASK_SCHEMA = {
 }
 
 
-SIGN_IN = ("Signing in is your job, not the user's: browser_vault_list, then browser_vault_fill a saved login; "
-           "with none saved, call browser_vault_save_login right away (it asks the user for the username and password "
-           "in a secure prompt, never in chat) and sign in with it; browser_vault_enter_code for codes. Don't ask the "
+SIGN_IN = ("Signing in is your job, not the user's: browser_vault list, then browser_vault fill a saved login; "
+           "with none saved, call browser_vault save_login right away (it asks the user for the username and password "
+           "in a secure prompt, never in chat) and sign in with it; browser_vault enter_code for codes. Don't ask the "
            "user to sign in for you or to open Watch Browser: Hermes HQ already shows them you're browsing. Only if the "
            "vault can't reach the form (it sits in a frame), offer to type a login they send in chat; browser_ask_user "
            "is for CAPTCHAs, approving payments, or the user choosing to do it themself.")
@@ -768,8 +768,8 @@ NUDGE = ("(Hermes HQ: for websites use your own browser tools, which the user ca
          "be a sign-in in a frame: print(capture_screenshot()) to see it.)")
 # Every other turn of a bot with its own browser: chats older than the plugin never got GUIDANCE (bot chats live for
 # weeks), and a turn like "get us more sales" names no site, yet the bot may browse into a login mid-turn.
-REMINDER = ("(Hermes HQ: if you use your browser and meet a sign-in, sign in yourself: browser_vault_fill a saved "
-            "login, or browser_vault_save_login to get it from the user in a secure prompt. Don't ask the user to sign "
+REMINDER = ("(Hermes HQ: if you use your browser and meet a sign-in, sign in yourself: browser_vault fill a saved "
+            "login, or browser_vault save_login to get it from the user in a secure prompt. Don't ask the user to sign "
             "in for you; they already see you're browsing.)")
 SIGN_IN_ASK = __import__("re").compile(r"\b(sign|log)[ -]?(in|on)\b|\blogin\b|\bpassword\b|\bcredential", __import__("re").I)
 VAULT_TRIED = 1800.0      # a vault call this recent in the chat lets browser_ask_user hand over a sign-in
