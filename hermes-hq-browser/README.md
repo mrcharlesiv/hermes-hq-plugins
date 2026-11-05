@@ -20,6 +20,8 @@ browser tool Hermes gives them; this plugin adds one, `browser_ask_user`, and ov
   every tab). An extension's popup page (1Password's) that opens while the person holds the browser is shown like a
   tab. While held, the site in use may use the clipboard without Chrome's permission bubble. Still not shown: Chrome's
   other bubbles (save password, other site permissions) and an extension popup that opened while nobody held it.
+- **Hermes 0.22.6 and newer** (3.8): works with Hermes' newer browser (`browser_exec` only) as well as the older
+  `browser_navigate` tools; 3.7 switched itself off there ("browser tools unavailable").
 - **The bot asks**: a bot that hits a sign-in, a code or a CAPTCHA calls `browser_ask_user(reason)`. The card in
   its chat and its row in Bots say what it needs; the call returns when the person gives the browser back
   (or after about six minutes).
@@ -63,8 +65,9 @@ says so when there is no page to show. State lives in `<hermes root>/hermes-hq-b
 - **Agent processes** (the messaging gateway, the dashboard's chat gateway, profile chats, cron) load
   `__init__.py`. `pre_tool_call`/`post_tool_call` watch the browser tools (including Browser Use's
   `browser_exec`) and read Hermes' browser session table, read-only, to find the browser that served the
-  call: a Hermes-managed Chromium (its daemon's pid file → Chrome child → `DevToolsActivePort`) or a local
-  browser Hermes attached to over CDP (the real-profile Chrome). Browser Use's `browser_exec` on a
+  call: the session's own loopback `cdp_url` (every local browser from Hermes 0.22.6 on, the real-profile
+  Chrome before) or, on 0.22.5 and older, a Hermes-managed Chromium (its daemon's pid file → Chrome child →
+  `DevToolsActivePort`). Browser Use's `browser_exec` on a
   `/browser connect` Chrome or the real-profile Chrome leaves no session entry; those are found from
   `browser.cdp_url` (read without network I/O) or the profile copy's `DevToolsActivePort`, and stay listed
   while their port answers. Cloud browsers, Lightpanda and remote CDP endpoints are not shown. Each browser is published to `<hermes root>/hermes-hq-browser/browsers/<id>.json`
@@ -89,12 +92,26 @@ says so when there is no page to show. State lives in `<hermes root>/hermes-hq-b
 
 ## Depends on Hermes internals
 
-Nothing is patched or wrapped. `agent.py` reads `tools.browser_tool._active_sessions`,
-`_last_active_session_key`, `_session_owner_homes`, `_cleanup_lock` and `_socket_safe_tmpdir`, uses
-`browser_use_cli._backend_cache_key`, and calls `browser_tool_session._run_browser_command(key, "get", ["url"])`
-only while the bot waits in `browser_ask_user` and only while its session exists (it renews Hermes' and the
-browser daemon's idle timers). `agent.problems()` checks those shapes at load (written for Hermes 0.21.5); on a
-mismatch no hook or tool is registered and `/health` reports the drift.
+Nothing is patched or wrapped. Two shapes of Hermes are read, the newer first (3.8):
+
+- **Hermes 0.22.6 and newer** (the `browser_navigate` family and `tools/browser_tool_*.py` are gone; the browser
+  tools are `browser_exec`, `browser_cdp`, `browser_dialog`): `agent.py` reads `tools.browser_session._active_sessions`,
+  `_session_owner_homes` and `_cleanup_lock`, finds a task's session with `owner_task_id` and
+  `is_local_sidecar_key` (sidecars aside), reads the CDP override from
+  `tools.browser_session_cdp.get_cdp_override_raw` and the socket folder from `hermes_constants.socket_safe_tmpdir`.
+  While a bot waits in `browser_ask_user` it renews the session's idle timer with
+  `browser_session_lifecycle.update_session_activity(key)`, only while that session exists.
+- **Hermes 0.22.5 and older**: `tools.browser_tool._active_sessions`, `_last_active_session_key`,
+  `_session_owner_homes`, `_cleanup_lock` and `_socket_safe_tmpdir`, `tools.browser_tool_cdp._get_cdp_override_raw`,
+  and `browser_tool_session._run_browser_command(key, "get", ["url"])` for the keep-alive.
+
+Both use `browser_use_cli._backend_cache_key`. The page a bot used last (Watch Browser opens on it) is read from the
+browser's own loopback `/json/list` after the bot's calls, at most every 10 seconds. `agent.problems()` checks
+whichever shape is there at load; with neither, or on a mismatch, no hook or tool is registered and `/health`
+reports the drift.
+
+A plugin reload (`hermes plugins disable`/`enable`, an update) runs the changed code: the sibling modules are
+loaded again when their file changed, and the replaced instance ends its listings and stops (3.8).
 
 ## Install
 
@@ -123,10 +140,10 @@ move to `/api/plugins/hermes-hq-browser`; the app falls back to the old routes f
 ## Tests
 
 ```sh
-cd gateway-plugin/hermes-hq-browser/tests
-uv run --no-project --with fastapi --with httpx --with websockets --with uvicorn --with psutil --with pyyaml python -m unittest -q test_browser test_fleet
+cd hermes-hq-browser/tests
+uv run --no-project --python 3.12 --with fastapi --with httpx --with websockets --with uvicorn --with psutil --with pyyaml python -m unittest -q test_browser test_fleet
 ```
 
-Hermes is faked (its bootstrap rewrites the install). The live tests drive a real headless Chrome on a
+Hermes is faked in both shapes (its bootstrap rewrites the install). The live tests drive a real headless Chrome on a
 throwaway profile through the real routes: watch, take control while a bot call runs, tap, type, Return,
 give back, reconnect to a held browser, and the bot's ask on the activity socket.

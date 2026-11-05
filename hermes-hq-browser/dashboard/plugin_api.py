@@ -27,20 +27,40 @@ from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconne
 
 log = logging.getLogger("hermes-hq-browser")
 _ROOT = Path(__file__).parents[1]
-VERSION = "3.7.0"
+VERSION = "3.8.0"
 RETAIN_ENDED = 120.0
 MAX_VIEWERS = 8
 VIEWER_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _load(name):
+    """The plugin's sibling modules, shared with ``__init__.load`` (same keys, same file stamp: a changed file is
+    loaded again and the instance it replaces is marked ``_retired``)."""
     key = f"hermes_hq_browser_{name}"
-    if key not in sys.modules:
-        spec = importlib.util.spec_from_file_location(key, _ROOT / f"{name}.py")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[key] = module
+    path = _ROOT / f"{name}.py"
+    try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = None
+    current = sys.modules.get(key)
+    if current is not None and (stamp is None or getattr(current, "_loaded_stamp", None) == stamp):
+        return current
+    spec = importlib.util.spec_from_file_location(key, path)
+    module = importlib.util.module_from_spec(spec)
+    module._loaded_stamp = stamp
+    sys.modules[key] = module
+    try:
         spec.loader.exec_module(module)
-    return sys.modules[key]
+    except BaseException:
+        if current is not None:
+            sys.modules[key] = current
+        else:
+            sys.modules.pop(key, None)
+        raise
+    if current is not None:
+        current._retired = True
+    return module
 
 
 spool = _load("spool")

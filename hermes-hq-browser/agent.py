@@ -2,10 +2,15 @@
 
 Hermes has no browser lifecycle hook, so ``pre_tool_call``/``post_tool_call`` watch the browser tools and
 read Hermes' own browser session table (read-only) to learn which browser served a call. The Chrome
-debugging endpoint comes from Chromium itself (a Hermes-managed browser's daemon pid → its Chrome child →
-``DevToolsActivePort``) or from the session's own loopback ``cdp_url`` (the real-profile browser). Bots keep
-every browser tool Hermes gives them; nothing is wrapped, overridden or patched. If the internals read here
-change shape, ``problems()`` says so and the plugin stays off.
+debugging endpoint comes from the session's own loopback ``cdp_url`` (every local session from Hermes 0.22.6 on;
+the real-profile browser before) or from Chromium itself (a 0.22.5-and-older Hermes-managed browser's daemon pid
+→ its Chrome child → ``DevToolsActivePort``). Bots keep every browser tool Hermes gives them; nothing is
+wrapped, overridden or patched. If the internals read here change shape, ``problems()`` says so and the plugin
+stays off.
+
+Two shapes of Hermes are read (``_modules``): 0.22.6 and newer keep the session table in ``tools.browser_session``
+and have only ``browser_exec``/``browser_cdp``/``browser_dialog``; 0.22.5 and older keep it in
+``tools.browser_tool`` beside the ``browser_navigate`` family. The newer shape is tried first.
 
 While a person holds a browser (``control/<id>.json``), ``pre_tool_call`` holds that bot's browser tools for a
 while (HOLD_FOR) and then refuses them, so the bot cannot click under the person's finger. ``browser_ask_user`` lets
@@ -27,6 +32,7 @@ from pathlib import Path
 
 log = logging.getLogger("hermes-hq-browser")
 
+# 0.22.6 and newer: browser_exec, browser_cdp, browser_dialog. The rest are 0.22.5 and older (harmless on newer).
 BROWSER_TOOLS = frozenset({
     "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_console", "browser_get_images", "browser_vision", "browser_cdp", "browser_dialog",
@@ -39,6 +45,7 @@ HEARTBEAT = 3.0
 BUSY_CAP = 450.0             # a call Hermes forgot to finish stops counting as running (its own limit is 420 s)
 ASK_LIMIT = 390.0            # under Hermes' 420 s tool deadline
 ASK_KEEPALIVE = 30.0         # renews Hermes' and the browser daemon's idle timers while the person works
+URL_EVERY = 10.0             # a browser the bot used is asked for its page address at most this often
 GENERATION = uuid.uuid4().hex  # one per process: ids never collide across restarts
 
 BLOCKED = ("The user has taken over your browser and is using it right now. Don't use browser tools until "
@@ -52,33 +59,60 @@ _keys: dict[str, str] = {}        # Hermes session key -> browser id
 _pending: dict[str, dict] = {}    # session key -> call info, for a browser the running call has not opened yet
 _busy: dict[str, dict] = {}       # browser id or "key:<session key>" -> {tool call id: start time} of running calls
 _thread = None
+_retired = False  # set by the loader on the instance a plugin reload replaced: its tick loop ends its listings and stops
 
 
 def _modules():
-    from tools import browser_tool, browser_tool_lifecycle, browser_tool_session
-    return browser_tool, browser_tool_lifecycle, browser_tool_session
+    """``(session table, activity module, shape)``. ``"new"`` (Hermes 0.22.6 and newer): ``tools.browser_session``
+    and ``tools.browser_session_lifecycle``. ``"old"`` (0.22.5 and older): ``tools.browser_tool`` and
+    ``tools.browser_tool_session``. Raises when neither is there."""
+    try:
+        from tools import browser_session, browser_session_lifecycle
+        return browser_session, browser_session_lifecycle, "new"
+    except ImportError:
+        from tools import browser_tool, browser_tool_lifecycle, browser_tool_session  # noqa: F401
+        return browser_tool, browser_tool_session, "old"
 
 
 def problems() -> list[str]:
-    """Hermes internals this side relies on, in the shapes it was written for (Hermes 0.21.5)."""
+    """Hermes internals this side relies on, in the shapes it was written for (Hermes 0.21.5 to 0.22.5, and
+    0.22.6 and newer)."""
     found = []
     try:
-        bt, _, session = _modules()
+        table, commands, shape = _modules()
     except Exception as error:  # noqa: BLE001
         return [f"browser tools unavailable ({type(error).__name__})"]
-    for name, kind in (("_active_sessions", dict), ("_last_active_session_key", dict), ("_session_owner_homes", dict)):
-        if not isinstance(getattr(bt, name, None), kind):
-            found.append(f"browser_tool.{name} changed")
-    if not hasattr(getattr(bt, "_cleanup_lock", None), "acquire"):
-        found.append("browser_tool._cleanup_lock changed")
-    if not callable(getattr(bt, "_socket_safe_tmpdir", None)):
-        found.append("browser_tool._socket_safe_tmpdir changed")
-    try:
-        parameters = list(inspect.signature(session._run_browser_command).parameters)
-        if parameters[:3] != ["task_id", "command", "args"]:
-            found.append("_run_browser_command signature changed")
-    except (TypeError, ValueError, AttributeError):
-        found.append("_run_browser_command unavailable")
+    where = "browser_session" if shape == "new" else "browser_tool"
+    names = ("_active_sessions", "_session_owner_homes") + (() if shape == "new" else ("_last_active_session_key",))
+    for name in names:
+        if not isinstance(getattr(table, name, None), dict):
+            found.append(f"{where}.{name} changed")
+    if not hasattr(getattr(table, "_cleanup_lock", None), "acquire"):
+        found.append(f"{where}._cleanup_lock changed")
+    if shape == "new":
+        for name in ("owner_task_id", "is_local_sidecar_key"):
+            if not callable(getattr(table, name, None)):
+                found.append(f"browser_session.{name} changed")
+        try:
+            if list(inspect.signature(commands.update_session_activity).parameters)[:1] != ["cache_key"]:
+                found.append("update_session_activity signature changed")
+        except (TypeError, ValueError, AttributeError):
+            found.append("update_session_activity unavailable")
+        try:
+            from hermes_constants import socket_safe_tmpdir
+            if not callable(socket_safe_tmpdir):
+                raise TypeError
+        except Exception:  # noqa: BLE001
+            found.append("hermes_constants.socket_safe_tmpdir changed")
+    else:
+        if not callable(getattr(table, "_socket_safe_tmpdir", None)):
+            found.append("browser_tool._socket_safe_tmpdir changed")
+        try:
+            parameters = list(inspect.signature(commands._run_browser_command).parameters)
+            if parameters[:3] != ["task_id", "command", "args"]:
+                found.append("_run_browser_command signature changed")
+        except (TypeError, ValueError, AttributeError):
+            found.append("_run_browser_command unavailable")
     try:
         from tools import browser_use_cli
         if list(inspect.signature(browser_use_cli._backend_cache_key).parameters)[:2] != ["task_id", "session_name"]:
@@ -95,18 +129,56 @@ def profile_name() -> str:
 
 
 def _session_key(tool_name: str, args: dict, task_id: str) -> str:
+    table, _, shape = _modules()
     if tool_name == BROWSER_EXEC:
         from tools import browser_use_cli
-        return browser_use_cli._backend_cache_key(task_id, str((args or {}).get("session") or ""))
-    bt, _, _ = _modules()
-    return bt._last_active_session_key.get(task_id) or task_id
+        key = browser_use_cli._backend_cache_key(task_id, str((args or {}).get("session") or ""))
+        if shape == "new":  # a call Hermes sent to its local sidecar (a private address beside a cloud browser)
+            sidecar = key + getattr(table, "LOCAL_SUFFIX", "::local")
+            with table._cleanup_lock:
+                if key not in table._active_sessions and sidecar in table._active_sessions:
+                    return sidecar
+        return key
+    if shape == "old":
+        return table._last_active_session_key.get(task_id) or task_id
+    # 0.22.6 and newer keep no "last session" per task: the task's own key, else the session it owns (as
+    # browser_session.session_for_task finds it, which returns the record, not the key), sidecars aside.
+    with table._cleanup_lock:
+        keys = list(table._active_sessions)
+    if task_id in keys:
+        return task_id
+    return next((key for key in keys if table.owner_task_id(key) == task_id and not table.is_local_sidecar_key(key)), task_id)
 
 
 def _session_info(key: str) -> dict | None:
-    bt, _, _ = _modules()
-    with bt._cleanup_lock:
-        info = bt._active_sessions.get(key)
+    table, _, _ = _modules()
+    with table._cleanup_lock:
+        info = table._active_sessions.get(key)
         return dict(info) if isinstance(info, dict) else None
+
+
+def _cdp_override_raw() -> str:
+    """The configured local CDP override (live ``/browser connect`` > ``BROWSER_CDP_URL`` > ``browser.cdp_url``),
+    read without network I/O; "" when none or when Hermes moved it."""
+    try:
+        from tools.browser_session_cdp import get_cdp_override_raw
+    except Exception:  # noqa: BLE001 - 0.22.5 and older
+        try:
+            from tools.browser_tool_cdp import _get_cdp_override_raw as get_cdp_override_raw
+        except Exception:  # noqa: BLE001
+            return ""
+    try:
+        return str(get_cdp_override_raw() or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _tmpdir() -> str:
+    table, _, shape = _modules()
+    if shape == "new":
+        from hermes_constants import socket_safe_tmpdir
+        return socket_safe_tmpdir()
+    return table._socket_safe_tmpdir()
 
 
 def browser_of(info: dict | None) -> tuple[str, str] | None:
@@ -132,11 +204,7 @@ def exec_source() -> tuple[str, str] | None:
     """Browser Use's own routes that leave no entry in the session table: a local ``/browser connect``
     Chrome (``browser.cdp_url`` / ``BROWSER_CDP_URL``, read without network I/O) or the real-profile Chrome
     Hermes launched on its profile copy (``<home>/browser-profile/<browser>/DevToolsActivePort``)."""
-    try:
-        from tools.browser_tool_cdp import _get_cdp_override_raw
-        raw = str(_get_cdp_override_raw() or "")
-    except Exception:  # noqa: BLE001
-        raw = ""
+    raw = _cdp_override_raw()
     if raw:
         return ("cdp", raw) if raw.startswith(LOCAL_CDP) else None
     try:
@@ -182,8 +250,7 @@ def endpoint(source: tuple[str, str], tmpdir: str | None = None) -> str | None:
         except Exception:  # noqa: BLE001
             return None
     if tmpdir is None:
-        bt, _, _ = _modules()
-        tmpdir = bt._socket_safe_tmpdir()
+        tmpdir = _tmpdir()
     try:
         daemon = int((Path(tmpdir) / f"agent-browser-{value}" / f"{value}.pid").read_text().strip())
         import psutil
@@ -261,11 +328,7 @@ def _call_id(tool_call_id, tool_name: str) -> str:
 
 def _standing() -> str | None:
     """This profile's standing browser id, when its config connects it to a local Chrome (``browser.cdp_url``)."""
-    try:
-        from tools.browser_tool_cdp import _get_cdp_override_raw
-        raw = str(_get_cdp_override_raw() or "")
-    except Exception:  # noqa: BLE001
-        return None
+    raw = _cdp_override_raw()
     return _spool.standing_id(profile_name(), raw) if raw.startswith(LOCAL_CDP) else None
 
 
@@ -336,12 +399,8 @@ def _own_chrome_up() -> None:
     that browses first."""
     if _fleet is None:
         return
-    try:
-        from tools.browser_tool_cdp import _get_cdp_override_raw
-        raw = str(_get_cdp_override_raw() or "")
-    except Exception:  # noqa: BLE001
-        return
-    if not _fleet.port_of(raw) or _reachable(raw) or time.time() - _starting.get(raw, 0) < 30:
+    raw = _cdp_override_raw()
+    if not raw or not _fleet.port_of(raw) or _reachable(raw) or time.time() - _starting.get(raw, 0) < 30:
         return
     from hermes_constants import get_hermes_home
     if not _fleet.ensure(profile_name(), Path(get_hermes_home()), raw):
@@ -378,7 +437,7 @@ def before_tool(tool_name="", args=None, task_id="", session_id="", tool_call_id
     """``pre_tool_call``: refuse a browser tool while a person holds or has asked for that browser; count
     running calls. The claim check and the count happen under ``_lock``, the same lock ``tick`` holds while it
     tells the dashboard the bot has paused, so no call slips in after that promise."""
-    if str(tool_name).startswith("browser_vault_"):
+    if tool_name == "browser_vault" or str(tool_name).startswith("browser_vault_"):
         with _lock:
             _vault_at[str(session_id or task_id)] = time.time()
         return None
@@ -425,6 +484,7 @@ def after_tool(tool_name="", args=None, result=None, task_id="", session_id="", 
             args["session"] = session  # the session before_tool gave it, whichever args Hermes hands back
         key = _session_key(tool_name, args, task_id)
         call = _call_id(tool_call_id, tool_name)
+        # 0.22.5 and older: the address a navigation asked for. Otherwise tick reads the page's (URL_EVERY).
         url = (args or {}).get("url") if tool_name == "browser_navigate" and status != "blocked" else None
         ident = _track(key, session_id, task_id, tool_name, url) if status != "blocked" else None
         now = time.time()
@@ -526,6 +586,13 @@ def tick(now: float | None = None) -> None:
                     paused = held["epoch"] if busy == 0 else None
         if busy != record.get("busy") or paused != record.get("paused"):
             record.update(busy=busy, paused=paused, dirty=True)
+        # The page the bot used last (Watch Browser opens on it): asked of Chrome after the bot's calls, throttled.
+        if record.get("endpoint") and float(record.get("agent_at") or 0) > float(record.get("url_at") or 0) \
+                and now - float(record.get("url_at") or 0) >= URL_EVERY:
+            record["url_at"] = now
+            url = page_url(record["endpoint"])
+            if url and url != record.get("url"):
+                record.update(url=url, dirty=True)
         if record.get("dirty") or now - float(record.get("seen_at") or 0) >= HEARTBEAT:
             record["seen_at"] = now
             record["dirty"] = False
@@ -534,12 +601,34 @@ def tick(now: float | None = None) -> None:
 
 
 def _loop():
-    while True:
+    while not _retired:
         try:
             tick()
         except Exception:  # noqa: BLE001 - the loop must outlive a torn read
             log.debug("hermes-hq-browser: tick failed", exc_info=True)
         time.sleep(TICK)
+    retire_all()  # a reload replaced this instance: its listings end; the new one publishes its own
+
+
+def page_url(endpoint_url: str) -> str | None:
+    """The address of the browser's first page target, from its own loopback discovery root (``/json/list``;
+    no CDP session, so it never moves the bot's tab)."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(endpoint_url)
+        if parts.hostname not in ("127.0.0.1", "localhost", "::1") or not parts.port:
+            return None
+        scheme = "https" if parts.scheme in ("wss", "https") else "http"
+        host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+        with urllib.request.urlopen(f"{scheme}://{host}:{parts.port}/json/list", timeout=2) as response:  # noqa: S310 - loopback only
+            targets = json.loads(response.read(1 << 20))
+    except Exception:  # noqa: BLE001
+        return None
+    for target in targets if isinstance(targets, list) else []:
+        url = target.get("url") if isinstance(target, dict) and target.get("type") == "page" else None
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            return url[:2048]
+    return None
 
 
 def _start():
@@ -553,10 +642,15 @@ def _start():
 def _keep_alive(key: str) -> str | None:
     """Renew Hermes' and the daemon's idle timers through Hermes' own command path; the page's address.
     Only while the session still exists: on a missing session this path would launch a new browser."""
-    if browser_of(_session_info(key)) is None:
+    source = browser_of(_session_info(key))
+    if source is None:
         return None
-    _, _, session = _modules()
-    result = session._run_browser_command(key, "get", ["url"], timeout=10)
+    _, commands, shape = _modules()
+    if shape == "new":  # only renews the timestamp Hermes' janitor reads; never creates a session
+        commands.update_session_activity(key)
+        found = endpoint(source)
+        return page_url(found) if found else None
+    result = commands._run_browser_command(key, "get", ["url"], timeout=10)
     data = result.get("data") if isinstance(result, dict) else None
     url = data.get("url") if isinstance(data, dict) else None
     return url if isinstance(url, str) else None
@@ -660,7 +754,7 @@ SIGN_IN = ("Signing in is your job, not the user's: browser_vault_list, then bro
            "is for CAPTCHAs, approving payments, or the user choosing to do it themself.")
 GUIDANCE = (
     "Your web browser and Hermes HQ: when the user asks you to open, pull up, show, look at or browse a website, "
-    "use your own browser tools (browser_exec, or browser_navigate and the other browser_* tools). The user can watch "
+    "use your own browser tools (browser_exec and your other browser_* tools). The user can watch "
     "your browser live in the Hermes HQ app (Watch Browser) and take it over. desktop_preview opens a page on "
     "the user's phone instead and you can't act in it; use it only when they ask for that. Keep doing the task "
     "yourself until you truly can't. " + SIGN_IN + " A page that seems broken or empty is often a sign-in in a "

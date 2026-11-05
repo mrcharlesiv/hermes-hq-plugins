@@ -92,8 +92,11 @@ def state_home(root: Path) -> Path:
     """``<hermes root>/hermes-hq-browser``, adopting the old plugin's folder the first time (spool.home)."""
     key = "hermes_hq_browser_spool"
     if key not in sys.modules:
-        spec = importlib.util.spec_from_file_location(key, Path(__file__).with_name("spool.py"))
+        path = Path(__file__).with_name("spool.py")
+        spec = importlib.util.spec_from_file_location(key, path)
         module = importlib.util.module_from_spec(spec)
+        stat = path.stat()
+        module._loaded_stamp = (stat.st_mtime_ns, stat.st_size)  # as the plugin's loaders stamp it
         sys.modules[key] = module
         spec.loader.exec_module(module)
     return sys.modules[key].home(root)
