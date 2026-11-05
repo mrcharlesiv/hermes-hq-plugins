@@ -236,6 +236,13 @@ work gets its own "Task prep" scheduled job every few hours (`prep_every_hours` 
 once it has none left. Quiet hours and a daily cap on prep runs are also in Tasks' settings. Never touches Hermes's
 own Kanban, which stays a bot's separate, private to-do list.
 
+Version 0.9.36: Tasks can be turned off entirely (`enabled: false` in Tasks' settings, or Settings › Tasks in the
+app): the task tools disappear for every bot, the shared-tasks note and the "Task prep" jobs go away, and the list is
+kept for when it's turned back on. It also adds your own sections: `GET`/`PUT /tasks/sections` keeps them in your
+order, each task remembers its section and its place in it, and Tasks' settings get `group` (smart or sections) and
+`sort` (smart, due or added). Bots can file a task into one of your sections by name with `tasks_add` and
+`tasks_update`, but they can't make new sections.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 
