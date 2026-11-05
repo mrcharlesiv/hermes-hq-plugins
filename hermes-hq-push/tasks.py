@@ -53,6 +53,16 @@ WATCH_MAX = 160
 CHECK_LEAD = 3600  # 0.9.37: a watched task's prep run comes an hour before it's due (a day alone: due at 9:00)
 DAY_ALERT = 9      # a due day with no time rings at 9:00 in the app, so its check comes at 8:00
 NOTE_MAX = 500
+# 0.9.38: the Task Page (task_page.py) — what its bot writes on it, kept in its own table (task_pages), out of the list.
+PAGE_SUMMARY_MAX = 400
+PAGE_NEXT_MAX = 200
+PAGE_BLOCKS_CAP = 8
+BLOCK_TITLE_MAX = 60
+BLOCK_TEXT_MAX = 2000
+TABLE_COLS_CAP = 6
+TABLE_ROWS_CAP = 25
+CELL_MAX = 200
+NUMBERS_CAP = 6
 DUE_MAX = 40
 _UNSET = object()  # tasks_update left `due` out (None clears it)
 START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
@@ -72,7 +82,7 @@ SECTION_NAME_MAX = 60
 
 COLUMNS = ("id", "rev", "title", "notes", "who", "bot", "status", "status_note", "due", "repeat", "prep",
            "steps", "made", "source", "created_at", "updated_at", "done_at", "created_by", "log", "section", "position",
-           "watch", "chat")
+           "watch", "chat", "page_at")
 
 
 class TaskError(ValueError):
@@ -167,6 +177,77 @@ def _clean_made(value) -> list[dict]:
             continue
         out.append({"id": _text(item.get("id"), 64) or new_id(), "title": title, "kind": kind, "ref": ref})
     return out
+
+
+def _clean_block(item) -> dict | None:
+    """One part of a Task Page: a title and words (Markdown), a table, number tiles, or any of them together;
+    ``remove: true`` takes the part with that title off the page."""
+    if not isinstance(item, dict):
+        return None
+    title = _text(item.get("title"), BLOCK_TITLE_MAX)
+    if not title:
+        return None
+    if item.get("remove") is True:
+        return {"title": title, "remove": True}
+    out: dict = {"title": title}
+    text = _lines(item.get("text"), BLOCK_TEXT_MAX)
+    if text:
+        out["text"] = text
+    table = item.get("table")
+    if isinstance(table, dict):
+        def cell(value) -> str:
+            return _text(value if isinstance(value, str) else ("" if value is None else str(value)), CELL_MAX)
+        columns = [cell(c) for c in (table.get("columns") or [])[:TABLE_COLS_CAP]] if isinstance(
+            table.get("columns"), list) else []
+        rows = [[cell(c) for c in row[:TABLE_COLS_CAP]] for row in (table.get("rows") or [])[:TABLE_ROWS_CAP]
+                if isinstance(row, list)] if isinstance(table.get("rows"), list) else []
+        if rows:
+            out["table"] = {"columns": columns, "rows": rows}
+    numbers = item.get("numbers")
+    if isinstance(numbers, list):
+        tiles = []
+        for n in numbers[:NUMBERS_CAP]:
+            if not isinstance(n, dict) or n.get("value") is None:
+                continue
+            label, value = _text(n.get("label"), 40), _text(str(n["value"]), 24)
+            if label and value:
+                tiles.append({"label": label, "value": value, **({"note": _text(n["note"], 60)} if n.get("note") else {})})
+        if tiles:
+            out["numbers"] = tiles
+    return out if len(out) > 1 else None
+
+
+def merge_page(old: dict | None, patch) -> tuple[dict, list[str]]:
+    """``tasks_update(page=…)`` onto the page there is: ``summary`` and ``next`` replace theirs when given; each part
+    in ``blocks`` replaces the one with its title (any case), or is added after the others, or (``remove``) goes.
+    Returns the page and what was left out, in words for the bot."""
+    old = old if isinstance(old, dict) else {}
+    page = {"summary": old.get("summary") or "", "next": old.get("next") or "", "blocks": list(old.get("blocks") or [])}
+    notes: list[str] = []
+    if not isinstance(patch, dict):
+        return page, ["page must be an object: {summary, next, blocks}"]
+    if "summary" in patch:
+        page["summary"] = _lines(patch["summary"], PAGE_SUMMARY_MAX)
+    if "next" in patch:
+        page["next"] = _text(patch["next"], PAGE_NEXT_MAX)
+    raw = patch.get("blocks")
+    for item in raw if isinstance(raw, list) else []:
+        block = _clean_block(item)
+        if block is None:
+            notes.append("a part with no title, or nothing in it, was left out")
+            continue
+        at = next((i for i, b in enumerate(page["blocks"]) if b["title"].casefold() == block["title"].casefold()), None)
+        if block.get("remove"):
+            if at is not None:
+                page["blocks"].pop(at)
+        elif at is not None:
+            page["blocks"][at] = block
+        elif len(page["blocks"]) < PAGE_BLOCKS_CAP:
+            page["blocks"].append(block)
+        else:
+            notes.append(f"the page holds {PAGE_BLOCKS_CAP} parts: \"{block['title']}\" was left out (fold it into "
+                         "another part, or remove one with remove=true)")
+    return page, notes
 
 
 def _hhmm(value) -> str | None:
@@ -322,7 +403,7 @@ def same_task(a: str, b: str) -> bool:
     return wa == wb or len(wa & wb) / len(wa | wb) >= 0.75
 
 
-def compact(task: dict, sections: dict | None = None) -> dict:
+def compact(task: dict, sections: dict | None = None, page: dict | None = None) -> dict:
     """A task trimmed for ``tasks_list``: the fields a bot needs to talk about it, nothing it doesn't (long
     notes clipped, empty fields left out) — this rides the model's context on every call."""
     out = {"id": task["id"], "title": task["title"], "who": task["who"], "bot": task["bot"],
@@ -337,9 +418,11 @@ def compact(task: dict, sections: dict | None = None) -> dict:
     if task.get("notes"):
         out["notes"] = task["notes"][:200]
     if task.get("steps"):
-        out["steps"] = [{"title": s["title"], "who": s["who"], "done": s["done"]} for s in task["steps"]]
+        out["steps"] = [{"id": s["id"], "title": s["title"], "who": s["who"], "done": s["done"]} for s in task["steps"]]
     if task.get("made"):
         out["made"] = [{"title": m["title"], "kind": m["kind"]} for m in task["made"]]
+    if page and (page.get("summary") or page.get("blocks")):
+        out["page"] = {"summary": _clip(page.get("summary") or "", 160), "parts": [b["title"] for b in page.get("blocks") or []]}
     return out
 
 
@@ -349,6 +432,7 @@ def _row_to_task(row) -> dict:
     task["prep"] = bool(task["prep"])
     task["position"] = float(task["position"] or 0)
     task["watch"] = task.get("watch") or ""
+    task["page_at"] = task.get("page_at") or ""
     for key in ("steps", "made", "source", "log", "chat"):
         task[key] = json.loads(task[key] or ("{}" if key in ("source", "chat") else "[]"))
     return task
@@ -406,6 +490,7 @@ class Store:
                 create index if not exists tasks_prep on tasks (bot, prep, status);
                 create table if not exists meta (key text primary key, value text not null);
                 create table if not exists prep_runs (day text primary key, count integer not null default 0);
+                create table if not exists task_pages (id text primary key, body text not null default '{}');
             """)
             if db.execute("select 1 from meta where key='rev'").fetchone() is None:
                 db.execute("insert into meta (key, value) values ('rev', '0')")
@@ -416,6 +501,8 @@ class Store:
                 db.execute("alter table tasks add column watch text not null default ''")
             if "chat" not in have:
                 db.execute("alter table tasks add column chat text not null default '{}'")
+            if "page_at" not in have:   # 0.9.38: when its bot last wrote on the task's Task Page
+                db.execute("alter table tasks add column page_at text not null default ''")
             if "position" not in have:
                 db.execute("alter table tasks add column position real")
                 for task_id, made in db.execute("select id, created_at from tasks").fetchall():
@@ -458,6 +545,29 @@ class Store:
             row = db.execute(f"select {','.join(COLUMNS)} from tasks where id=?", (task_id,)).fetchone()
         return _row_to_task(row) if row else None
 
+    def get_page(self, task_id: str) -> dict:
+        """What the task's bot wrote on its Task Page (``merge_page``'s shape), or ``{}``."""
+        with closing(self._db()) as db:
+            row = db.execute("select body from task_pages where id=?", (task_id,)).fetchone()
+        try:
+            return json.loads(row[0]) if row else {}
+        except ValueError:
+            return {}
+
+    def pages_for(self, task_ids) -> dict:
+        ids = list(task_ids)
+        if not ids:
+            return {}
+        with closing(self._db()) as db:
+            rows = db.execute(f"select id, body from task_pages where id in ({','.join('?' * len(ids))})", ids).fetchall()
+        out = {}
+        for task_id, body in rows:
+            try:
+                out[task_id] = json.loads(body)
+            except ValueError:
+                pass
+        return out
+
     def list_all(self) -> list[dict]:
         with closing(self._db()) as db:
             rows = db.execute(f"select {','.join(COLUMNS)} from tasks order by created_at").fetchall()
@@ -468,8 +578,9 @@ class Store:
         current = self.rev()
         if since is not None and since >= current:
             return {"rev": current, "unchanged": True}
+        # pages: this add-on draws a Task Page for every task (GET /tasks/{id}/page, 0.9.38).
         return {"rev": current, "tasks": self.list_all(), "settings": self.get_settings(),
-                "sections": self.get_sections()}
+                "sections": self.get_sections(), "pages": True}
 
     def find_open_twin(self, title: str) -> dict | None:
         """An open task that is ``title`` in other words ("Call the dentist" / "call dentist"), so a bot's
@@ -564,6 +675,7 @@ class Store:
     def delete(self, task_id: str) -> dict:
         with closing(self._write_db()) as db, db:
             db.execute("delete from tasks where id=?", (task_id,))
+            db.execute("delete from task_pages where id=?", (task_id,))
             self._bump_rev(db)
         return {"ok": True}
 
@@ -580,6 +692,8 @@ class Store:
             updated["watch"] = _text(patch["watch"], WATCH_MAX)
         if "chat" in patch and patch["chat"] is not None:
             updated["chat"] = _clean_chat(patch["chat"])
+        if patch.get("page_at"):
+            updated["page_at"] = patch["page_at"]
         if "section" in patch:
             updated["section"] = patch["section"] or None
         if isinstance(patch.get("position"), (int, float)) and not isinstance(patch.get("position"), bool):
@@ -613,12 +727,12 @@ class Store:
     def _write(self, db, task: dict) -> None:
         db.execute("""update tasks set rev=?, title=?, notes=?, who=?, bot=?, status=?, status_note=?, due=?,
             repeat=?, prep=?, steps=?, made=?, updated_at=?, done_at=?, log=?, section=?, position=?, watch=?,
-            chat=? where id=?""",
+            chat=?, page_at=? where id=?""",
             (task["rev"], task["title"], task["notes"], task["who"], task["bot"], task["status"],
              task["status_note"], task["due"], task["repeat"], int(task["prep"]), json.dumps(task["steps"]),
              json.dumps(task["made"]), task["updated_at"], task["done_at"], json.dumps(task["log"]),
              task.get("section"), float(task.get("position") or 0), task.get("watch") or "",
-             json.dumps(task.get("chat") or {}), task["id"]))
+             json.dumps(task.get("chat") or {}), task.get("page_at") or "", task["id"]))
 
     def update_route(self, task_id: str, rev: int, patch: dict, by: str = "you") -> dict:
         """``PATCH /tasks/{id}``: a stale ``rev`` raises ``TaskError(409, {"task": current})``."""
@@ -638,16 +752,17 @@ class Store:
 
     def update_bot(self, task_id: str, profile: str, *, status=None, status_note=None, done_steps=None,
                   add_steps=None, made=None, note=None, who=None, prep=None, due=_UNSET,
-                  section=_UNSET, watch=None) -> dict:
+                  section=_UNSET, watch=None, page=None) -> dict:
         """``tasks_update``: no ``rev`` (the tool contract has none — the bot always applies to the current
         task). Enforces docs/tasks.md's rules in code: a bot may only mark ``done`` a task it owns alone
         (``who == "bot"``), and may not change a ``who == "me"`` task except to add ``note`` — or to take a part
         of it (``who="together"`` with at least one step of its own in ``add_steps``), which makes it this
         bot's together task (0.9.33: the user said "help me with this", or the bot just added it in chat).
         ``due`` (already resolved; ``None`` clears it) only on a task this bot added or owns: Hermes set the
-        owner's first task for tomorrow and then couldn't put it right (2026-11-04)."""
+        owner's first task for tomorrow and then couldn't put it right (2026-11-04). ``page`` (0.9.38) writes on
+        the task's Task Page (``merge_page``); what was left out of it is in the answer's ``page_notes``."""
         changing = (status is not None or status_note is not None or done_steps or add_steps or made
-                    or prep is not None or watch is not None)
+                    or prep is not None or watch is not None or page is not None)
         with closing(self._write_db()) as db, db:
             row = db.execute(f"select {','.join(COLUMNS)} from tasks where id=?", (task_id,)).fetchone()
             if row is None:
@@ -696,9 +811,22 @@ class Store:
                 patch["watch"] = watch
             if section is not _UNSET:   # filing a task is never "changing" it: fine on the user's own too
                 patch["section"] = self._section_id(db, section)
+            page_notes: list[str] = []
+            if page is not None:
+                row = db.execute("select body from task_pages where id=?", (task_id,)).fetchone()
+                try:
+                    old = json.loads(row[0]) if row else {}
+                except ValueError:
+                    old = {}
+                merged, page_notes = merge_page(old, page)
+                db.execute("insert into task_pages (id, body) values (?, ?) on conflict(id) do update set body=excluded.body",
+                           (task_id, json.dumps(merged, ensure_ascii=False)))
+                patch["page_at"] = _iso(self.clock)
             updated = self._merge(task, patch, profile, note=note or ("took a part" if taking_part else None))
             self._write(db, updated)
             self._bump_rev(db)
+        if page_notes:
+            updated = dict(updated, page_notes=page_notes)
         return updated
 
     # -- settings ------------------------------------------------------------------------------------------------
@@ -873,7 +1001,7 @@ class Store:
 
 def status() -> dict:
     """``/status`` gains ``tasks: true`` (docs/tasks.md), so the app knows this add-on serves Tasks."""
-    return {"tasks": True}
+    return {"tasks": True, "task_pages": True}
 
 
 # ---------------------------------------------------------------------------
@@ -888,7 +1016,8 @@ PREP_JOB_PROMPT = (
     "retry or explain, just end the turn. Otherwise it gives you one task: do research and prepare drafts for it "
     "only. Never send, book, buy, pay, post or delete anything, and never act on or finish the user's own steps in "
     "a together task. When you have something (or need the user), call tasks_update: list anything you made with "
-    "made (a note in Markdown, one line per item), tick off your own finished steps with done_steps, then set status to 'ready' with one short status_note "
+    "made (a note in Markdown, one line per item), tick off your own finished steps with done_steps, write where it "
+    "stands on its Task Page with page (summary, next, and blocks for what you found), then set status to 'ready' with one short status_note "
     "for what's ready, or to 'needs_you' with the question in status_note if it needs the user to decide, pay, "
     "approve or act instead of you finishing it. If the task has watch, check that first, where it says (their "
     "email, a message, an item you keep): if it already happened, say what happened in status_note (\"Sam replied "
@@ -1139,7 +1268,8 @@ def task_chat_line(task: dict) -> str:
     if task.get("watch"):
         facts.append(f"watching for {task['watch'][:80]}")
     return (f"This chat is the Task \"{task['title'][:80]}\" ({', '.join(facts)}). Work on it here, and keep it "
-            "current with tasks_update as things happen (your steps, what you made, ready or needs_you).")
+            "current with tasks_update as things happen (your steps, what you made, its Task Page with page, ready "
+            "or needs_you).")
 
 
 def context_for(*, store: Store, profile: str, platform: str = "", parent_session_id: str = "",
@@ -1222,6 +1352,23 @@ WORKSPACE_RULE = ("Make each task worth having, without asking more: give it a t
                   "that part: who='together', your step first (\"Check for Sam's reply, draft a nudge\"), "
                   "theirs after, prep=true and watch. Tell them in one line (\"Tomorrow 10am. If Sam replies "
                   "first I'll tell you; a nudge will be ready.\"). A plain errand (\"buy milk\") just gets a time.")
+PAGE = {"type": "object", "description": "Write on the task's Task Page: the one page the user opens to see "
+        "everything about the task and where it stands (the task-page skill has the full guide). Keep it current "
+        "each time you work on the task. Steps, what you made, status and the history are on the page already: "
+        "don't repeat them here.", "properties": {
+    "summary": {"type": "string", "description": "Where it stands now, 1-3 short sentences in plain words: \"3 "
+                "venues shortlisted; Elm & Oak fits best and holds the 14th until Friday.\""},
+    "next": {"type": "string", "description": "What happens next, and who: \"You pick one; I'll book it.\""},
+    "blocks": {"type": "array", "description": "Parts of the page (findings, options compared, numbers that "
+               "matter), up to 8. A part replaces the one with the same title; remove=true takes one off.",
+               "items": {"type": "object", "properties": {
+                   "title": {"type": "string", "description": "A few words, like \"Options\" or \"What I found\"."},
+                   "text": {"type": "string", "description": "Markdown: short lines, - lists, **bold**, [links](https://…)."},
+                   "table": {"type": "object", "description": "{columns: [..], rows: [[..], ..]}: a comparison."},
+                   "numbers": {"type": "array", "description": "Up to 6 tiles: [{label, value, note}].",
+                               "items": {"type": "object"}},
+                   "remove": {"type": "boolean"}},
+                   "required": ["title"]}}}}
 START_NOW = {"type": "boolean", "description": "Start your step now as a background Task prep run (needs prep=true "
              "and your own step): for work too long to do in this reply. It alerts the user when it's ready."}
 
@@ -1265,7 +1412,7 @@ UPDATE_SCHEMA = _schema(
     "does your part (you asked it with message_agent), keep the step yours and set status 'working' instead of "
     "start_now, so the work isn't started twice. Set status 'ready' with a one-line status_note when your part is "
     "done; set 'needs_you' with the question in status_note when you need the user. Both push a notification to "
-    "their phone. You can fix due on a task you added. " + PREP_RULE,
+    "their phone. You can fix due on a task you added. Keep its Task Page current with page. " + PREP_RULE,
     {"id": {"type": "string", "description": "Required: the task's id."},
      "status": {"type": "string", "enum": list(STATUSES)},
      "status_note": {"type": "string", "description": "One short line, e.g. \"Number and a Dec 9 slot\"."},
@@ -1282,7 +1429,8 @@ UPDATE_SCHEMA = _schema(
      "due": {"type": "string", "description": "Only on a task you added or own. " + DUE_HELP},
      "watch": WATCH,
      "start_now": START_NOW,
-     "section": SECTION},
+     "section": SECTION,
+     "page": PAGE},
     ("id",))
 
 NEXT_PREP_SCHEMA = _schema(
@@ -1312,7 +1460,8 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         if not include_done:
             tasks = [t for t in tasks if t["status"] != "done"]
         names = store.section_names()
-        out = {"tasks": [compact(t, names) for t in tasks]}
+        pages = store.pages_for(t["id"] for t in tasks if t.get("page_at"))
+        out = {"tasks": [compact(t, names, pages.get(t["id"])) for t in tasks]}
         if names:
             out["sections"] = list(names.values())
         return json.dumps(out, ensure_ascii=False)
@@ -1359,7 +1508,7 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
                                     made=args.get("made"), note=args.get("note"), who=args.get("who"),
                                     prep=args.get("prep"), due=due,
                                     section=args["section"] if "section" in args else _UNSET,
-                                    watch=args.get("watch"))
+                                    watch=args.get("watch"), page=args.get("page"))
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
         out = dict(task)

@@ -39,7 +39,9 @@ and tasks_next_prep (toolset hq_tasks), a tiny pre_llm_call note of the open tas
 push (kind "task") when a bot sets a task ready or needs_you, and the "Task prep" scheduled job a bot with open
 prep tasks gets (and loses once it has none). Never touches Hermes's Kanban. 0.9.33: the note carries the date and
 asks a bot to take its part of what the user needs to do (who "together", its step started now with start_now), and
-due takes words ("today 17:00") and is said back.
+due takes words ("today 17:00") and is said back. 0.9.38: every task has a Task Page (task_page.py, GET
+/tasks/{id}/page): one look for all, drawn from the task and what its bot writes with tasks_update(page=…), guided by
+skills/task-page (hermes-hq-push:task-page).
 """
 import importlib.util
 import logging
@@ -330,6 +332,24 @@ def _dashboard_skill(ctx):
         log.warning("hermes-hq-push: dashboard tile skill not offered", exc_info=True)
 
 
+# The Task Page skill (skills/task-page, 0.9.38): what goes on a task's Task Page and how to write it. The page's look is
+# the add-on's (task_page.py fills in skills/task-page/template.html); the skill is about the words.
+TASK_PAGE_SKILL = Path(__file__).resolve().parent / "skills" / "task-page" / "SKILL.md"
+
+
+def _task_page_skill(ctx):
+    if not hasattr(ctx, "register_skill"):
+        log.info("hermes-hq-push: task page skill not offered (this Hermes has no plugin skills)")
+        return
+    try:
+        ctx.register_skill("task-page", TASK_PAGE_SKILL,
+                           "Keep a task's Task Page current in the Hermes HQ app: where it stands, what's next and "
+                           "what you found, written with tasks_update(page=…) each time you work on a task.")
+        log.info("hermes-hq-push: task page skill offered")
+    except Exception:
+        log.warning("hermes-hq-push: task page skill not offered", exc_info=True)
+
+
 def _short_titles():
     try:
         log.info("hermes-hq-push: short chat names %s", short_titles.install())
@@ -413,6 +433,7 @@ def register(ctx):
     _device_tools(ctx)
     _tasks_tools(ctx)
     _dashboard_skill(ctx)
+    _task_page_skill(ctx)
     _desktop_theme()
     _restart_guard()
     _own_chats()

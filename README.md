@@ -250,6 +250,12 @@ what happened or gets your next move ready (a short draft you can send). A task 
 `{profile, session_id}`): the app makes it hidden, so it never shows in the session list, and the bot is told which
 task the chat belongs to on every turn.
 
+Version 0.9.38 gives every task a **Task Page**: one page with everything about the task and where it stands, in the
+same look for every task. The add-on draws it (`GET /tasks/{id}/page`) from the task itself (status, steps, what was
+made, its history) and what its bot writes with `tasks_update(page={summary, next, blocks})`: where it stands, what's
+next, and parts such as options compared in a table, the numbers that matter, or what it found. The bot writes words,
+never HTML. The `task-page` skill (hermes-hq-push:task-page) tells bots what goes on it.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

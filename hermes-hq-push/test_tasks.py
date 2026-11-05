@@ -993,3 +993,109 @@ def test_a_watched_task_gets_one_task_check_run_and_no_interval_job(tmp_path):
         s.update_route(task["id"], moved["rev"], {"status": "done"})
         tasks.reconcile_prep_job(s, "cro")
         assert cron_jobs.resolve_job_ref(tasks.CHECK_JOB_NAME) is None
+
+
+# ---------------------------------------------------------------------------
+# The Task Page (0.9.38): what a bot writes on it, and the page drawn from it
+# ---------------------------------------------------------------------------
+
+if "hermes_hq_task_page" in sys.modules:
+    task_page = sys.modules["hermes_hq_task_page"]
+else:
+    _page_spec = importlib.util.spec_from_file_location("hermes_hq_task_page", HERE / "task_page.py")
+    task_page = importlib.util.module_from_spec(_page_spec)
+    sys.modules["hermes_hq_task_page"] = task_page
+    _page_spec.loader.exec_module(task_page)
+
+
+def test_page_parts_replace_by_title_add_after_and_remove(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = s.create(bot_task(), created_by="cro", source={})
+    first = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "page": {
+        "summary": "Looking at venues.", "next": "I'll shortlist three.",
+        "blocks": [{"title": "Options", "text": "- A\n- B"}, {"title": "Prices", "numbers": [{"label": "Best", "value": 1500}]}]}}))
+    assert first["page_at"] and "page_notes" not in first
+    page = s.get_page(task["id"])
+    assert page["summary"] == "Looking at venues." and [b["title"] for b in page["blocks"]] == ["Options", "Prices"]
+    assert page["blocks"][1]["numbers"] == [{"label": "Best", "value": "1500"}]
+
+    json.loads(ctx.tools["tasks_update"]({"id": task["id"], "page": {
+        "summary": "3 venues shortlisted.",
+        "blocks": [{"title": "options", "table": {"columns": ["Venue", "Price"], "rows": [["Elm", "$1,800"]]}},
+                   {"title": "Prices", "remove": True}, {"title": "Draft", "text": "Hi there"}]}}))
+    page = s.get_page(task["id"])
+    assert page["summary"] == "3 venues shortlisted." and page["next"] == "I'll shortlist three."   # kept: not sent
+    assert [b["title"] for b in page["blocks"]] == ["options", "Draft"]
+    assert page["blocks"][0] == {"title": "options", "table": {"columns": ["Venue", "Price"], "rows": [["Elm", "$1,800"]]}}
+
+
+def test_page_caps_parts_and_says_what_was_left_out(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = s.create(bot_task(), created_by="cro", source={})
+    blocks = [{"title": f"Part {i}", "text": "x"} for i in range(tasks.PAGE_BLOCKS_CAP + 1)] + [{"title": "", "text": "y"}]
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "page": {"blocks": blocks}}))
+    assert len(s.get_page(task["id"])["blocks"]) == tasks.PAGE_BLOCKS_CAP
+    assert any(f"Part {tasks.PAGE_BLOCKS_CAP}" in n for n in out["page_notes"]) and any("no title" in n for n in out["page_notes"])
+
+
+def test_page_follows_the_task_rules_and_goes_with_the_task(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    mine = s.create(me(), created_by="you", source={})
+    refused = json.loads(ctx.tools["tasks_update"]({"id": mine["id"], "page": {"summary": "hi"}}))
+    assert "error" in refused and s.get_page(mine["id"]) == {}
+    task = s.create(bot_task(), created_by="cro", source={})
+    ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": "Started."}})
+    assert s.get(task["id"])["rev"] == task["rev"] + 1   # the app sees the page changed
+    s.delete(task["id"])
+    assert s.get_page(task["id"]) == {}
+
+
+def test_tasks_list_carries_step_ids_and_the_page_outline(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = s.create(bot_task(steps=[{"title": "Find three", "who": "bot"}]), created_by="cro", source={})
+    ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": "Two found.", "blocks": [{"title": "Options", "text": "A"}]}})
+    listed = json.loads(ctx.tools["tasks_list"]({}))["tasks"][0]
+    assert listed["steps"][0]["id"] == task["steps"][0]["id"]
+    assert listed["page"] == {"summary": "Two found.", "parts": ["Options"]}
+
+
+def test_page_draws_the_task_and_escapes_what_the_bot_wrote(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = s.create(together(steps=[{"title": "Shortlist", "who": "bot"}, {"title": "Pick one", "who": "me"}]),
+                    created_by="cro", source={})
+    ctx.tools["tasks_update"]({"id": task["id"], "done_steps": [task["steps"][0]["id"]], "status": "needs_you",
+                               "status_note": "Which venue?", "made": [{"title": "Venue notes", "kind": "note", "ref": "- Elm"}],
+                               "page": {"summary": "Shortlisted <b>3</b>.", "next": "You pick one.",
+                                        "blocks": [{"title": "Options", "text": "**Elm** [menu](https://example.com) [x](javascript:alert(1))\n- [x] called\n- [ ] booked",
+                                                    "table": {"columns": ["Venue"], "rows": [["<script>alert(1)</script>"]]}}]}})
+    page = task_page.render(s.get(task["id"]), s.get_page(task["id"]), {"cro": "Recruiting"})
+    assert "<title>" in page and "{{" not in page
+    assert "Needs You" in page and "Which venue?" in page and "1 of 2 steps done" in page and 'style="width:50%"' in page
+    assert "Shortlisted &lt;b&gt;3&lt;/b&gt;." in page and "<script>alert(1)</script>" not in page
+    assert '<a href="https://example.com">menu</a>' in page and "javascript:" not in page
+    assert "<strong>Elm</strong>" in page and 'class="tick"' in page and "You &amp; Recruiting" in page
+    assert "Venue notes" in page and "Timeline" in page and "You pick one." in page
+
+
+def test_page_of_a_task_with_nothing_written_yet(tmp_path):
+    s = store(tmp_path)
+    task = s.create(bot_task(), created_by="cro", source={})
+    page = task_page.render(s.get(task["id"]), {}, {})
+    assert "To Do" in page and "Not started yet." in page and "Cro" in page and "Steps" not in page
+
+
+def test_markdown_lists_tables_and_headings():
+    html = task_page.markdown("### Plan\n1. One\n2. Two\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n> quoted\nplain _soft_ `x*y*`")
+    assert "<h3>Plan</h3>" in html and "<ol><li>One</li><li>Two</li></ol>" in html
+    assert "<th>A</th>" in html and "<td>2</td>" in html and "<blockquote>quoted</blockquote>" in html
+    assert "<em>soft</em>" in html and "<code>x*y*</code>" in html
+
+
+def test_page_route_serves_html(client):
+    created = client.post(f"{BASE}/tasks", json={"title": "Plan the offsite", "who": "bot", "bot": "cro"}).json()
+    page = client.get(f"{BASE}/tasks/{created['id']}/page", params={"names": json.dumps({"cro": "Recruiting"})})
+    assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
+    assert "Plan the offsite" in page.text and "Recruiting" in page.text
+    assert client.get(f"{BASE}/tasks/nope/page").status_code == 404
+    assert client.get(f"{BASE}/tasks").json()["pages"] is True
+    assert client.get(f"{BASE}/status").json()["task_pages"] is True

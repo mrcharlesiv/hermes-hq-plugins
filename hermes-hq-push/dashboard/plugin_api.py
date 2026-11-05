@@ -1,12 +1,13 @@
 """Routes under /api/plugins/hermes-hq-push, behind the dashboard's normal login (the Hermes HQ app's
 session cookie). Mounted in ``hermes serve``, the process that owns app sessions' approval queues."""
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 if "hermes_hq_push_core" in sys.modules:
@@ -83,6 +84,13 @@ else:
     tasks = importlib.util.module_from_spec(_tasks_spec)
     sys.modules["hermes_hq_tasks"] = tasks
     _tasks_spec.loader.exec_module(tasks)
+if "hermes_hq_task_page" in sys.modules:
+    task_page = sys.modules["hermes_hq_task_page"]
+else:
+    _page_spec = importlib.util.spec_from_file_location("hermes_hq_task_page", Path(__file__).parents[1] / "task_page.py")
+    task_page = importlib.util.module_from_spec(_page_spec)
+    sys.modules["hermes_hq_task_page"] = task_page
+    _page_spec.loader.exec_module(task_page)
 
 _warm_spec = importlib.util.spec_from_file_location("hermes_hq_serve_warmup", Path(__file__).parents[1] / "serve_warmup.py")
 serve_warmup = importlib.util.module_from_spec(_warm_spec)
@@ -520,6 +528,22 @@ def tasks_patch(task_id: str, body: TaskPatchIn):
 def tasks_delete(task_id: str):
     """Also how the app undoes a chat capture (the card's Undo, or saying "undo")."""
     return _tasks_store().delete(task_id)
+
+
+@router.get("/tasks/{task_id}/page")
+def tasks_page(task_id: str, names: str = ""):
+    """The task's Task Page (0.9.38, task_page.py): HTML drawn now from the task and what its bot wrote on it with
+    tasks_update(page=…). ``names``: the app's bot names, a JSON object by profile ({"default": "Hermes"})."""
+    store = _tasks_store()
+    task = store.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="No such task.")
+    try:
+        given = json.loads(names) if names else {}
+    except ValueError:
+        given = {}
+    shown = {str(k)[:64]: str(v)[:60] for k, v in (given.items() if isinstance(given, dict) else []) if v}
+    return HTMLResponse(task_page.render(task, store.get_page(task_id), shown), headers={"Cache-Control": "no-store"})
 
 
 @router.get("/tasks/settings")
