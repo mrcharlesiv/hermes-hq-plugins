@@ -1068,12 +1068,12 @@ def test_page_draws_the_task_and_escapes_what_the_bot_wrote(tmp_path):
                                "page": {"summary": "Shortlisted <b>3</b>.", "next": "You pick one.",
                                         "blocks": [{"title": "Options", "text": "**Elm** [menu](https://example.com) [x](javascript:alert(1))\n- [x] called\n- [ ] booked",
                                                     "table": {"columns": ["Venue"], "rows": [["<script>alert(1)</script>"]]}}]}})
-    page = task_page.render(s.get(task["id"]), s.get_page(task["id"]), {"cro": "Recruiting"})
+    page = task_page.render(s.get(task["id"]), s.get_page(task["id"]), {"cro": "Scout"})
     assert "<title>" in page and "{{" not in page
     assert "Needs You" in page and "Which venue?" in page and "1 of 2 steps done" in page and 'style="width:50%"' in page
     assert "Shortlisted &lt;b&gt;3&lt;/b&gt;." in page and "<script>alert(1)</script>" not in page
     assert '<a href="https://example.com">menu</a>' in page and "javascript:" not in page
-    assert "<strong>Elm</strong>" in page and 'class="tick"' in page and "You &amp; Recruiting" in page
+    assert "<strong>Elm</strong>" in page and 'class="tick"' in page and "You &amp; Scout" in page
     assert "Venue notes" in page and "Timeline" in page and "You pick one." in page
 
 
@@ -1093,9 +1093,9 @@ def test_markdown_lists_tables_and_headings():
 
 def test_page_route_serves_html(client):
     created = client.post(f"{BASE}/tasks", json={"title": "Plan the offsite", "who": "bot", "bot": "cro"}).json()
-    page = client.get(f"{BASE}/tasks/{created['id']}/page", params={"names": json.dumps({"cro": "Recruiting"})})
+    page = client.get(f"{BASE}/tasks/{created['id']}/page", params={"names": json.dumps({"cro": "Scout"})})
     assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
-    assert "Plan the offsite" in page.text and "Recruiting" in page.text
+    assert "Plan the offsite" in page.text and "Scout" in page.text
     assert client.get(f"{BASE}/tasks/nope/page").status_code == 404
     assert client.get(f"{BASE}/tasks").json()["pages"] is True
     assert client.get(f"{BASE}/status").json()["task_pages"] is True
