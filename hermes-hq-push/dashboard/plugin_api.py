@@ -84,6 +84,13 @@ else:
     tasks = importlib.util.module_from_spec(_tasks_spec)
     sys.modules["hermes_hq_tasks"] = tasks
     _tasks_spec.loader.exec_module(tasks)
+if "hermes_hq_ideas" in sys.modules:
+    ideas = sys.modules["hermes_hq_ideas"]
+else:
+    _ideas_spec = importlib.util.spec_from_file_location("hermes_hq_ideas", Path(__file__).parents[1] / "ideas.py")
+    ideas = importlib.util.module_from_spec(_ideas_spec)
+    sys.modules["hermes_hq_ideas"] = ideas
+    _ideas_spec.loader.exec_module(ideas)
 if "hermes_hq_task_page" in sys.modules:
     task_page = sys.modules["hermes_hq_task_page"]
 else:
@@ -480,6 +487,14 @@ class SettingsIn(BaseModel):
     prep_every_hours: int | None = Field(default=None, ge=1, le=24)
     group: str | None = Field(default=None, pattern="^(smart|sections)$")
     sort: str | None = Field(default=None, pattern="^(smart|due|added)$")
+    ideas: bool | None = None
+    ideas_bot: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    ideas_at: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    ideas_max: int | None = Field(default=None, ge=1, le=5)
+
+
+class IdeaAddIn(BaseModel):
+    start: bool = False
 
 
 class SectionIn(BaseModel):
@@ -554,14 +569,68 @@ def tasks_settings_get():
 @router.put("/tasks/settings")
 def tasks_settings_put(body: SettingsIn):
     store = _tasks_store()
-    before = store.enabled()
+    before, ideas_before = store.enabled(), store.get_settings()
     saved = store.put_settings(body.model_dump(exclude_unset=True))
     if store.enabled() != before:   # on or off: every bot's Task prep job follows (removed off, back on if it has prep)
         for bot in store.bots_with_tasks():
             home = tasks.bot_home(bot)
             if home is not None:
                 tasks.reconcile_prep_job(store, bot, home)
+    keys = ("ideas", "ideas_bot", "ideas_at")
+    if store.enabled() != before or any(saved.get(k) != ideas_before.get(k) for k in keys):
+        # 0.9.39: the "Task ideas" job moves with the setting: gone from the bot that had it, there on the one picked.
+        for bot in {ideas_before.get("ideas_bot"), saved.get("ideas_bot")} - {None}:
+            home = tasks.bot_home(bot)
+            if home is not None:
+                ideas.reconcile_job(store, bot, home)
     return saved
+
+
+# Ideas (0.9.39, ideas.py; `task_ideas` in status): tasks a bot suggests from what it can see, on the Tasks page's
+# Ideas tab. Never a task until the user adds one.
+
+def _idea_call(call):
+    try:
+        return call()
+    except (ideas.IdeaError, tasks.TaskError) as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.get("/tasks/ideas")
+def tasks_ideas_get():
+    """``{on, bot, at, max, ideas: [...], ran_at, looking}``: the new ideas, newest first."""
+    return ideas.page(_tasks_store())
+
+
+@router.post("/tasks/ideas/run")
+def tasks_ideas_run():
+    """Look Now: the ideas bot's "Task ideas" job runs at its next tick (once every 15 minutes)."""
+    return _idea_call(lambda: ideas.run_now(_tasks_store()))
+
+
+@router.post("/tasks/ideas/{idea_id}/add")
+def tasks_ideas_add(idea_id: str, body: IdeaAddIn):
+    """The idea becomes a task (or the open task that's the same thing): ``{idea, task, already}``. ``start``: a
+    bot's part starts now as its Task prep run."""
+    store = _tasks_store()
+    out = _idea_call(lambda: ideas.add(store, idea_id, body.start))
+    task = out["task"]
+    if body.start and task.get("prep") and task.get("bot") and not out["already"]:
+        home = tasks.bot_home(task["bot"])
+        out["start"] = tasks.start_prep_now(store, task, task["bot"], home)
+    return out
+
+
+@router.post("/tasks/ideas/{idea_id}/dismiss")
+def tasks_ideas_dismiss(idea_id: str):
+    """Gone from the page, and kept 60 days so it isn't offered again."""
+    return _idea_call(lambda: ideas.dismiss(_tasks_store(), idea_id))
+
+
+@router.post("/tasks/ideas/{idea_id}/restore")
+def tasks_ideas_restore(idea_id: str):
+    """Undo a dismiss."""
+    return _idea_call(lambda: ideas.restore(_tasks_store(), idea_id))
 
 
 @router.get("/tasks/sections")

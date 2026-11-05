@@ -65,6 +65,7 @@ CELL_MAX = 200
 NUMBERS_CAP = 6
 DUE_MAX = 40
 _UNSET = object()  # tasks_update left `due` out (None clears it)
+IDEAS_FRESH_DAYS = 7   # 0.9.39: an idea nobody adds or dismisses fades from the Ideas page after a week
 START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
 
 # "enabled" (0.9.35, owner 2026-11-04: "a way for users to be able to turn off the tasks feature entirely"): False
@@ -73,8 +74,13 @@ START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hou
 # "group"/"sort" (0.9.36, owner 2026-11-04: "can we create sections? And an easy way to move the tasks amongst the
 # sections"): how the app lays the page out — "smart" groups (Needs You, Today, …) or "sections" (the user's own, in
 # meta 'sections'), and the order inside each — kept here so the iPhone and the Mac show the same page.
+# "ideas" (0.9.39, ideas.py): the Tasks page's Ideas page. Off until the user turns it on (a daily run that reads their
+# chats is theirs to choose); "ideas_bot" runs it daily at "ideas_at" and offers at most "ideas_max" ideas a day.
 DEFAULT_SETTINGS = {"enabled": True, "capture": "ask", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
-                    "prep_every_hours": 3, "group": "smart", "sort": "smart"}
+                    "prep_every_hours": 3, "group": "smart", "sort": "smart",
+                    "ideas": False, "ideas_bot": "default", "ideas_at": "07:30", "ideas_max": 3}
+IDEAS_MAX = 5
+_PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 GROUPS = ("smart", "sections")
 SORTS = ("smart", "due", "added")
 SECTIONS_CAP = 50
@@ -491,6 +497,12 @@ class Store:
                 create table if not exists meta (key text primary key, value text not null);
                 create table if not exists prep_runs (day text primary key, count integer not null default 0);
                 create table if not exists task_pages (id text primary key, body text not null default '{}');
+                create table if not exists task_ideas (
+                    id text primary key, created_at text not null, bot text not null, title text not null,
+                    why text not null default '', source text not null default '', who text not null default 'me',
+                    help text not null default '', state text not null default 'new', task_id text,
+                    decided_at text);
+                create index if not exists task_ideas_state on task_ideas (state, created_at);
             """)
             if db.execute("select 1 from meta where key='rev'").fetchone() is None:
                 db.execute("insert into meta (key, value) values ('rev', '0')")
@@ -579,8 +591,17 @@ class Store:
         if since is not None and since >= current:
             return {"rev": current, "unchanged": True}
         # pages: this add-on draws a Task Page for every task (GET /tasks/{id}/page, 0.9.38).
+        # ideas (0.9.39): how many new ideas the Ideas page has, for the count on its tab.
         return {"rev": current, "tasks": self.list_all(), "settings": self.get_settings(),
-                "sections": self.get_sections(), "pages": True}
+                "sections": self.get_sections(), "pages": True, "ideas": self.new_ideas_count()}
+
+    def new_ideas_count(self) -> int:
+        """New ideas still fresh (ideas.py: one nobody acts on fades after FRESH_DAYS); 0 while Ideas is off."""
+        if not self.get_settings().get("ideas"):
+            return 0
+        since = _iso(lambda: self.clock() - IDEAS_FRESH_DAYS * 86400)
+        with closing(self._db()) as db:
+            return db.execute("select count(*) from task_ideas where state='new' and created_at>=?", (since,)).fetchone()[0]
 
     def find_open_twin(self, title: str) -> dict | None:
         """An open task that is ``title`` in other words ("Call the dentist" / "call dentist"), so a bot's
@@ -861,6 +882,15 @@ class Store:
             current["group"] = fields["group"]
         if fields.get("sort") in SORTS:
             current["sort"] = fields["sort"]
+        if isinstance(fields.get("ideas"), bool):
+            current["ideas"] = fields["ideas"]
+        if isinstance(fields.get("ideas_bot"), str) and _PROFILE_NAME.match(fields["ideas_bot"]):
+            current["ideas_bot"] = fields["ideas_bot"]
+        if _hhmm(fields.get("ideas_at")):
+            current["ideas_at"] = fields["ideas_at"]
+        value = fields.get("ideas_max")
+        if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= IDEAS_MAX:
+            current["ideas_max"] = value
         with closing(self._write_db()) as db, db:
             db.execute("insert into meta (key, value) values ('settings', ?) on conflict(key) do update"
                        " set value=excluded.value", (json.dumps(current),))
@@ -1001,7 +1031,7 @@ class Store:
 
 def status() -> dict:
     """``/status`` gains ``tasks: true`` (docs/tasks.md), so the app knows this add-on serves Tasks."""
-    return {"tasks": True, "task_pages": True}
+    return {"tasks": True, "task_pages": True, "task_ideas": True}
 
 
 # ---------------------------------------------------------------------------

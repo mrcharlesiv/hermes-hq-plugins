@@ -41,7 +41,9 @@ prep tasks gets (and loses once it has none). Never touches Hermes's Kanban. 0.9
 asks a bot to take its part of what the user needs to do (who "together", its step started now with start_now), and
 due takes words ("today 17:00") and is said back. 0.9.38: every task has a Task Page (task_page.py, GET
 /tasks/{id}/page): one look for all, drawn from the task and what its bot writes with tasks_update(page=…), guided by
-skills/task-page (hermes-hq-push:task-page).
+skills/task-page (hermes-hq-push:task-page). 0.9.39: the Tasks page's Ideas tab (ideas.py): once the user turns it
+on, one bot's daily "Task ideas" job reads their recent chats and suggests a few tasks; pre_tool_call keeps that run
+to reading only, and nothing becomes a task until the user adds it.
 """
 import importlib.util
 import logging
@@ -80,9 +82,20 @@ _titles_spec.loader.exec_module(short_titles)
 _access_spec = importlib.util.spec_from_file_location("hermes_hq_device_access", Path(__file__).with_name("device_access.py"))
 device_access = importlib.util.module_from_spec(_access_spec)
 _access_spec.loader.exec_module(device_access)
-_tasks_spec = importlib.util.spec_from_file_location("hermes_hq_tasks", Path(__file__).with_name("tasks.py"))
-tasks = importlib.util.module_from_spec(_tasks_spec)
-_tasks_spec.loader.exec_module(tasks)
+if "hermes_hq_tasks" in sys.modules:   # one copy for this process: ideas.py and the dashboard routes share it
+    tasks = sys.modules["hermes_hq_tasks"]
+else:
+    _tasks_spec = importlib.util.spec_from_file_location("hermes_hq_tasks", Path(__file__).with_name("tasks.py"))
+    tasks = importlib.util.module_from_spec(_tasks_spec)
+    sys.modules["hermes_hq_tasks"] = tasks
+    _tasks_spec.loader.exec_module(tasks)
+if "hermes_hq_ideas" in sys.modules:
+    ideas = sys.modules["hermes_hq_ideas"]
+else:
+    _ideas_spec = importlib.util.spec_from_file_location("hermes_hq_ideas", Path(__file__).with_name("ideas.py"))
+    ideas = importlib.util.module_from_spec(_ideas_spec)
+    sys.modules["hermes_hq_ideas"] = ideas
+    _ideas_spec.loader.exec_module(ideas)
 
 log = logging.getLogger(push.NAME)
 _dispatcher = None
@@ -219,7 +232,7 @@ def _desktop_theme():
 
 
 def pre_tool_call(tool_name="", args=None, **kwargs):
-    verdict = _veto(tool_name, args)
+    verdict = _veto(tool_name, args) or _ideas_veto(tool_name, kwargs.get("session_id"))
     if verdict is None:
         _live_step(tool_name, args, kwargs)
     return verdict
@@ -262,6 +275,18 @@ def _veto(tool_name, args):
         return None
     if message:
         log.warning("hermes-hq-push: blocked a %s call that ran launchctl submit", tool_name)
+        return {"action": "block", "message": message}
+    return None
+
+
+def _ideas_veto(tool_name, session_id):
+    """[ideas] Inside the Task ideas run, only reading (ideas.guard). Never logs the call's arguments."""
+    try:
+        message = ideas.guard(tool_name, session_id, _tasks_store)
+    except Exception:
+        return None
+    if message:
+        log.info("hermes-hq-push: task ideas run asked for %s; refused (it only reads)", tool_name)
         return {"action": "block", "message": message}
     return None
 
@@ -411,6 +436,10 @@ def _tasks_tools(ctx):
         tasks.register_tools(ctx, _tasks_store, _profile, _tasks_notify)
     except Exception:
         log.warning("hermes-hq-push: tasks tools not registered", exc_info=True)
+    try:
+        ideas.register_tool(ctx, _tasks_store, _profile)
+    except Exception:
+        log.warning("hermes-hq-push: task ideas tool not registered", exc_info=True)
 
 
 def _tasks_prep_job():
@@ -420,6 +449,10 @@ def _tasks_prep_job():
         tasks.reconcile_prep_job(_tasks_store(), _profile())
     except Exception:
         log.debug("hermes-hq-push: tasks prep job not reconciled at load", exc_info=True)
+    try:   # [ideas] the same for its "Task ideas" job: here if this is the ideas bot and Ideas is on, else gone
+        ideas.reconcile_job(_tasks_store(), _profile())
+    except Exception:
+        log.debug("hermes-hq-push: task ideas job not reconciled at load", exc_info=True)
 
 
 def register(ctx):
