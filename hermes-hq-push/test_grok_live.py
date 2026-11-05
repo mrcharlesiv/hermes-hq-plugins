@@ -104,34 +104,51 @@ def test_status_reports_subscription_from_a_pool_entry_too(monkeypatch):
     assert result["available"] is True and result["auth"] == "subscription"
 
 
-def test_status_reports_api_key_when_only_an_env_key_is_set(monkeypatch):
+def test_status_an_api_key_alone_is_not_enough(monkeypatch):
+    # 0.9.35: Grok Live is the owner's subscription only; an XAI_API_KEY never opens it.
     home = profile_home("grok-status-key")
     (home / "config.yaml").write_text("voice:\n  grok_live: {}\n")
     (home / ".env").write_text("XAI_API_KEY=sk-test\n")
     monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: True)
+    monkeypatch.setattr(grok_live, "_main_bot_has_xai_login", lambda: False)
     result = grok_live.status("grok-status-key")
-    assert result == {"ok": True, "available": True, "auth": "api_key",
-                      "model": grok_live.DEFAULT_MODEL, "voice": grok_live.DEFAULT_VOICE}
+    assert result == {"ok": True, "available": False, "auth": None, "model": grok_live.DEFAULT_MODEL,
+                      "voice": grok_live.DEFAULT_VOICE, "reason": "no_subscription"}
+
+
+def test_status_says_subscription_even_when_the_bot_also_has_an_api_key(monkeypatch):
+    home = profile_home("grok-status-both")
+    (home / "config.yaml").write_text("voice:\n  grok_live: {}\n")
+    (home / ".env").write_text("XAI_API_KEY=sk-test\n")
+    (home / "auth.json").write_text(json.dumps({"providers": {"xai-oauth": {"tokens": {"access_token": "tok"}}}}))
+    assert grok_live.status("grok-status-both")["auth"] == "subscription"
+
+
+def test_status_a_bot_with_only_an_api_key_borrows_the_main_bots_subscription(monkeypatch):
+    home = profile_home("grok-status-key-borrow")
+    (home / "config.yaml").write_text("voice:\n  grok_live: {}\n")
+    (home / ".env").write_text("XAI_API_KEY=sk-test\n")
+    monkeypatch.setattr(grok_live, "_main_bot_has_xai_login", lambda: True)
+    result = grok_live.status("grok-status-key-borrow")
+    assert result["available"] is True and result["auth"] == "subscription" and result["shared"] is True
 
 
 def test_status_no_credentials(monkeypatch):
     home = profile_home("grok-status-none")
     (home / "config.yaml").write_text("voice:\n  grok_live: {}\n")
-    monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: False)
+    monkeypatch.setattr(grok_live, "_main_bot_has_xai_login", lambda: False)
     assert grok_live.status("grok-status-none") == {
         "ok": True, "available": False, "auth": None, "model": grok_live.DEFAULT_MODEL,
-        "voice": grok_live.DEFAULT_VOICE, "reason": "no_credentials"}
+        "voice": grok_live.DEFAULT_VOICE, "reason": "no_subscription"}
 
 
-def test_status_probe_failure_is_treated_as_no_credentials(monkeypatch):
+def test_status_unreadable_auth_file_is_treated_as_no_subscription(monkeypatch):
     home = profile_home("grok-status-raises")
     (home / "config.yaml").write_text("voice:\n  grok_live: {}\n")
-
-    def boom():
-        raise RuntimeError("disk on fire")
-    monkeypatch.setattr(xai_http, "has_xai_credentials", boom)
+    (home / "auth.json").write_text("{not json")
+    monkeypatch.setattr(grok_live, "_main_bot_has_xai_login", lambda: False)
     result = grok_live.status("grok-status-raises")
-    assert result["available"] is False and result["reason"] == "no_credentials"
+    assert result["available"] is False and result["reason"] == "no_subscription"
 
 
 def test_status_unsupported_hermes_when_xai_http_is_missing(monkeypatch):
@@ -223,7 +240,7 @@ def test_mint_session_retries_once_after_401_with_a_refreshed_oauth_token(monkey
     assert calls[1] == (True, "tok-1", False)  # the rejected bearer is the hint, not whatever select() would pick
 
 
-def test_mint_session_falls_back_to_the_api_key_when_the_refreshed_token_is_still_refused(monkeypatch):
+def test_mint_session_never_falls_back_to_an_api_key_when_the_subscription_is_refused(monkeypatch):
     profile_home("grok-session-fallback")
     (profile_home("grok-session-fallback") / "config.yaml").write_text("voice:\n  grok_live: {}\n")
 
@@ -235,7 +252,7 @@ def test_mint_session_falls_back_to_the_api_key_when_the_refreshed_token_is_stil
         return {"provider": "xai-oauth", "api_key": "tok-1", "base_url": "https://api.x.ai/v1"}
     monkeypatch.setattr(xai_http, "resolve_xai_http_credentials", resolver)
     monkeypatch.setattr(xai_http, "hermes_xai_default_headers", lambda: {})
-    responses = [FakeResponse(401, text="a"), FakeResponse(403, text="b"),
+    responses = [FakeResponse(401, text="a"), FakeResponse(403, text="subscription refused"),
                 FakeResponse(200, {"value": "secret-3", "expires_at": 222})]
     bearers = []
 
@@ -244,9 +261,22 @@ def test_mint_session_falls_back_to_the_api_key_when_the_refreshed_token_is_stil
         return responses.pop(0)
     monkeypatch.setattr(httpx, "post", fake_post)
 
-    result = grok_live.mint_session("grok-session-fallback")
-    assert result["client_secret"] == "secret-3" and result["auth"] == "api_key"
-    assert bearers == ["Bearer tok-1", "Bearer tok-2", "Bearer sk-fallback"]
+    with pytest.raises(grok_live.GrokLiveError) as error:
+        grok_live.mint_session("grok-session-fallback")
+    assert error.value.status_code == 502 and "subscription refused" in error.value.detail
+    assert bearers == ["Bearer tok-1", "Bearer tok-2"]
+
+
+def test_mint_session_refuses_a_chain_that_lands_on_an_api_key(monkeypatch):
+    (profile_home("grok-session-key-only") / "config.yaml").write_text("voice:\n  grok_live: {}\n")
+    monkeypatch.setattr(xai_http, "resolve_xai_http_credentials",
+                        lambda **kw: {"provider": "xai", "api_key": "sk-key", "base_url": "https://api.x.ai/v1"})
+    sent = []
+    monkeypatch.setattr(httpx, "post", lambda *a, **kw: sent.append(a) or FakeResponse(200, {"value": "s"}))
+    with pytest.raises(grok_live.GrokLiveError) as error:
+        grok_live.mint_session("grok-session-key-only")
+    assert error.value.status_code == 503 and error.value.detail == "no_subscription"
+    assert sent == []
 
 
 def test_mint_session_gives_up_when_the_api_key_fallback_is_the_same_token(monkeypatch):
@@ -281,7 +311,7 @@ def test_mint_session_502_passes_xais_body_without_the_bearer(monkeypatch):
     profile_home("grok-session-502")
     (profile_home("grok-session-502") / "config.yaml").write_text("voice:\n  grok_live: {}\n")
     monkeypatch.setattr(xai_http, "resolve_xai_http_credentials",
-                        lambda **kw: {"provider": "xai", "api_key": "sk-secret", "base_url": "https://api.x.ai/v1"})
+                        lambda **kw: {"provider": "xai-oauth", "api_key": "sk-secret", "base_url": "https://api.x.ai/v1"})
     monkeypatch.setattr(xai_http, "hermes_xai_default_headers", lambda: {})
     monkeypatch.setattr(httpx, "post", lambda *a, **kw: FakeResponse(500, text="xAI exploded " + "z" * 400))
 
@@ -300,7 +330,7 @@ def test_mint_session_503_when_there_are_no_credentials_at_all(monkeypatch):
                         lambda **kw: {"provider": "xai", "api_key": "", "base_url": "https://api.x.ai/v1"})
     with pytest.raises(grok_live.GrokLiveError) as error:
         grok_live.mint_session("grok-session-none")
-    assert error.value.status_code == 503 and error.value.detail == "no_credentials"
+    assert error.value.status_code == 503 and error.value.detail == "no_subscription"
 
 
 def test_mint_session_503_when_resolving_credentials_raises(monkeypatch):
@@ -312,7 +342,7 @@ def test_mint_session_503_when_resolving_credentials_raises(monkeypatch):
     monkeypatch.setattr(xai_http, "resolve_xai_http_credentials", boom)
     with pytest.raises(grok_live.GrokLiveError) as error:
         grok_live.mint_session("grok-session-raises")
-    assert error.value.status_code == 503 and error.value.detail == "no_credentials"
+    assert error.value.status_code == 503 and error.value.detail == "no_subscription"
 
 
 def test_mint_session_unsupported_hermes_when_xai_http_is_missing(monkeypatch):
@@ -356,11 +386,11 @@ BASE = "/api/plugins/hermes-hq-push"
 def test_route_status_no_credentials(client, monkeypatch):
     home = profile_home("grok-route-status")
     (home / "config.yaml").write_text("voice:\n  grok_live:\n    model: grok-route\n")
-    monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: False)
+    monkeypatch.setattr(grok_live, "_main_bot_has_xai_login", lambda: False)
     resp = client.get(f"{BASE}/voice/grok-live/status", params={"profile": "grok-route-status"})
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "available": False, "auth": None, "model": "grok-route",
-                           "voice": grok_live.DEFAULT_VOICE, "reason": "no_credentials"}
+                           "voice": grok_live.DEFAULT_VOICE, "reason": "no_subscription"}
 
 
 def test_route_session_503_envelope(client, monkeypatch):
@@ -370,7 +400,7 @@ def test_route_session_503_envelope(client, monkeypatch):
                         lambda **kw: {"provider": "xai", "api_key": "", "base_url": "https://api.x.ai/v1"})
     resp = client.post(f"{BASE}/voice/grok-live/session", params={"profile": "grok-route-503"}, json={})
     assert resp.status_code == 503
-    assert resp.json() == {"ok": False, "detail": "no_credentials"}
+    assert resp.json() == {"ok": False, "detail": "no_subscription"}
 
 
 def test_route_session_success_with_an_empty_body(client, monkeypatch):
@@ -426,7 +456,7 @@ def test_status_borrows_even_when_the_route_gets_no_profile(monkeypatch):
     had = root_auth.read_text() if root_auth.exists() else None
     root_auth.write_text(json.dumps({"credential_pool": {"xai-oauth": [{"access_token": "root-tok"}]}}))
     try:
-        monkeypatch.setattr(xai_http, "has_xai_credentials", lambda: False)
+        monkeypatch.setattr(grok_live, "_own_xai_login", lambda: False)  # scoped to a bot with no login of its own
         result = grok_live.status("")
         assert result["available"] is True and result["shared"] is True
     finally:

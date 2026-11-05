@@ -4,14 +4,12 @@ to xAI's Realtime API directly, so this only mints the short-lived ephemeral tok
 
 Two routes, both behind the dashboard's normal login like everything else in ``dashboard/plugin_api.py``:
 
-- ``GET /voice/grok-live/status`` is a cheap, network-free probe (``tools.xai_http.has_xai_credentials()``) so the
-  app can show whether Grok Live can start at all, and which kind of credential would be used: the owner's xAI
-  subscription (OAuth, ``hermes auth xai``) or a plain ``XAI_API_KEY``.
-- ``POST /voice/grok-live/session`` resolves real credentials (``tools.xai_http.resolve_xai_http_credentials``,
-  the same chain the rest of Hermes's direct xAI calls use: subscription OAuth first, ``XAI_API_KEY`` as the
-  fallback) and asks xAI for a token good for a few minutes. A subscription bearer that's gone stale gets one forced
-  refresh; if xAI still refuses it and an API key exists, that's tried too, so a phone doesn't see a stale-token
-  error the next request would have avoided.
+- ``GET /voice/grok-live/status`` is a cheap, network-free probe (a Grok sign-in in ``auth.json``, the bot's own or
+  the main bot's) so the app can show whether Grok Live can start at all.
+- ``POST /voice/grok-live/session`` resolves real credentials (``tools.xai_http.resolve_xai_http_credentials``)
+  and asks xAI for a token good for a few minutes. Grok Live runs on the owner's Grok subscription only (0.9.35,
+  owner 2026-11-04: "It should be using my subscription"): an ``XAI_API_KEY`` is never used for it, not even as a
+  fallback. A subscription bearer that's gone stale gets one forced refresh; still refused, the phone is told so.
 
 Both routes run under the bot's own profile (``?profile=``, the same scope every other route here uses,
 ``hermes_cli.web_server_profiles._config_profile_scope``) so a second bot's own xAI credentials and
@@ -113,23 +111,15 @@ def _config_section() -> dict:
     return section_of(config if isinstance(config, dict) else {})
 
 
-def _xai_auth_kind() -> str | None:
-    """``"subscription"`` if an xai-oauth token exists in auth.json (``providers.xai-oauth.tokens.access_token``,
-    or any ``credential_pool.xai-oauth`` entry), else ``"api_key"`` if ``XAI_API_KEY`` resolves, else ``None``.
-    Mirrors ``tools.xai_http.has_xai_credentials``'s own checks, split by which one matched; never raises."""
+def _own_xai_login() -> bool:
+    """This bot's own Grok sign-in: an xai-oauth token in its auth.json (``providers.xai-oauth.tokens.access_token``,
+    or any ``credential_pool.xai-oauth`` entry). An ``XAI_API_KEY`` doesn't count: Grok Live is subscription only."""
     try:
         from hermes_constants import get_hermes_home
-        if _oauth_in(get_hermes_home() / "auth.json"):
-            return "subscription"
+        return _oauth_in(get_hermes_home() / "auth.json")
     except Exception:
         log.debug("hermes-hq-push: grok-live oauth probe failed", exc_info=True)
-    try:
-        from agent.secret_scope import get_secret
-        if str(get_secret("XAI_API_KEY", "") or "").strip():
-            return "api_key"
-    except Exception:
-        log.debug("hermes-hq-push: grok-live api key probe failed", exc_info=True)
-    return None
+        return False
 
 
 def _persona() -> str:
@@ -161,23 +151,23 @@ def status(profile: str = "") -> dict:
         section = _config_section()
         model, voice = model_of(section), voice_of(section)
         try:
-            from tools.xai_http import has_xai_credentials
+            from tools.xai_http import resolve_xai_http_credentials  # noqa: F401 — an older Hermes has no xAI calls
         except Exception:
             return {"ok": True, "available": False, "auth": None, "model": model, "voice": voice,
                     "reason": "unsupported_hermes"}
-        if _has_credentials(has_xai_credentials):
-            return {"ok": True, "available": True, "auth": _xai_auth_kind(), "model": model, "voice": voice}
+        if _own_xai_login():
+            return {"ok": True, "available": True, "auth": "subscription", "model": model, "voice": voice}
     # Not ``if profile``: the dashboard may take ``?profile=`` itself and hand the route an empty one while the
     # request already runs under that bot's home. The main bot never gets here (its own probe said yes).
     if _main_bot_has_xai_login():
         return {"ok": True, "available": True, "auth": "subscription", "model": model, "voice": voice, "shared": True}
-    return {"ok": True, "available": False, "auth": None, "model": model, "voice": voice, "reason": "no_credentials"}
+    return {"ok": True, "available": False, "auth": None, "model": model, "voice": voice, "reason": "no_subscription"}
 
 
 def _main_bot_has_xai_login() -> bool:
     """The main bot's Grok sign-in (``auth.json`` at the Hermes root). Hermes's own credential pool already falls
     back to it for a bot without one (``agent/credential_pool.py``, the global-root fallback), so the session route
-    mints with it; only ``has_xai_credentials`` looks at the bot's own file alone. Read by path, not by profile
+    mints with it. Read by path, not by profile
     scope: inside a ``?profile=B`` request an empty or ``default`` scope stays on B."""
     try:
         from hermes_constants import get_default_hermes_root
@@ -201,14 +191,6 @@ def _oauth_in(auth_path) -> bool:
     entries = (pool or {}).get("xai-oauth") if isinstance(pool, dict) else None
     return isinstance(entries, list) and any(
         isinstance(e, dict) and str(e.get("access_token") or "").strip() for e in entries)
-
-
-def _has_credentials(probe) -> bool:
-    try:
-        return bool(probe())
-    except Exception:
-        log.warning("hermes-hq-push: grok-live status probe failed", exc_info=True)
-        return False
 
 
 def _post_client_secret(creds: dict, headers_fn) -> "object":
@@ -246,9 +228,10 @@ def mint_session(profile: str = "") -> dict:
             creds = resolve_xai_http_credentials()
         except Exception:
             log.warning("hermes-hq-push: grok-live credential resolve failed", exc_info=True)
-            raise GrokLiveError(503, "no_credentials") from None
-        if not str(creds.get("api_key") or "").strip():
-            raise GrokLiveError(503, "no_credentials")
+            raise GrokLiveError(503, "no_subscription") from None
+        # Subscription only: a bot whose chain lands on XAI_API_KEY has no Grok sign-in to use.
+        if creds.get("provider") != "xai-oauth" or not str(creds.get("api_key") or "").strip():
+            raise GrokLiveError(503, "no_subscription")
 
         response = _post_client_secret(creds, hermes_xai_default_headers)
         if response.status_code == 401 and creds.get("provider") == "xai-oauth":
@@ -257,17 +240,9 @@ def mint_session(profile: str = "") -> dict:
                 refreshed = resolve_xai_http_credentials(force_refresh=True, api_key_hint=rejected)
             except Exception:
                 refreshed = None
-            if refreshed and str(refreshed.get("api_key") or "").strip():
+            if (refreshed and refreshed.get("provider") == "xai-oauth"
+                    and str(refreshed.get("api_key") or "").strip()):
                 creds = refreshed
-                response = _post_client_secret(creds, hermes_xai_default_headers)
-        if response.status_code in (401, 403):
-            try:
-                fallback = resolve_xai_http_credentials(prefer_api_key=True)
-            except Exception:
-                fallback = None
-            fallback_key = str((fallback or {}).get("api_key") or "").strip()
-            if fallback_key and fallback_key != str(creds.get("api_key") or "").strip():
-                creds = fallback
                 response = _post_client_secret(creds, hermes_xai_default_headers)
 
         if response.status_code >= 400:
@@ -280,7 +255,7 @@ def mint_session(profile: str = "") -> dict:
         if not value:
             raise GrokLiveError(502, f"xAI said {response.status_code}: {_body_text(response)}")
         expires_at = payload.get("expires_at") if isinstance(payload, dict) else None
-        auth = "subscription" if creds.get("provider") == "xai-oauth" else "api_key"
+        auth = "subscription"
         base_url = str(creds.get("base_url") or DEFAULT_BASE_URL)
         return {"ok": True, "client_secret": value, "expires_at": expires_at, "auth": auth,
                 "url": ws_url(base_url, model), "model": model, "voice": voice, "instructions": instructions}
