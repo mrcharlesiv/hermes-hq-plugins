@@ -10,11 +10,12 @@
 <title>{{TITLE}}</title>
 <style>
   /* The app hands the page the person's theme (--card, --foreground, --muted-foreground, --accent, --border); the
-     second value is used anywhere else (a browser, a shared copy). */
+     second value is used anywhere else (a browser, a shared copy). --hq-radius: the look's card corners. Room at the
+     bottom for the app's floating status note. */
   :root {
     --ink: var(--foreground, #1c1c1e); --ink2: var(--muted-foreground, rgba(60,60,67,.75));
     --tint: var(--accent, #0a84ff); --line: var(--border, rgba(60,60,67,.18)); --box: var(--card, #fff);
-    --page: #f2f2f7; --green: #1c8038; --orange: #c75300; --radius: 16px;
+    --page: #f2f2f7; --green: #1c8038; --orange: #c75300; --radius: var(--hq-radius, 16px);
   }
   @media (prefers-color-scheme: dark) {
     :root { --ink: var(--foreground, #f2f2f7); --ink2: var(--muted-foreground, rgba(235,235,245,.7));
@@ -25,7 +26,7 @@
   /* -apple-system-body: the person's own text size (Dynamic Type); every size below is in rem/em. */
   html { font: -apple-system-body; font-family: -apple-system, system-ui, sans-serif; color: var(--ink);
          -webkit-text-size-adjust: 100%; }
-  body { margin: 0; padding: 8px 16px 40px; max-width: 760px; margin-inline: auto; line-height: 1.35; }
+  body { margin: 0; padding: 8px 16px 88px; max-width: 760px; margin-inline: auto; line-height: 1.35; }
   html:not([data-app]) body { background: var(--page); }
   a { color: var(--tint); text-decoration: none; }
   h1 { font-size: 1.65rem; line-height: 1.15; font-weight: 700; margin: .35rem 0 .3rem; letter-spacing: -.01em;
