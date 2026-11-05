@@ -280,13 +280,13 @@ def _veto(tool_name, args):
 
 
 def _ideas_veto(tool_name, session_id):
-    """[ideas] Inside the Task ideas run, only reading (ideas.guard). Never logs the call's arguments."""
+    """[ideas] Inside the Task ideas run, no tasks are added or changed (ideas.guard). Never logs the call's arguments."""
     try:
         message = ideas.guard(tool_name, session_id, _tasks_store)
     except Exception:
         return None
     if message:
-        log.info("hermes-hq-push: task ideas run asked for %s; refused (it only reads)", tool_name)
+        log.info("hermes-hq-push: task ideas run asked for %s; refused (ideas go to the user)", tool_name)
         return {"action": "block", "message": message}
     return None
 

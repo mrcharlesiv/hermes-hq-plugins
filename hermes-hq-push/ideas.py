@@ -5,10 +5,9 @@ activity and stuff it has access to (in a safe way)".
 
 - Off until the user turns it on (Tasks settings ``ideas``): a daily run that reads every chat is theirs to choose.
 - One bot (``ideas_bot``, the default bot unless they pick another) gets one scheduled job, "Task ideas", daily at
-  ``ideas_at`` (``reconcile_job``). Its tool list is short (``JOB_TOOLSETS``: past chats, web search and the task
-  tools; Hermes adds the user's connectors to every job), and ``guard`` (the plugin's pre_tool_call) refuses every
-  call in that run but ``READ_TOOLS`` and connector actions that only read. Nothing the run does can send, write,
-  book, buy or delete, and files on the computer aren't read at all (they can hold keys).
+  ``ideas_at`` (``reconcile_job``), with the tools its other scheduled jobs get (owner 2026-11-05: "It doesn't have
+  to limit to read only tools"). One rule holds in that run (``guard``, the plugin's pre_tool_call): the task tools
+  that add or change tasks are refused, so an idea reaches the list only through Ideas.
 - The run calls ``tasks_ideas(action="context")``: today, the open tasks, the ideas already offered (so none comes
   back) and what the user said in recent chats with every bot (``recent_chats``: clipped, secrets masked). It may
   look up more, then calls ``tasks_ideas(action="suggest", ideas=[...])`` with at most ``ideas_max``.
@@ -43,8 +42,8 @@ else:
 log = logging.getLogger("hermes-hq-push")
 
 JOB_NAME = "Task ideas"
-JOB_TOOLSETS = ["session_search", "web", "x_search", "hq_tasks"]
-READ_TOOLS = frozenset({"session_search", "web_search", "web_extract", "x_search", "tasks_list", "tasks_ideas"})
+# In the Task ideas run these are refused: the run suggests, and the user adds.
+TASK_WRITES = frozenset({"tasks_add", "tasks_update", "tasks_next_prep"})
 WHO = ("me", "together", "bot")
 KEEP_DAYS = 60
 NEW_CAP = 12             # at most this many new ideas wait on the page; the oldest fade first
@@ -63,21 +62,6 @@ SOURCE_MAX = 60
 HELP_MAX = 160
 COLS = ("id", "created_at", "bot", "title", "why", "source", "who", "help", "state", "task_id", "decided_at")
 
-# Connector actions are read-only when the connector says so (MCP readOnlyHint) or their own name reads ("search",
-# "list_events"), and never when the name also writes ("get_or_create", "send", "execute").
-READ_WORDS = frozenset({"list", "get", "search", "fetch", "find", "read", "query", "lookup", "look", "view", "show",
-                        "describe", "retrieve", "count", "status", "info", "history", "browse", "recent"})
-WRITE_WORDS = frozenset({
-    "send", "create", "update", "delete", "remove", "post", "write", "put", "patch", "add", "set", "move", "trash",
-    "archive", "execute", "exec", "run", "book", "buy", "pay", "purchase", "order", "reply", "forward", "share",
-    "upload", "download", "invite", "schedule", "cancel", "publish", "label", "mark", "insert", "append", "clear",
-    "copy", "rename", "modify", "edit", "submit", "approve", "reject", "merge", "close", "draft", "save", "star",
-    "unstar", "mute", "block", "unblock", "subscribe", "unsubscribe", "enable", "disable", "install", "uninstall",
-    "start", "stop", "trigger", "call", "invoke", "transfer", "refund", "charge", "deploy", "sync", "import", "export",
-    "apply", "assign", "complete", "resolve", "react", "comment", "like", "follow", "unfollow", "accept", "decline",
-    "respond", "notify", "manage", "grant", "revoke", "login", "logout", "connect", "disconnect", "restore",
-    "duplicate", "generate", "convert", "tag", "untag", "pin", "unpin", "snooze", "batch", "multi"})
-
 IDEA_RULE = (
     "An idea is a task the user would plausibly want on their list now: a follow-up they promised, something "
     "time-bound coming up, a loose end left in a chat, a chore they mentioned. Fewer is better; none is fine when "
@@ -89,11 +73,11 @@ IDEA_RULE = (
     "any words.")
 
 JOB_PROMPT = (
-    "Find task ideas for the user. First call tasks_ideas with action 'context'. Read it, then look up more only if "
-    "it helps you decide: session_search for an older chat, a connector that only reads (their calendar or email, "
-    "say), or a web search. This run may only read: anything that sends, writes, books, buys or deletes is refused, "
-    "so don't try. Then call tasks_ideas with action 'suggest' and at most the number context gives as max (none "
-    "is fine). End the turn with one short line.")
+    "Find task ideas for the user. First call tasks_ideas with action 'context'. Read it, then look further wherever "
+    "it helps you decide: older chats (session_search), what you remember about them, their files and notes, their "
+    "connectors (calendar, email), the web. You're finding ideas, not doing them: don't start on one, and don't "
+    "send, book, buy or delete anything; the user picks what happens. Then call tasks_ideas with action 'suggest' "
+    "and at most the number context gives as max (none is fine). End the turn with one short line.")
 
 _RUN_ID = re.compile(r"^cron_(.+)_\d{8}_\d{6}$")
 _known_runs: dict[str, bool] = {}
@@ -386,8 +370,7 @@ def ensure_job(at: str) -> str | None:
             from cron.scheduler import create_job_with_scheduler_registration as create
         except Exception:
             create = cron_jobs.create_job
-        job = create(prompt=JOB_PROMPT, schedule=expr, name=JOB_NAME, deliver="local",
-                     enabled_toolsets=list(JOB_TOOLSETS))
+        job = create(prompt=JOB_PROMPT, schedule=expr, name=JOB_NAME, deliver="local")
         log.info("hermes-hq-push: task ideas job created (%s)", expr)
         return (job or {}).get("id")
     updates = {}
@@ -395,8 +378,8 @@ def ensure_job(at: str) -> str | None:
         updates["schedule"] = expr
     if job.get("prompt") != JOB_PROMPT:
         updates["prompt"] = JOB_PROMPT
-    if list(job.get("enabled_toolsets") or []) != JOB_TOOLSETS:
-        updates["enabled_toolsets"] = list(JOB_TOOLSETS)
+    if job.get("enabled_toolsets") is not None:   # a trial build's short list: the bot's usual tools now
+        updates["enabled_toolsets"] = None
     if not job.get("enabled", True):
         updates.update(enabled=True, state="scheduled")
     if updates:
@@ -461,7 +444,7 @@ def run_now(store) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# The guard (pre_tool_call): inside the Task ideas run, only reading.
+# The guard (pre_tool_call): inside the Task ideas run, no tasks are added or changed.
 # ---------------------------------------------------------------------------
 
 def run_job_id(session_id) -> str:
@@ -502,52 +485,13 @@ def in_ideas_run(session_id, store_for: Callable) -> bool:
     return bool(answer)
 
 
-def _words(name: str) -> list[str]:
-    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name)
-    return [w for w in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if w]
-
-
-def reads_by_name(name: str) -> bool:
-    words = _words(name)
-    return bool(words) and not (set(words) & WRITE_WORDS) and bool(set(words) & READ_WORDS)
-
-
-def _connector_reads(tool_name: str) -> bool:
-    """A connector (MCP) action that only reads: never one whose name writes; else the connector's own readOnlyHint,
-    else its name."""
-    raw = tool_name.rsplit("__", 1)[-1]
-    hint = None
-    try:
-        from tools import mcp_tool as core
-        from tools.mcp_tool_schema import mcp_prefixed_tool_name
-        from tools.mcp_tool_scope import _resolve_server_key
-        server = core._mcp_tool_server_names.get(tool_name)
-        if server:
-            for name, read_only in core._tool_read_only_hints.get(_resolve_server_key(server), {}).items():
-                if mcp_prefixed_tool_name(server, name) == tool_name:
-                    raw, hint = name, read_only
-                    break
-    except Exception:
-        pass
-    if set(_words(raw)) & WRITE_WORDS:
-        return False
-    return hint is True or reads_by_name(raw)
-
-
-def allowed(tool_name: str) -> bool:
-    if tool_name in READ_TOOLS:
-        return True
-    return tool_name.startswith("mcp__") and _connector_reads(tool_name)
-
-
 def guard(tool_name: str, session_id, store_for: Callable) -> str | None:
-    """The block message for a call the Task ideas run may not make, else ``None``. Cheap for every other session:
-    only a cron session's id gets as far as a job lookup."""
-    if not tool_name or allowed(tool_name) or not in_ideas_run(session_id, store_for):
+    """The block message for a task tool that adds or changes tasks, called in the Task ideas run, else ``None``.
+    Cheap for every other call: only those tools in a cron session get as far as a job lookup."""
+    if tool_name not in TASK_WRITES or not in_ideas_run(session_id, store_for):
         return None
-    return (f"Refused: the Task ideas run only reads, and {tool_name} isn't a read. Look things up with "
-            "session_search, web_search or a connector action that only reads, then call tasks_ideas with action "
-            "'suggest'.")
+    return (f"Refused: in the Task ideas run, {tool_name} isn't used. Put each idea in tasks_ideas with action "
+            "'suggest'; the user adds the ones they want.")
 
 
 # ---------------------------------------------------------------------------

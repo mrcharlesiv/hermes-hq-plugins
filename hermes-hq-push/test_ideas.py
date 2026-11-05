@@ -290,17 +290,8 @@ def test_recent_chats_stop_at_the_budget_and_skip_a_bot_that_fails(tmp_path, mon
 
 
 # ---------------------------------------------------------------------------
-# The guard: only reading inside the Task ideas run
+# The guard: inside the Task ideas run, no tasks are added or changed
 # ---------------------------------------------------------------------------
-
-def test_connector_names_that_read_and_that_write():
-    for name in ("GMAIL_SEARCH_THREADS", "googlecalendar_events_list", "getRecentEmails", "notion-search",
-                 "SLACK_FETCH_CONVERSATION_HISTORY"):
-        assert ideas.reads_by_name(name), name
-    for name in ("GMAIL_SEND_EMAIL", "COMPOSIO_MULTI_EXECUTE_TOOL", "get_or_create_contact", "createEvent",
-                 "calendar_events_update", "do_thing", ""):
-        assert not ideas.reads_by_name(name), name
-
 
 def test_the_run_id_comes_from_the_cron_session():
     assert ideas.run_job_id("cron_ab12cd34ef56_20261105_073000") == "ab12cd34ef56"
@@ -314,17 +305,19 @@ def test_guard_leaves_every_other_session_alone(tmp_path, monkeypatch):
     assert ideas.guard("send_message", "", lambda: s) is None
 
 
-def test_guard_refuses_anything_but_reading_in_the_ideas_run(tmp_path, monkeypatch):
+def test_guard_refuses_only_task_writes_in_the_ideas_run(tmp_path, monkeypatch):
     s = store(tmp_path)
     monkeypatch.setattr(ideas, "_known_runs", {"ab12cd34ef56": True, "other0000000": False})
     run = "cron_ab12cd34ef56_20261105_073000"
-    for tool in ("session_search", "web_search", "tasks_list", "tasks_ideas", "mcp__mail__GMAIL_SEARCH_THREADS"):
+    # Owner 2026-11-05: "It doesn't have to limit to read only tools."
+    for tool in ("session_search", "web_search", "read_file", "terminal", "memory", "tasks_list", "tasks_ideas",
+                 "mcp__mail__GMAIL_SEARCH_THREADS", "mcp__tools__COMPOSIO_MULTI_EXECUTE_TOOL"):
         assert ideas.guard(tool, run, lambda: s) is None, tool
-    for tool in ("terminal", "write_file", "read_file", "memory", "tasks_add", "tasks_update", "send_message",
-                 "delegate_task", "mcp__mail__GMAIL_SEND_EMAIL", "mcp__tools__COMPOSIO_MULTI_EXECUTE_TOOL"):
+    for tool in ("tasks_add", "tasks_update", "tasks_next_prep"):
         message = ideas.guard(tool, run, lambda: s)
-        assert message and message.startswith("Refused") and tool in message, tool
-    assert ideas.guard("terminal", "cron_other0000000_20261105_073000", lambda: s) is None   # another job
+        assert message and message.startswith("Refused") and tool in message and "suggest" in message, tool
+    assert ideas.guard("tasks_add", "cron_other0000000_20261105_073000", lambda: s) is None   # another job
+    assert ideas.guard("tasks_add", "20261105_073000_abcd", lambda: s) is None                # a chat
 
 
 @needs_cron
@@ -334,19 +327,8 @@ def test_guard_knows_the_ideas_job_by_its_name(tmp_path, monkeypatch):
     with cron_jobs.use_cron_store(tmp_path / "home"):
         job_id = ideas.ensure_job("07:30")
         other = cron_jobs.create_job(prompt="Water the plants", schedule="0 9 * * *", name="Plants")
-        assert ideas.guard("terminal", f"cron_{job_id}_20261105_073000", lambda: s)
-        assert ideas.guard("terminal", f"cron_{other['id']}_20261105_090000", lambda: s) is None
-
-
-def test_connector_read_only_hint_counts_unless_the_name_writes(monkeypatch):
-    pytest.importorskip("tools.mcp_tool")
-    from tools import mcp_tool as core
-    from tools import mcp_tool_scope
-    monkeypatch.setattr(core, "_mcp_tool_server_names", {"mcp__cal__agenda": "cal", "mcp__cal__send_invites": "cal"})
-    monkeypatch.setattr(core, "_tool_read_only_hints", {"cal": {"agenda": True, "send_invites": True}})
-    monkeypatch.setattr(mcp_tool_scope, "_resolve_server_key", lambda server: server)
-    assert ideas.allowed("mcp__cal__agenda")            # no read word, but the connector says it only reads
-    assert not ideas.allowed("mcp__cal__send_invites")  # says read-only, but its name sends
+        assert ideas.guard("tasks_add", f"cron_{job_id}_20261105_073000", lambda: s)
+        assert ideas.guard("tasks_add", f"cron_{other['id']}_20261105_090000", lambda: s) is None
 
 
 # ---------------------------------------------------------------------------
@@ -395,16 +377,20 @@ def test_the_tool_answers_only_inside_the_ideas_run(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 @needs_cron
-def test_the_job_is_daily_at_its_time_with_a_short_tool_list(tmp_path):
+def test_the_job_is_daily_at_its_time_with_the_bots_usual_tools(tmp_path):
     with cron_jobs.use_cron_store(tmp_path):
         job_id = ideas.ensure_job("07:30")
         job = cron_jobs.resolve_job_ref(ideas.JOB_NAME)
         assert job["id"] == job_id and job["schedule"]["expr"] == "30 7 * * *"
-        assert job["enabled_toolsets"] == ideas.JOB_TOOLSETS and job["deliver"] == "local"
-        assert "only read" in job["prompt"] and "tasks_ideas" in job["prompt"]
+        assert job.get("enabled_toolsets") is None and job["deliver"] == "local"
+        assert "only read" not in job["prompt"] and "tasks_ideas" in job["prompt"]
         assert ideas.ensure_job("07:30") == job_id and len(cron_jobs.list_jobs(include_disabled=True)) == 1
         ideas.ensure_job("06:05")
         assert cron_jobs.resolve_job_ref(ideas.JOB_NAME)["schedule"]["expr"] == "5 6 * * *"
+        # A trial build's job kept a short tool list: it gets the bot's usual tools back.
+        cron_jobs.update_job(job_id, {"enabled_toolsets": ["session_search", "web"]})
+        ideas.ensure_job("06:05")
+        assert cron_jobs.resolve_job_ref(ideas.JOB_NAME).get("enabled_toolsets") is None
 
 
 @needs_cron
