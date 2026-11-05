@@ -243,6 +243,13 @@ order, each task remembers its section and its place in it, and Tasks' settings 
 `sort` (smart, due or added). Bots can file a task into one of your sections by name with `tasks_add` and
 `tasks_update`, but they can't make new sections.
 
+Version 0.9.37 makes a task a workspace. A bot adding a task gives it a time ("tomorrow" alone means 9:00) and, when
+the answer will arrive somewhere it can check (an email, a message), takes that part: a `watch` line says what it looks
+out for, and its prep run comes an hour before the task is due (a one-shot "Task check" job), checks first, then says
+what happened or gets your next move ready (a short draft you can send). A task can keep its own chat (`chat`:
+`{profile, session_id}`): the app makes it hidden, so it never shows in the session list, and the bot is told which
+task the chat belongs to on every turn.
+
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.
 

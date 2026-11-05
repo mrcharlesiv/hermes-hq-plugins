@@ -884,3 +884,112 @@ def test_group_and_sort_settings(tmp_path):
     saved = s.put_settings({"group": "sections", "sort": "due"})
     assert saved["group"] == "sections" and saved["sort"] == "due"
     assert s.put_settings({"group": "weird"})["group"] == "sections"
+
+
+# ---------------------------------------------------------------------------
+# 0.9.37: a task is a workspace — what a bot watches for, its run an hour before it's due, the task's own chat
+# ---------------------------------------------------------------------------
+
+def _at(text):
+    from datetime import datetime
+    return datetime.fromisoformat(text).timestamp()
+
+
+def test_watch_and_chat_are_kept_and_watch_rides_the_compact_task(tmp_path):
+    s = store(tmp_path)
+    task = s.create(together(watch="a reply from Sam, by email", prep=True, due="2026-11-05T10:00"),
+                    created_by="cro", source={"kind": "chat", "profile": "cro"})
+    assert task["watch"] == "a reply from Sam, by email" and task["chat"] == {}
+    assert tasks.compact(task)["watch"] == "a reply from Sam, by email"
+    moved = s.update_route(task["id"], task["rev"], {"chat": {"profile": "cro", "session_id": "s_1"}})
+    assert moved["chat"] == {"profile": "cro", "session_id": "s_1"} and s.get(task["id"])["chat"] == moved["chat"]
+    assert s.task_for_chat("s_1")["id"] == task["id"] and s.task_for_chat("s_2") is None
+    half = s.update_route(task["id"], moved["rev"], {"chat": {"profile": "cro"}})
+    assert half["chat"] == {}   # a chat needs both its bot and its session
+
+
+def test_check_at_is_an_hour_before_due_and_eight_for_a_day_alone():
+    assert tasks.check_at({"watch": "x", "due": "2026-11-05T10:00"}) == _at("2026-11-05T09:00")
+    assert tasks.check_at({"watch": "x", "due": "2026-11-05"}) == _at("2026-11-05T08:00")
+    assert tasks.check_at({"watch": "", "due": "2026-11-05T10:00"}) is None
+    assert tasks.check_at({"watch": "x", "due": None}) is None
+
+
+def test_a_watched_task_waits_for_its_run_then_goes_even_in_quiet_hours(tmp_path):
+    early = tasks.Store(tmp_path / "tasks.db", clock=lambda: _at("2026-11-04T20:00"),
+                        local_now=lambda: time.struct_time((2026, 11, 4, 20, 0, 0, 2, 308, 0)))
+    task = early.create(together(watch="her reply", prep=True, due="2026-11-05T08:30"),
+                        created_by="cro", source={})
+    assert early.next_prep("cro") == {"stop": "no prep task for cro is due for its run yet"}
+    assert early.prep_schedule("cro") == (0, _at("2026-11-05T07:30"))
+    later = tasks.Store(tmp_path / "tasks.db", clock=lambda: _at("2026-11-05T07:35"),
+                        local_now=lambda: time.struct_time((2026, 11, 5, 7, 35, 0, 3, 309, 0)))  # quiet till 8
+    handed = later.next_prep("cro")
+    assert handed["id"] == task["id"] and handed["status"] == "working"
+    assert later.prep_schedule("cro") == (1, None)
+
+
+def test_an_unwatched_prep_task_still_goes_at_once_and_waits_out_quiet_hours(tmp_path):
+    s = tasks.Store(tmp_path / "tasks.db", clock=lambda: _at("2026-11-04T23:00"),
+                    local_now=lambda: time.struct_time((2026, 11, 4, 23, 0, 0, 2, 308, 0)))
+    s.create(together(prep=True, due="2026-11-06T10:00"), created_by="cro", source={})
+    s.create(together(title="Watch the inbox", watch="a reply", prep=True, due="2026-11-06T10:00"),
+             created_by="cro", source={})
+    assert s.prep_schedule("cro") == (1, _at("2026-11-06T09:00"))
+    assert "quiet hours" in s.next_prep("cro")["stop"]
+
+
+def test_a_bot_watches_only_its_own_part_of_a_users_task(tmp_path):
+    s = store(tmp_path)
+    task = s.create(me(), created_by="you", source={})
+    with pytest.raises(tasks.TaskError):
+        s.update_bot(task["id"], "cro", watch="a reply")
+    taken = s.update_bot(task["id"], "cro", who="together", watch="a reply", prep=True,
+                         add_steps=[{"title": "Check for a reply, draft a nudge", "who": "bot"},
+                                    {"title": "Follow up", "who": "me"}])
+    assert taken["who"] == "together" and taken["watch"] == "a reply" and taken["prep"] is True
+
+
+def test_a_tasks_own_chat_names_its_task_on_every_turn(tmp_path):
+    s = store(tmp_path)
+    task = s.create(together(due="2026-11-05T10:00", watch="her redlines"), created_by="cro", source={})
+    s.update_route(task["id"], task["rev"], {"chat": {"profile": "cro", "session_id": "s_task"}})
+    noted = [{"role": "user", "content": f"{tasks.MARK} earlier]"}]
+    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="any news?",
+                             conversation_history=noted, session_id="s_task")
+    assert note and "Plan the trip" in note and task["id"] in note and "watching for her redlines" in note
+    elsewhere = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi",
+                                  conversation_history=noted, session_id="s_other")
+    assert elsewhere is None   # an ordinary chat keeps the usual once-in-a-while note
+
+
+def test_the_rules_ask_for_a_time_and_say_when_to_watch():
+    add = tasks.ADD_SCHEMA["description"]
+    assert "rings at 9:00" in add and "watch" in add and "buy milk" in add
+    assert "watch" in tasks.ADD_SCHEMA["parameters"]["properties"]
+    assert "watch" in tasks.UPDATE_SCHEMA["parameters"]["properties"]
+    assert "If the task has watch, check that first" in tasks.PREP_JOB_PROMPT
+
+
+@needs_cron
+def test_a_watched_task_gets_one_task_check_run_and_no_interval_job(tmp_path):
+    from datetime import datetime, timedelta
+    due = (datetime.now() + timedelta(days=2)).replace(hour=10, minute=0, second=0, microsecond=0)
+    s = tasks.Store(tmp_path / "tasks.db")
+    task = s.create(together(watch="her redlines", prep=True, due=due.strftime("%Y-%m-%dT%H:%M")),
+                    created_by="cro", source={})
+    with cron_jobs.use_cron_store(tmp_path):
+        tasks.reconcile_prep_job(s, "cro")
+        assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None   # nothing to work on before then
+        check = cron_jobs.resolve_job_ref(tasks.CHECK_JOB_NAME)
+        assert check is not None and check["schedule"]["kind"] == "once"
+        assert check["schedule"]["display"] == f"once at {(due - timedelta(hours=1)):%Y-%m-%d %H:%M}"
+        later = due + timedelta(days=1)
+        moved = s.update_route(task["id"], task["rev"], {"due": later.strftime("%Y-%m-%dT%H:%M")})
+        tasks.reconcile_prep_job(s, "cro")
+        check = cron_jobs.resolve_job_ref(tasks.CHECK_JOB_NAME)
+        assert check["schedule"]["display"] == f"once at {(later - timedelta(hours=1)):%Y-%m-%d %H:%M}"
+        assert len(cron_jobs.list_jobs(include_disabled=True)) == 1
+        s.update_route(task["id"], moved["rev"], {"status": "done"})
+        tasks.reconcile_prep_job(s, "cro")
+        assert cron_jobs.resolve_job_ref(tasks.CHECK_JOB_NAME) is None

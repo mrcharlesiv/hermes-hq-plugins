@@ -176,7 +176,8 @@ def on_human_input_resolved(**kwargs):
         log.debug("hermes-hq-push input settle hook failed", exc_info=True)
 
 
-def pre_llm_call(platform="", parent_session_id="", user_message=None, conversation_history=None, **kwargs):
+def pre_llm_call(platform="", parent_session_id="", user_message=None, conversation_history=None, session_id="",
+                 **kwargs):
     # Only turns ``hermes serve`` runs: a card asked from a turn the messaging gateway runs in an app chat (another
     # bot's message, a job's hand-off) can't reach the app and comes back undelivered. [tasks] The same restriction
     # keeps the Tasks note out of cron runs and hand-offs: only a conversation with the user adds it.
@@ -193,7 +194,7 @@ def pre_llm_call(platform="", parent_session_id="", user_message=None, conversat
     try:
         note = tasks.context_for(store=_tasks_store(), profile=_profile(), platform=platform,
                                  parent_session_id=parent_session_id, user_message=user_message,
-                                 conversation_history=conversation_history)
+                                 conversation_history=conversation_history, session_id=str(session_id or ""))
         if note:
             notes.append(note)
     except Exception:

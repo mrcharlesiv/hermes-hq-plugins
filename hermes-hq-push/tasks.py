@@ -49,6 +49,9 @@ TITLE_MAX = 200
 STEP_TITLE_MAX = 120
 NOTES_MAX = 4000
 STATUS_NOTE_MAX = 160
+WATCH_MAX = 160
+CHECK_LEAD = 3600  # 0.9.37: a watched task's prep run comes an hour before it's due (a day alone: due at 9:00)
+DAY_ALERT = 9      # a due day with no time rings at 9:00 in the app, so its check comes at 8:00
 NOTE_MAX = 500
 DUE_MAX = 40
 _UNSET = object()  # tasks_update left `due` out (None clears it)
@@ -68,7 +71,8 @@ SECTIONS_CAP = 50
 SECTION_NAME_MAX = 60
 
 COLUMNS = ("id", "rev", "title", "notes", "who", "bot", "status", "status_note", "due", "repeat", "prep",
-           "steps", "made", "source", "created_at", "updated_at", "done_at", "created_by", "log", "section", "position")
+           "steps", "made", "source", "created_at", "updated_at", "done_at", "created_by", "log", "section", "position",
+           "watch", "chat")
 
 
 class TaskError(ValueError):
@@ -323,7 +327,7 @@ def compact(task: dict, sections: dict | None = None) -> dict:
     notes clipped, empty fields left out) — this rides the model's context on every call."""
     out = {"id": task["id"], "title": task["title"], "who": task["who"], "bot": task["bot"],
            "status": task["status"]}
-    for key in ("status_note", "due", "repeat"):
+    for key in ("status_note", "due", "repeat", "watch"):
         if task.get(key):
             out[key] = task[key]
     if task.get("prep"):
@@ -344,9 +348,33 @@ def _row_to_task(row) -> dict:
     task["rev"] = int(task["rev"])
     task["prep"] = bool(task["prep"])
     task["position"] = float(task["position"] or 0)
-    for key in ("steps", "made", "source", "log"):
-        task[key] = json.loads(task[key] or ("[]" if key != "source" else "{}"))
+    task["watch"] = task.get("watch") or ""
+    for key in ("steps", "made", "source", "log", "chat"):
+        task[key] = json.loads(task[key] or ("{}" if key in ("source", "chat") else "[]"))
     return task
+
+
+def _clean_chat(value) -> dict:
+    """The task's own chat (0.9.37): ``{profile, session_id}`` of the hidden session the app opened for it, or ``{}``."""
+    if not isinstance(value, dict):
+        return {}
+    profile, session = _text(value.get("profile"), 64), _text(value.get("session_id"), 200)
+    return {"profile": profile, "session_id": session} if profile and session else {}
+
+
+def check_at(task: dict) -> float | None:
+    """When a watched prep task's run should come (an hour before it's due), as epoch seconds; ``None`` when it
+    isn't watched or has no date. 0.9.37, owner 2026-11-04: "know when to remind me, or something more than just
+    adding it to the list": the bot looks for what it's watching for, and drafts the next move, just before."""
+    if not task.get("watch"):
+        return None
+    parsed = _parse_due(task.get("due"))
+    if parsed is None:
+        return None
+    when, has_time = parsed
+    if not has_time:
+        when = when.replace(hour=DAY_ALERT, minute=0)
+    return when.timestamp() - CHECK_LEAD
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +412,10 @@ class Store:
             have = {row[1] for row in db.execute("pragma table_info(tasks)")}
             if "section" not in have:   # 0.9.36: the user's own sections, and each task's place in its section
                 db.execute("alter table tasks add column section text")
+            if "watch" not in have:   # 0.9.37: what a bot watches for, and the task's own chat
+                db.execute("alter table tasks add column watch text not null default ''")
+            if "chat" not in have:
+                db.execute("alter table tasks add column chat text not null default '{}'")
             if "position" not in have:
                 db.execute("alter table tasks add column position real")
                 for task_id, made in db.execute("select id, created_at from tasks").fetchall():
@@ -459,10 +491,40 @@ class Store:
             return [row[0] for row in db.execute("select distinct bot from tasks where bot is not null and bot != ''")]
 
     def open_prep_count(self, bot: str) -> int:
-        with closing(self._db()) as db:
-            row = db.execute("select count(*) from tasks where bot=? and prep=1 and who in ('bot','together')"
-                             " and status in ('open','working')", (bot,)).fetchone()
-        return row[0] if row else 0
+        return len(self._open_prep(bot))
+
+    def _open_prep(self, bot: str, db=None) -> list[dict]:
+        """``bot``'s open prep tasks, in the order ``next_prep`` hands them out."""
+        def read(db):
+            return [_row_to_task(row) for row in db.execute(
+                f"""select {','.join(COLUMNS)} from tasks where bot=? and prep=1 and who in ('bot','together')
+                and status in ('open','working') order by (status='working'), (due is null), due, created_at""",
+                (bot,))]
+        if db is not None:
+            return read(db)
+        with closing(self._db()) as fresh:
+            return read(fresh)
+
+    def prep_schedule(self, bot: str) -> tuple[int, float | None]:
+        """(how many of ``bot``'s prep tasks can be worked on now, when the next watched one's run is due): the
+        interval job is for the first, the one-shot "Task check" job for the second (0.9.37)."""
+        now, ready, waiting = self.clock(), 0, []
+        for task in self._open_prep(bot):
+            at = check_at(task)
+            if at is not None and at > now:
+                waiting.append(at)
+            else:
+                ready += 1
+        return ready, (min(waiting) if waiting else None)
+
+    def task_for_chat(self, session_id: str) -> dict | None:
+        """The open task whose own chat (0.9.37) is ``session_id``, or ``None``."""
+        if not session_id:
+            return None
+        for task in self.list_all():
+            if task["status"] != "done" and (task.get("chat") or {}).get("session_id") == session_id:
+                return task
+        return None
 
     # -- writing -----------------------------------------------------------------------------------------------
 
@@ -488,6 +550,7 @@ class Store:
             "steps": json.dumps(_clean_steps(fields.get("steps"))), "made": "[]", "source": json.dumps(source),
             "created_at": now, "updated_at": now, "done_at": None, "created_by": created_by, "log": "[]",
             "section": None, "position": self.clock(),
+            "watch": _text(fields.get("watch"), WATCH_MAX), "chat": json.dumps(_clean_chat(fields.get("chat"))),
         }
         with closing(self._write_db()) as db, db:
             row["section"] = self._section_id(db, fields.get("section"))
@@ -513,6 +576,10 @@ class Store:
         for key in ("title", "notes", "who", "bot", "status_note", "due", "repeat"):
             if key in patch:
                 updated[key] = patch[key]
+        if "watch" in patch and patch["watch"] is not None:
+            updated["watch"] = _text(patch["watch"], WATCH_MAX)
+        if "chat" in patch and patch["chat"] is not None:
+            updated["chat"] = _clean_chat(patch["chat"])
         if "section" in patch:
             updated["section"] = patch["section"] or None
         if isinstance(patch.get("position"), (int, float)) and not isinstance(patch.get("position"), bool):
@@ -545,11 +612,13 @@ class Store:
 
     def _write(self, db, task: dict) -> None:
         db.execute("""update tasks set rev=?, title=?, notes=?, who=?, bot=?, status=?, status_note=?, due=?,
-            repeat=?, prep=?, steps=?, made=?, updated_at=?, done_at=?, log=?, section=?, position=? where id=?""",
+            repeat=?, prep=?, steps=?, made=?, updated_at=?, done_at=?, log=?, section=?, position=?, watch=?,
+            chat=? where id=?""",
             (task["rev"], task["title"], task["notes"], task["who"], task["bot"], task["status"],
              task["status_note"], task["due"], task["repeat"], int(task["prep"]), json.dumps(task["steps"]),
              json.dumps(task["made"]), task["updated_at"], task["done_at"], json.dumps(task["log"]),
-             task.get("section"), float(task.get("position") or 0), task["id"]))
+             task.get("section"), float(task.get("position") or 0), task.get("watch") or "",
+             json.dumps(task.get("chat") or {}), task["id"]))
 
     def update_route(self, task_id: str, rev: int, patch: dict, by: str = "you") -> dict:
         """``PATCH /tasks/{id}``: a stale ``rev`` raises ``TaskError(409, {"task": current})``."""
@@ -569,7 +638,7 @@ class Store:
 
     def update_bot(self, task_id: str, profile: str, *, status=None, status_note=None, done_steps=None,
                   add_steps=None, made=None, note=None, who=None, prep=None, due=_UNSET,
-                  section=_UNSET) -> dict:
+                  section=_UNSET, watch=None) -> dict:
         """``tasks_update``: no ``rev`` (the tool contract has none — the bot always applies to the current
         task). Enforces docs/tasks.md's rules in code: a bot may only mark ``done`` a task it owns alone
         (``who == "bot"``), and may not change a ``who == "me"`` task except to add ``note`` — or to take a part
@@ -578,7 +647,7 @@ class Store:
         ``due`` (already resolved; ``None`` clears it) only on a task this bot added or owns: Hermes set the
         owner's first task for tomorrow and then couldn't put it right (2026-11-04)."""
         changing = (status is not None or status_note is not None or done_steps or add_steps or made
-                    or prep is not None)
+                    or prep is not None or watch is not None)
         with closing(self._write_db()) as db, db:
             row = db.execute(f"select {','.join(COLUMNS)} from tasks where id=?", (task_id,)).fetchone()
             if row is None:
@@ -623,6 +692,8 @@ class Store:
                 patch["prep"] = bool(prep) and (patch.get("who") or task["who"]) in ("bot", "together")
             if due is not _UNSET:
                 patch["due"] = due
+            if watch is not None:
+                patch["watch"] = watch
             if section is not _UNSET:   # filing a task is never "changing" it: fine on the user's own too
                 patch["section"] = self._section_id(db, section)
             updated = self._merge(task, patch, profile, note=note or ("took a part" if taking_part else None))
@@ -771,18 +842,26 @@ class Store:
         today = self._today()
         with closing(self._write_db()) as db, db:
             asked = self._take_start_now(db, profile)
+            now = self.clock()
+            # A watched task waits for its run an hour before it's due (0.9.37); that time is the user's, so quiet
+            # hours don't hold it. Everything else goes as before: quiet hours stop it, unless asked to start now.
+            ready, candidates = [], self._open_prep(profile, db)
+            for candidate in candidates:
+                at = check_at(candidate)
+                if candidate["id"] == asked or at is None or at <= now:
+                    ready.append((candidate["id"] != asked, at is None, candidate))
             if not asked and self._quiet_now(settings):
-                return {"stop": f"it's quiet hours ({settings['quiet_start']}–{settings['quiet_end']})"}
+                ready = [entry for entry in ready if not entry[1]]
+                if not ready:
+                    return {"stop": f"it's quiet hours ({settings['quiet_start']}–{settings['quiet_end']})"}
             row = db.execute("select count from prep_runs where day=?", (today,)).fetchone()
             if (row[0] if row else 0) >= settings["prep_per_day"]:
                 return {"stop": f"today's prep limit ({settings['prep_per_day']} runs) is reached"}
-            picked = db.execute(f"""select {','.join(COLUMNS)} from tasks where bot=? and prep=1
-                and who in ('bot','together') and status in ('open','working')
-                order by (id=?) desc, (status='working'), (due is null), due, created_at limit 1""",
-                (profile, asked or "")).fetchone()
-            if picked is None:
+            if not ready:
+                if candidates:
+                    return {"stop": f"no prep task for {profile} is due for its run yet"}
                 return {"stop": f"no open prep tasks for {profile}"}
-            task = _row_to_task(picked)
+            task = min(ready, key=lambda entry: entry[0])[2]
             db.execute("insert into prep_runs (day, count) values (?, 1) on conflict(day) do update"
                        " set count = count + 1", (today,))
             if task["status"] != "working":
@@ -811,8 +890,13 @@ PREP_JOB_PROMPT = (
     "a together task. When you have something (or need the user), call tasks_update: list anything you made with "
     "made (a note in Markdown, one line per item), tick off your own finished steps with done_steps, then set status to 'ready' with one short status_note "
     "for what's ready, or to 'needs_you' with the question in status_note if it needs the user to decide, pay, "
-    "approve or act instead of you finishing it. Then call tasks_next_prep again, and keep going until it says stop."
+    "approve or act instead of you finishing it. If the task has watch, check that first, where it says (their "
+    "email, a message, an item you keep): if it already happened, say what happened in status_note (\"Sam replied "
+    "at 3:12pm with the signed contract\") with what they need in made; if not, get their next move ready (a short draft they "
+    "can send) and say so (\"No reply yet; a nudge is drafted\"). Then call tasks_next_prep again, and keep going "
+    "until it says stop."
 )
+CHECK_JOB_NAME = "Task check"   # 0.9.37: one run at the time the next watched task's check is due
 
 
 def ensure_prep_job(hours) -> None:
@@ -897,16 +981,54 @@ def bot_home(profile: str):
         return None
 
 
+def ensure_check_job(at: float) -> None:
+    """"Task check": one run at ``at`` (epoch seconds, minute precision) for the bot whose process this runs in."""
+    try:
+        from cron import jobs as cron_jobs
+    except Exception:
+        return
+    when = time.strftime("%Y-%m-%dT%H:%M", time.localtime(at))
+    try:
+        job = cron_jobs.resolve_job_ref(CHECK_JOB_NAME)
+        if job is None:
+            try:
+                from cron.scheduler import create_job_with_scheduler_registration as create
+            except Exception:
+                create = cron_jobs.create_job
+            create(prompt=PREP_JOB_PROMPT, schedule=when, name=CHECK_JOB_NAME, deliver="local")
+            log.info("hermes-hq-push: tasks check job set for %s", when)
+            return
+        display = (job.get("schedule") or {}).get("display") or ""
+        if display != f"once at {when.replace('T', ' ')}" or not job.get("enabled", True):
+            cron_jobs.update_job(job["id"], {"schedule": when, "enabled": True, "state": "scheduled"})
+    except Exception:
+        log.debug("hermes-hq-push: tasks check job not ensured", exc_info=True)
+
+
+def remove_check_job() -> None:
+    try:
+        from cron import jobs as cron_jobs
+        cron_jobs.remove_job(CHECK_JOB_NAME)
+    except Exception:
+        log.debug("hermes-hq-push: tasks check job not removed", exc_info=True)
+
+
 def reconcile_prep_job(store: Store, profile: str, home=None) -> None:
-    """Ensure or remove ``profile``'s job to match whether it still has open prep tasks right now, in ``home``'s
-    schedule (``bot_home(profile)``; ``None`` = the active one). Best-effort: called after a change that could
-    alter the answer; never raises."""
+    """Ensure or remove ``profile``'s jobs to match its open prep tasks, in ``home``'s schedule (``bot_home(profile)``;
+    ``None`` = the active one): "Task prep" every few hours while some can be worked on now, and "Task check" once,
+    at the next watched task's run (0.9.37). Best-effort: called after a change that could alter the answer; never
+    raises."""
     try:
         with _cron_home(home):
-            if store.enabled() and store.open_prep_count(profile) > 0:
+            ready, next_check = store.prep_schedule(profile) if store.enabled() else (0, None)
+            if ready > 0:
                 ensure_prep_job(store.get_settings().get("prep_every_hours", DEFAULT_SETTINGS["prep_every_hours"]))
             else:
                 remove_prep_job()
+            if next_check is not None:
+                ensure_check_job(next_check)
+            else:
+                remove_check_job()
     except Exception:
         log.debug("hermes-hq-push: tasks prep job not reconciled", exc_info=True)
 
@@ -1008,17 +1130,35 @@ def _recently_noted(history) -> bool:
     return any(MARK in _message_text(m) for m in list(history or [])[-RESEND_AFTER:])
 
 
+def task_chat_line(task: dict) -> str:
+    """0.9.37: a task's own chat (the app's Task page opens it) says which task it is on every turn, so the bot
+    keeps that task current instead of the person repeating it."""
+    facts = [f"id {task['id']}", f"who {task['who']}", f"status {task['status']}"]
+    if task.get("due"):
+        facts.append(f"due {task['due']}")
+    if task.get("watch"):
+        facts.append(f"watching for {task['watch'][:80]}")
+    return (f"This chat is the Task \"{task['title'][:80]}\" ({', '.join(facts)}). Work on it here, and keep it "
+            "current with tasks_update as things happen (your steps, what you made, ready or needs_you).")
+
+
 def context_for(*, store: Store, profile: str, platform: str = "", parent_session_id: str = "",
-                user_message=None, conversation_history=None) -> str | None:
+                user_message=None, conversation_history=None, session_id: str = "") -> str | None:
     """The note for this turn, or ``None``: only in a turn the person typed in an app chat (never a cron run, a
     hand-off or another bot's message), at most once while it's still in the last ``RESEND_AFTER`` messages, and
-    only when there is something to say (open shared tasks, or a capture line that isn't "off")."""
+    only when there is something to say (open shared tasks, or a capture line that isn't "off"). A task's own chat
+    (0.9.37) names its task on every turn."""
     if platform not in ("desktop", "tui") or parent_session_id or not isinstance(user_message, str):
         return None
-    if _not_typed(user_message) or _recently_noted(conversation_history):
+    if _not_typed(user_message):
         return None
     settings = store.get_settings()
     if settings.get("enabled", True) is False:
+        return None
+    task = store.task_for_chat(session_id)
+    if task is not None:
+        return f"{MARK} {today_line(store.clock())} {task_chat_line(task)}]"
+    if _recently_noted(conversation_history):
         return None
     mine = [t for t in store.list_all() if t["bot"] == profile and t["status"] != "done"]
     mine.sort(key=lambda t: t["created_at"])
@@ -1069,6 +1209,19 @@ MADE_ITEMS = {"type": "object", "properties": {
 SECTION = {"type": "string", "description": "One of the user's own sections on the Tasks page, by name (tasks_list "
            "lists them), when they ask for it to go there; empty takes it out of its section. Sections are theirs: "
            "you can't make new ones."}
+WATCH = {"type": "string", "description": "What you'll look out for that would answer or finish this, and where you'd "
+         "see it, only if you can check it yourself, starting lowercase: \"a reply from Sam with the signed "
+         "contract, by email\". Needs who 'bot' or 'together' with prep=true: your prep run comes an hour before it's due, checks this first, then gets "
+         "their next move ready."}
+# 0.9.37, owner 2026-11-04 (a "remind me to follow up with someone" became a bare to-do with no alert): "thread the
+# needle on proactivity and then simplicity". Quiet work that only takes things off their plate, decided from
+# what the bot can see, never more questions: a time, what to watch for, the next move ready.
+WORKSPACE_RULE = ("Make each task worth having, without asking more: give it a time (\"tomorrow\" alone rings at "
+                  "9:00; pick the time that fits and say it). If its answer will arrive somewhere you can check "
+                  "(an email, a message, something you track), or its next move is a message you could draft, take "
+                  "that part: who='together', your step first (\"Check for Sam's reply, draft a nudge\"), "
+                  "theirs after, prep=true and watch. Tell them in one line (\"Tomorrow 10am. If Sam replies "
+                  "first I'll tell you; a nudge will be ready.\"). A plain errand (\"buy milk\") just gets a time.")
 START_NOW = {"type": "boolean", "description": "Start your step now as a background Task prep run (needs prep=true "
              "and your own step): for work too long to do in this reply. It alerts the user when it's ready."}
 
@@ -1080,13 +1233,15 @@ ADD_SCHEMA = _schema(
     "theirs (who 'me'), and start yours: do it in this reply if it's quick, or set prep=true and start_now=true "
     "if it's long. who: 'me' (their own to-do; you don't touch it except to add a note, or to take a part of it "
     "with tasks_update), 'bot' (you'll do all of it), 'together' (steps split between you). If it's already on "
-    "the list you get that task back as 'already' and nothing is added: update it instead. "
+    "the list you get that task back as 'already' and nothing is added: update it instead. " + WORKSPACE_RULE + " "
     + PREP_RULE + " Returns the task, the due date in words (say it the same way to the user), and how to undo it.",
     {"title": {"type": "string", "description": "Required."},
      "who": {"type": "string", "enum": list(WHO), "description": "Default 'me'."},
      "notes": {"type": "string"},
-     "due": {"type": "string", "description": "Best as words: \"today 17:00\", \"tomorrow\", \"friday 9am\"; or "
-             "YYYY-MM-DD / YYYY-MM-DDTHH:MM in the user's local time."},
+     "due": {"type": "string", "description": "Best as words with a time: \"today 17:00\", \"tomorrow 10am\", "
+             "\"friday 9am\"; or YYYY-MM-DD / YYYY-MM-DDTHH:MM in the user's local time. The app's reminder rings "
+             "then (a day alone: 9:00)."},
+     "watch": WATCH,
      "steps": {"type": "array", "description": "who='together': each step is yours or the user's.",
                "items": {"type": "object", "properties": {
                    "title": {"type": "string", "description": STEP_TITLE},
@@ -1125,6 +1280,7 @@ UPDATE_SCHEMA = _schema(
              "steps in add_steps)."},
      "prep": {"type": "boolean", "description": "Get your part ready ahead of time."},
      "due": {"type": "string", "description": "Only on a task you added or own. " + DUE_HELP},
+     "watch": WATCH,
      "start_now": START_NOW,
      "section": SECTION},
     ("id",))
@@ -1202,7 +1358,8 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
                                     done_steps=args.get("done_steps"), add_steps=args.get("add_steps"),
                                     made=args.get("made"), note=args.get("note"), who=args.get("who"),
                                     prep=args.get("prep"), due=due,
-                                    section=args["section"] if "section" in args else _UNSET)
+                                    section=args["section"] if "section" in args else _UNSET,
+                                    watch=args.get("watch"))
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
         out = dict(task)

@@ -422,6 +422,12 @@ class SourceIn(BaseModel):
     reminder_id: str = Field(default="", max_length=200)
 
 
+class ChatIn(BaseModel):
+    """The task's own chat (0.9.37): the hidden session the app's Task page opened for it."""
+    profile: str = Field(max_length=64)
+    session_id: str = Field(max_length=200)
+
+
 class TaskIn(BaseModel):
     title: str = Field(max_length=200)
     notes: str = Field(default="", max_length=4000)
@@ -434,6 +440,8 @@ class TaskIn(BaseModel):
     source: SourceIn | None = None
     section: str | None = Field(default=None, max_length=64)
     position: float | None = None
+    watch: str = Field(default="", max_length=160)
+    chat: ChatIn | None = None
 
 
 class TaskPatchIn(BaseModel):
@@ -451,6 +459,8 @@ class TaskPatchIn(BaseModel):
     made: list[MadeIn] | None = None
     section: str | None = Field(default=None, max_length=64)
     position: float | None = None
+    watch: str | None = Field(default=None, max_length=160)
+    chat: ChatIn | None = None
 
 
 class SettingsIn(BaseModel):
@@ -497,9 +507,13 @@ def tasks_patch(task_id: str, body: TaskPatchIn):
     """A stale ``rev`` is a 409 carrying the current task: ``{"task": <current>}``."""
     patch = body.model_dump(exclude_unset=True, exclude={"rev"})
     try:
-        return _tasks_store().update_route(task_id, body.rev, patch, by="you")
+        updated = _tasks_store().update_route(task_id, body.rev, patch, by="you")
     except tasks.TaskError as error:
         raise HTTPException(error.status_code, error.detail) from None
+    if updated.get("watch") and updated.get("bot") and {"due", "status", "who", "prep"} & set(patch):
+        # 0.9.37: a watched task's check runs an hour before it's due, so a new date (or finishing it) moves it.
+        tasks.reconcile_prep_job(_tasks_store(), updated["bot"], tasks.bot_home(updated["bot"]))
+    return updated
 
 
 @router.delete("/tasks/{task_id}")
