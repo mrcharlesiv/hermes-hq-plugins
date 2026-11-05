@@ -1099,3 +1099,25 @@ def test_page_route_serves_html(client):
     assert client.get(f"{BASE}/tasks/nope/page").status_code == 404
     assert client.get(f"{BASE}/tasks").json()["pages"] is True
     assert client.get(f"{BASE}/status").json()["task_pages"] is True
+
+
+# 0.9.40: after an update that adds a field to the list answer, an app polling `?since=` heard "unchanged" and kept its
+# answer from before (the Ideas page went on asking for the update). A new list shape moves the rev once.
+def test_a_new_list_shape_moves_the_rev_once(tmp_path):
+    s = store(tmp_path)
+    s.create({"title": "Water the plants"}, created_by="me", source={})
+    rev = s.rev()
+    import sqlite3
+    with sqlite3.connect(tmp_path / "tasks.db") as db:   # as 0.9.39 left it: no shape yet
+        db.execute("delete from meta where key='shape'")
+    again = store(tmp_path)
+    assert again.rev() == rev + 1
+    answer = again.list_response(since=rev)
+    assert not answer.get("unchanged") and "ideas" in answer
+    assert store(tmp_path).rev() == rev + 1   # once: the next start finds the shape it knows
+
+
+def test_the_reported_version_is_the_manifests():
+    import yaml
+    manifest = yaml.safe_load((HERE / "plugin.yaml").read_text())
+    assert push.PLUGIN_VERSION == manifest["version"]

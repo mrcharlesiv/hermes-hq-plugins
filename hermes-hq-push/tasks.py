@@ -65,6 +65,10 @@ CELL_MAX = 200
 NUMBERS_CAP = 6
 DUE_MAX = 40
 _UNSET = object()  # tasks_update left `due` out (None clears it)
+# The list answer's shape: raise it when the answer gains a field. An app polling `?since=<rev>` hears "unchanged" until
+# the rev moves, so it would keep an answer from before the field (0.9.40: after an update to 0.9.39 the app never saw
+# `ideas` and kept asking for the update). A new shape moves the rev once, and every app reads the whole list again.
+LIST_SHAPE = "2"   # 2: `ideas` (0.9.39)
 IDEAS_FRESH_DAYS = 7   # 0.9.39: an idea nobody adds or dismisses fades from the Ideas page after a week
 START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
 
@@ -504,7 +508,8 @@ class Store:
                     decided_at text);
                 create index if not exists task_ideas_state on task_ideas (state, created_at);
             """)
-            if db.execute("select 1 from meta where key='rev'").fetchone() is None:
+            fresh = db.execute("select 1 from meta where key='rev'").fetchone() is None
+            if fresh:
                 db.execute("insert into meta (key, value) values ('rev', '0')")
             have = {row[1] for row in db.execute("pragma table_info(tasks)")}
             if "section" not in have:   # 0.9.36: the user's own sections, and each task's place in its section
@@ -519,6 +524,12 @@ class Store:
                 db.execute("alter table tasks add column position real")
                 for task_id, made in db.execute("select id, created_at from tasks").fetchall():
                     db.execute("update tasks set position=? where id=?", (_seconds(made), task_id))
+            shape = db.execute("select value from meta where key='shape'").fetchone()
+            if shape is None or shape[0] != LIST_SHAPE:
+                db.execute("insert into meta (key, value) values ('shape', ?) on conflict(key) do update"
+                           " set value=excluded.value", (LIST_SHAPE,))
+                if not fresh:   # a new list has no app holding an older answer
+                    self._bump_rev(db)
 
     def _db(self) -> sqlite3.Connection:
         # isolation_level=None (autocommit): no implicit BEGIN before a write, so every write path below opens
