@@ -865,7 +865,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.40"   # keep in step with plugin.yaml (test_version.py)
+PLUGIN_VERSION = "0.9.41"   # keep in step with plugin.yaml (test_version.py)
 
 
 class Relay:
@@ -1067,6 +1067,15 @@ _SILENT_STAND_IN = re.compile(
     r"(?:response|reply)|no (?:response|reply) (?:is )?(?:needed|required|necessary)|nothing (?:further |more )?to "
     r"(?:report|add|say))\b", re.IGNORECASE)
 _CLOSERS = {"[": "]", "(": ")"}
+# A group chat's member answers "(pass)" when it has nothing to add (the app's room prompt asks for exactly that, and
+# the app shows no line for it). Its turn runs in a hidden session the app titles "Group: <room> · <thread>", so a
+# pass there alerts nothing either; the app alerts a member's real room reply itself.
+_ROOM_PASS = re.compile(r"\(?\s*pass\s*\)?\.?", re.IGNORECASE)
+ROOM_TITLE_PREFIX = "Group: "
+
+
+def room_pass(content) -> bool:
+    return bool(_ROOM_PASS.fullmatch(str(content or "").strip()))
 
 
 def silent_reply(content) -> bool:
@@ -1131,6 +1140,7 @@ class ReplyWatcher:
                         continue
                     since = self.seen[path]
                     rows, endings, unended = [], [], []
+                    rooms: set[str] = set()
                     if newest > since:
                         rows = db.execute(_REPLIES_SQL, (since, newest)).fetchall()
                         endings = db.execute(_ENDINGS_SQL, (since, newest)).fetchall()
@@ -1141,6 +1151,15 @@ class ReplyWatcher:
                                            f" JOIN sessions s ON s.id = m.session_id WHERE m.id IN ({marks})"
                                            " AND m.finish_reason = 'stop' ORDER BY m.id", tuple(pending)).fetchall()
                     self.seen[path] = max(since, newest)
+                    passes = sorted({session for _, session, content, _ in rows if room_pass(content)})
+                    if passes:
+                        marks = ",".join("?" * len(passes))
+                        try:  # a database without titles has no rooms: its passes alert as before
+                            rooms = {sid for (sid,) in db.execute(
+                                f"SELECT id FROM sessions WHERE id IN ({marks}) AND substr(COALESCE(title, ''), 1, ?) = ?",
+                                (*passes, len(ROOM_TITLE_PREFIX), ROOM_TITLE_PREFIX))}
+                        except sqlite3.Error:
+                            rooms = set()
             except sqlite3.Error:
                 continue  # busy, or not a Hermes database yet: next pass
             for row_id, *_ in rows:
@@ -1163,7 +1182,7 @@ class ReplyWatcher:
                         log.debug(f"{NAME} live end skipped", exc_info=True)
             last: dict[str, tuple[str, str]] = {}
             for _, session, content, source in sorted(rows):
-                if silent_reply(content):
+                if silent_reply(content) or (session in rooms and room_pass(content)):
                     continue
                 last[session] = (content, source)  # a burst of turns in one chat: its last reply
             for session, (content, source) in last.items():

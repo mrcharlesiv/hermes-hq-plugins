@@ -286,7 +286,7 @@ def live_body(**extra):
 def test_routes(client, tmp_path, monkeypatch):
     status = client.get(f"{BASE}/status").json()
     assert status["liveSteps"] is True and status["liveEnds"] is True and status["liveQuick"] is True
-    assert status["pluginVersion"] == "0.9.40"
+    assert status["pluginVersion"] == "0.9.41"
     # Not registered for notifications yet.
     missing = client.put(f"{BASE}/live/{PHONE}/{ACTIVITY}", json=live_body())
     assert missing.status_code == 404 and "detail" in missing.json()
@@ -631,6 +631,34 @@ def test_reply_watcher_ends_the_turn_of_every_finished_reply(tmp_path):
     watcher.poll()
     assert ended == [("cro", "s1"), ("cro", "s2")]  # a silent reply still ends its turn
     assert [a.session for a in alerts] == ["s1"]
+
+
+def test_reply_watcher_skips_a_group_members_pass(tmp_path):
+    """0.9.41: a group chat's member that passes ("(pass)" in its hidden "Group: …" session) alerts nothing; the same
+    words in an ordinary chat, and a member's real room reply, still alert. Its turn still ends."""
+    path = tmp_path / "hermes" / "profiles" / "inbox" / "state.db"
+    state_db(path, [("room", "tui", None, None), ("room2", "tui", None, None), ("chat", "tui", None, None)])
+    with sqlite3.connect(path) as db:
+        db.execute("alter table sessions add column title text")
+        db.executemany("update sessions set title = ? where id = ?",
+                       [("Group: rm1 · t1", "room"), ("Group: rm1 · t2", "room2"), ("Inbox", "chat")])
+    ended, alerts = [], []
+    watcher = push.ReplyWatcher(tmp_path / "hermes", alerts.append, sender=lambda p: p,
+                                turn_ended=lambda p, s: ended.append((p, s)))
+    watcher.poll()
+    with sqlite3.connect(path) as db:
+        db.executemany("insert into messages (session_id, role, content, finish_reason) values (?,?,?,?)",
+                       [("room", "assistant", " (Pass). ", "stop"), ("room2", "assistant", "Mail is clear.", "stop"),
+                        ("chat", "assistant", "(pass)", "stop")])
+    watcher.poll()
+    assert [a.session for a in alerts] == ["room2", "chat"]
+    assert ("inbox", "room") in ended
+
+
+@pytest.mark.parametrize("text, passes", [("(pass)", True), ("pass", True), ("( PASS ).", True), ("I pass on this", False),
+                                          ("(pass) but also", False), ("", False), ("passing", False)])
+def test_room_pass_words(text, passes):
+    assert push.room_pass(text) is passes
 
 
 def test_plugin_hooks(monkeypatch):
