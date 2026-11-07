@@ -301,3 +301,131 @@ def test_the_hook_blocks_it_before_hermes_asks(monkeypatch):
     blocked = addon.pre_tool_call(tool_name="browser_vault", args={"action": "save_login"})
     assert blocked and blocked["action"] == "block" and "origin" in blocked["message"]
     assert addon.pre_tool_call(tool_name="browser_vault", args={"action": "save_login", "origin": "https://a.example"}) is None
+
+
+# 0.9.44: Hermes's vault ignored the site the bot named and asked for the first open tab with a password field, on any
+# site (owner, 2026-11-07: on Walmart's email-first sign-in, the card asked for bookings.omnihotels.com).
+
+class _Tabs:
+    """Hermes's vault module as the add-on sees it (tools/browser_vault_tool.py before it took ``origin``): open tabs
+    in CDP order as (url origin, has the form); ``_focus_bound_origin`` focuses the first match, as Hermes's does."""
+
+    def __init__(self, tabs, page_backend=False):
+        self.tabs, self.focused, self.calls = tabs, None, []
+        self._backend = page_backend
+
+    def browser_vault_save_login(self, label="", task_id=None):
+        self._focus_bound_origin(task_id or "default", "", "login")
+        return self._current_page_origin(task_id or "default")
+
+    def _focus_bound_origin(self, task_id, origin, kind):
+        self.calls.append((origin, kind))
+        if self._backend:
+            return None
+        hits = [o for o, form in self.tabs if (not origin or o == origin) and (form or kind not in ("login", "otp"))]
+        if not hits:
+            return None
+        self.focused = hits[0]
+        return origin or hits[0]
+
+    def _current_page_origin(self, task_id):
+        return self._backend or self.focused
+
+    def _page_backend(self, task_id):
+        return object() if self._backend else None
+
+
+OMNI, WALMART = "https://bookings.omnihotels.com", "https://identity.walmart.com"
+
+
+@pytest.fixture()
+def tabs(logins, monkeypatch):
+    def make(open_tabs, page_backend=False):
+        fake = _Tabs(open_tabs, page_backend)
+        monkeypatch.setattr(logins, "_vault", lambda: fake)
+        monkeypatch.setattr(logins, "_named", {})
+        return fake
+    return make
+
+
+def _save(logins, fake, args, task_id="t1"):
+    logins.remember_site("browser_vault", args, task_id)
+    return fake.browser_vault_save_login(task_id=task_id)
+
+
+def test_the_named_site_is_the_tab_asked_for_not_an_old_login_tab_listed_first(logins, tabs):
+    fake = tabs([(OMNI, True), (WALMART, False)])   # Walmart asks for the email first: no password field yet
+    assert fake.browser_vault_save_login(task_id="t1") == OMNI, "Hermes alone: the first tab with a password field"
+    asked = _save(logins, fake, {"action": "save_login", "origin": "https://identity.walmart.com/account/login?x=1"})
+    assert asked == WALMART
+    assert fake.calls[-2:] == [(WALMART, "login"), (WALMART, "")], "the form first, then any tab on the site"
+
+
+def test_a_named_site_with_no_open_tab_asks_nothing(logins, tabs):
+    fake = tabs([(OMNI, True)])
+    with pytest.raises(logins.NamedSiteNotOpen, match="identity.walmart.com"):
+        _save(logins, fake, {"action": "save_login", "origin": WALMART})
+    assert fake.focused is None
+
+
+def test_a_bare_host_or_url_names_the_site(logins, tabs):
+    fake = tabs([(OMNI, True), ("https://app.instantly.ai", True)])
+    assert _save(logins, fake, {"action": "save_login", "url": "app.instantly.ai"}) == "https://app.instantly.ai"
+
+
+def test_the_name_is_used_once_by_its_own_task_and_goes_stale(logins, tabs, monkeypatch):
+    fake = tabs([(OMNI, True), (WALMART, True)])
+    logins.remember_site("browser_vault", {"action": "save_login", "origin": WALMART}, "t1")
+    assert fake.browser_vault_save_login(task_id="t2") == OMNI, "another task's call is Hermes's own pick"
+    assert fake.browser_vault_save_login(task_id="t1") == WALMART
+    assert fake.browser_vault_save_login(task_id="t1") == OMNI, "used once"
+    logins.remember_site("browser_vault", {"action": "save_login", "origin": WALMART}, "t1")
+    clock = logins.time.monotonic() + logins.NAMED_TTL + 1
+    monkeypatch.setattr(logins.time, "monotonic", lambda: clock)
+    assert fake.browser_vault_save_login(task_id="t1") == OMNI, "a name kept past its time is dropped"
+
+
+def test_a_bound_origin_check_and_other_actions_pass_straight_through(logins, tabs):
+    fake = tabs([(OMNI, True), (WALMART, True)])
+    for action in ("fill", "list", "unlock"):
+        assert logins.remember_site("browser_vault", {"action": action, "origin": WALMART}, "t1") is None
+    logins.remember_site("browser_vault", {"action": "enter_code", "handle": "v1", "origin": WALMART}, "t1")
+    assert fake._focus_bound_origin("t1", OMNI, "otp") == OMNI, "a saved login's own origin is never replaced"
+    assert logins.remember_site("browser_navigate", {"action": "save_login", "origin": WALMART}, "t1") is None
+
+
+def test_a_page_backend_must_already_be_on_the_named_site(logins, tabs):
+    fake = tabs([], page_backend=WALMART)
+    assert _save(logins, fake, {"action": "save_login", "origin": WALMART}) == WALMART
+    with pytest.raises(logins.NamedSiteNotOpen):
+        _save(logins, fake, {"action": "save_login", "origin": OMNI})
+
+
+def test_a_hermes_that_takes_origin_itself_is_left_alone(logins, monkeypatch):
+    class Native(_Tabs):
+        def browser_vault_save_login(self, label="", task_id=None, origin=""):
+            return origin
+    fake = Native([(OMNI, True)])
+    original = fake._focus_bound_origin
+    monkeypatch.setattr(logins, "_vault", lambda: fake)
+    assert logins.install_named_tab() == "native"
+    assert logins.remember_site("browser_vault", {"action": "save_login", "origin": WALMART}, "t1") is None
+    assert fake._focus_bound_origin == original
+    monkeypatch.setattr(logins, "_vault", lambda: None)
+    assert logins.install_named_tab() == "absent"
+
+
+def test_the_hook_keeps_the_name_for_the_tool(monkeypatch):
+    """Through the add-on's pre_tool_call, with the task id Hermes passes it."""
+    spec = importlib.util.spec_from_file_location("hermes_hq_push_named_under_test", Path(__file__).with_name("__init__.py"),
+                                                  submodule_search_locations=[str(Path(__file__).parent)])
+    addon = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(addon)
+    kept = []
+    monkeypatch.setattr(addon.gateway_logins, "remember_site", lambda *a: kept.append(a))
+    assert addon.pre_tool_call(tool_name="browser_vault", args={"action": "save_login", "origin": WALMART},
+                               task_id="t9", session_id="s") is None
+    assert kept == [("browser_vault", {"action": "save_login", "origin": WALMART}, "t9")]
+    kept.clear()
+    assert addon.pre_tool_call(tool_name="browser_vault", args={"action": "save_login"}, task_id="t9")["action"] == "block"
+    assert kept == [], "a blocked call keeps nothing"

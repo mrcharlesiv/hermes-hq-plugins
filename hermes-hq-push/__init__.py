@@ -26,6 +26,8 @@ messaging gateway runs (another bot's message, a hand-off): the card shows in th
 a turn the app runs (Hermes answered "this session cannot ask the user for a login").
 0.9.18 sends a login or code asked without naming the site back to the bot to name it: Hermes otherwise asks for the
 browser tab in front, which was another site when the bot's own page didn't load (gateway_logins.unnamed_site).
+0.9.44 makes Hermes use the named site's tab, or ask nothing when none is open (gateway_logins.named_tab): Hermes's
+vault ignored the name and still asked for the first open tab with a password field, on any site.
 device_access.py (0.9.19, every kind since 0.9.21) gives bots what the owner shares from the app's Settings › Device
 Access (device_contacts_search, device_location, device_reminders, …): each use is a request the phone fetches (woken
 by a silent push) and answers.
@@ -251,8 +253,17 @@ def _desktop_theme():
 def pre_tool_call(tool_name="", args=None, **kwargs):
     verdict = _veto(tool_name, args) or _ideas_veto(tool_name, kwargs.get("session_id"))
     if verdict is None:
+        _named_site(tool_name, args, kwargs.get("task_id"))
         _live_step(tool_name, args, kwargs)
     return verdict
+
+
+def _named_site(tool_name, args, task_id):
+    """[0.9.44] A login or code that names its site is asked for that site's tab only (gateway_logins.named_tab)."""
+    try:
+        gateway_logins.remember_site(tool_name, args, task_id)
+    except Exception:
+        log.debug("hermes-hq-push: named site not kept", exc_info=True)
 
 
 def _live_step(tool_name, args, kwargs):

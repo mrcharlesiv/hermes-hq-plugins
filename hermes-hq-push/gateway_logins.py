@@ -183,8 +183,9 @@ def unnamed_site(tool_name: str, args) -> str | None:
 
     Without ``origin`` Hermes asks for the login of whichever browser tab is in front; when the bot's own page didn't
     load (a navigation timed out) that is some other site, so the card asked for the wrong login (owner, 2026-10-30:
-    Finance trying Instantly asked for cloudfree.shop, "it often does that"). Named, Hermes uses only that site's tab
-    and refuses when none is open, so the card can't name another site."""
+    Finance trying Instantly asked for cloudfree.shop, "it often does that"). Named, only that site's tab is used and
+    nothing is asked when none is open (named_tab, 0.9.44: Hermes itself ignored the name), so the card can't name
+    another site."""
     if tool_name != "browser_vault" or not isinstance(args, dict):
         return None
     action = str(args.get("action") or "")
@@ -197,6 +198,117 @@ def unnamed_site(tool_name: str, args) -> str | None:
             f"set to the sign-in page's URL (for example https://app.example.com). Without it the {what} would be "
             f"asked for whichever browser tab is in front, which may be another site. If that site's page didn't "
             f"load, open it first.")
+
+
+# MARK: The site the bot named (0.9.44)
+
+# Hermes's vault (tools/browser_vault_tool.py) doesn't read ``origin``: save_login and enter_code focus the FIRST open
+# tab with a password or code field, on any site, and ask for that one. With an old login tab left open the card
+# named it, not the page the bot was on (owner, 2026-11-07: the bot was on Walmart's email-first sign-in, which has no
+# password field yet, and the card asked for bookings.omnihotels.com, a hotel tab from days before). Here the site the
+# bot named (unnamed_site makes it name one) is the tab Hermes uses, or nothing is asked. A Hermes whose save_login
+# takes ``origin`` itself is left alone.
+NAMED_MARK = "_hermes_hq_named_site"
+NAMED_TTL = 120.0   # seconds from the hook to the tool's tab pick
+_named: dict[str, tuple[str, float]] = {}
+_named_lock = threading.Lock()
+
+
+class NamedSiteNotOpen(RuntimeError):
+    """The bot named the site of a login or code and no browser tab is open on it: nothing is asked. Hermes hands the
+    message to the bot as the tool's error."""
+
+
+def site_origin(value) -> str | None:
+    """``scheme://host[:port]`` of a URL, an origin or a bare host (``app.example.com`` is https), else None."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = "https://" + text
+    try:
+        from agent.vault_store import VaultError, normalize_origin
+    except ImportError:
+        return None
+    try:
+        return normalize_origin(text)
+    except (VaultError, ValueError):
+        return None
+
+
+def remember_site(tool_name: str, args, task_id) -> str | None:
+    """pre_tool_call, for a call that goes ahead: a save_login / enter_code that names its site. Returns the origin
+    kept for the tool's tab pick (named_tab), else None."""
+    if tool_name != "browser_vault" or not isinstance(args, dict):
+        return None
+    if str(args.get("action") or "") not in ("save_login", "enter_code"):
+        return None
+    origin = site_origin(args.get("origin") or args.get("url"))
+    if origin is None or install_named_tab() not in ("installed", "already"):
+        return None
+    with _named_lock:
+        _named[str(task_id or "default")] = (origin, time.monotonic())
+    return origin
+
+
+def _take_named(task_id) -> str | None:
+    with _named_lock:
+        kept = _named.pop(str(task_id or "default"), None)
+    return kept[0] if kept and time.monotonic() - kept[1] <= NAMED_TTL else None
+
+
+def _vault():
+    try:
+        from tools import browser_vault_tool
+    except ImportError:
+        return None
+    return browser_vault_tool
+
+
+def install_named_tab() -> str:
+    """Point Hermes's vault tab pick at the named site, once per process. "installed", "already", "native" (this
+    Hermes's save_login takes ``origin`` itself) or "absent" (no vault tool, or one shaped differently)."""
+    import inspect
+
+    vault = _vault()
+    save = getattr(vault, "browser_vault_save_login", None)
+    focus = getattr(vault, "_focus_bound_origin", None)
+    if not callable(save) or not callable(focus) or not callable(getattr(vault, "_current_page_origin", None)):
+        return "absent"
+    if getattr(focus, NAMED_MARK, False):
+        return "already"
+    try:
+        if "origin" in inspect.signature(save).parameters:
+            return "native"
+    except (TypeError, ValueError):
+        return "absent"
+    vault._focus_bound_origin = named_tab(vault, focus)
+    return "installed"
+
+
+def named_tab(vault, original):
+    """Hermes's ``_focus_bound_origin(task_id, origin, kind)``, where save_login / enter_code's ``origin=""`` ("the
+    first tab with the form, any site") becomes the named site's tab: with the form, else any tab on it (an
+    email-first sign-in has no password field yet). None open: NamedSiteNotOpen, so nobody is asked. A page backend
+    (the desktop's in-app browser, a plugin browser) is the bot's own page: it must already be on the named site."""
+    def focus(task_id, origin, kind):
+        named = _take_named(task_id) if not origin and kind in ("login", "otp") else None
+        if named is None:
+            return original(task_id, origin, kind)
+        backend = getattr(vault, "_page_backend", None)
+        if callable(backend) and backend(task_id) is not None:
+            if vault._current_page_origin(task_id) == named:
+                return named
+        elif original(task_id, named, kind) or original(task_id, named, ""):
+            return named
+        what = "login" if kind == "login" else "code"
+        raise NamedSiteNotOpen(f"Not asked: no browser tab is open on {named}, the site this {what} is for. Open its "
+                               f"sign-in page, then call browser_vault again with origin set to that page's URL.")
+
+    setattr(focus, NAMED_MARK, True)
+    focus.__wrapped__ = original
+    focus.__doc__ = original.__doc__
+    return focus
 
 
 # MARK: The server's side
