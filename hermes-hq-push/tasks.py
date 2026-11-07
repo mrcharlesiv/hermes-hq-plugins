@@ -56,6 +56,9 @@ NOTE_MAX = 500
 # 0.9.38: the Task Page (task_page.py) — what its bot writes on it, kept in its own table (task_pages), out of the list.
 PAGE_SUMMARY_MAX = 400
 PAGE_NEXT_MAX = 200
+# 0.9.43, owner 2026-11-07 (the task page redesign: "a shorter task that says what to do"): the app's task shows the
+# page's summary as its bot's words and its next as "Next: …", so the list carries those two, kept short (page_gist).
+PAGE_GIST_MAX = 300
 PAGE_BLOCKS_CAP = 8
 BLOCK_TITLE_MAX = 60
 BLOCK_TEXT_MAX = 2000
@@ -68,7 +71,7 @@ _UNSET = object()  # tasks_update left `due` out (None clears it)
 # The list answer's shape: raise it when the answer gains a field. An app polling `?since=<rev>` hears "unchanged" until
 # the rev moves, so it would keep an answer from before the field (0.9.40: after an update to 0.9.39 the app never saw
 # `ideas` and kept asking for the update). A new shape moves the rev once, and every app reads the whole list again.
-LIST_SHAPE = "2"   # 2: `ideas` (0.9.39)
+LIST_SHAPE = "3"   # 2: `ideas` (0.9.39). 3: each task's `page` (0.9.43)
 IDEAS_FRESH_DAYS = 7   # 0.9.39: an idea nobody adds or dismisses fades from the Ideas page after a week
 START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
 
@@ -436,6 +439,19 @@ def compact(task: dict, sections: dict | None = None, page: dict | None = None) 
     return out
 
 
+def page_gist(page) -> dict | None:
+    """What the app's task shows of its Task Page (0.9.43): ``{summary, next}``, each at most ``PAGE_GIST_MAX``
+    characters, an empty one left out; ``None`` when the bot wrote neither (the app falls back to ``status_note``)."""
+    if not isinstance(page, dict):
+        return None
+    out = {}
+    for key in ("summary", "next"):
+        text = page.get(key)
+        if isinstance(text, str) and text.strip():
+            out[key] = _clip(text.strip(), PAGE_GIST_MAX)
+    return out or None
+
+
 def _row_to_task(row) -> dict:
     task = dict(zip(COLUMNS, row))
     task["rev"] = int(task["rev"])
@@ -591,19 +607,50 @@ class Store:
                 pass
         return out
 
+    @staticmethod
+    def _gists(db, task_id: str | None = None) -> dict:
+        """``{task id: page_gist}`` for the Task Pages with a summary or next: one query for every page (the list),
+        or for ``task_id``'s alone."""
+        rows = db.execute("select id, body from task_pages" + (" where id=?" if task_id else ""),
+                          (task_id,) if task_id else ()).fetchall()
+        out = {}
+        for page_id, body in rows:
+            try:
+                gist = page_gist(json.loads(body))
+            except ValueError:
+                continue
+            if gist:
+                out[page_id] = gist
+        return out
+
+    def _shown(self, db, task: dict) -> dict:
+        """One task as the app gets it from a route (PATCH's answer, a 409's current task, an added idea's task): with
+        its ``page``, as the list has it, so the answer the app keeps doesn't drop the bot's words."""
+        gist = self._gists(db, task["id"]).get(task["id"])
+        return dict(task, page=gist) if gist else task
+
+    def shown(self, task: dict) -> dict:
+        with closing(self._db()) as db:
+            return self._shown(db, task)
+
     def list_all(self) -> list[dict]:
         with closing(self._db()) as db:
             rows = db.execute(f"select {','.join(COLUMNS)} from tasks order by created_at").fetchall()
         return [_row_to_task(r) for r in rows]
 
     def list_response(self, since: int | None) -> dict:
-        """``GET /tasks``: the whole list, or ``{rev, unchanged: true}`` once the caller's ``rev`` is current."""
+        """``GET /tasks``: the whole list, or ``{rev, unchanged: true}`` once the caller's ``rev`` is current. A task
+        whose bot wrote a summary or next on its Task Page carries them as ``page`` (0.9.43, ``page_gist``). A page
+        write moves the task's rev and the list's like any other change (``update_bot``), so ``?since=`` hears of it."""
         current = self.rev()
         if since is not None and since >= current:
             return {"rev": current, "unchanged": True}
+        with closing(self._db()) as db:
+            gists = self._gists(db)
+        listed = [dict(t, page=gists[t["id"]]) if t["id"] in gists else t for t in self.list_all()]
         # pages: this add-on draws a Task Page for every task (GET /tasks/{id}/page, 0.9.38).
         # ideas (0.9.39): how many new ideas the Ideas page has, for the count on its tab.
-        return {"rev": current, "tasks": self.list_all(), "settings": self.get_settings(),
+        return {"rev": current, "tasks": listed, "settings": self.get_settings(),
                 "sections": self.get_sections(), "pages": True, "ideas": self.new_ideas_count()}
 
     def new_ideas_count(self) -> int:
@@ -767,20 +814,22 @@ class Store:
              json.dumps(task.get("chat") or {}), task.get("page_at") or "", task["id"]))
 
     def update_route(self, task_id: str, rev: int, patch: dict, by: str = "you") -> dict:
-        """``PATCH /tasks/{id}``: a stale ``rev`` raises ``TaskError(409, {"task": current})``."""
+        """``PATCH /tasks/{id}``: a stale ``rev`` raises ``TaskError(409, {"task": current})``. Both carry the task's
+        ``page`` (``_shown``)."""
         with closing(self._write_db()) as db, db:
             row = db.execute(f"select {','.join(COLUMNS)} from tasks where id=?", (task_id,)).fetchone()
             if row is None:
                 raise TaskError(404, "No such task.")
             task = _row_to_task(row)
             if int(rev) != task["rev"]:
-                raise TaskError(409, {"task": task})
+                raise TaskError(409, {"task": self._shown(db, task)})
             if "section" in patch:
                 patch["section"] = self._section_id(db, patch["section"], by_id=True)
             updated = self._merge(task, patch, by)
             self._write(db, updated)
             self._bump_rev(db)
-        return updated
+            shown = self._shown(db, updated)
+        return shown
 
     def update_bot(self, task_id: str, profile: str, *, status=None, status_note=None, done_steps=None,
                   add_steps=None, made=None, note=None, who=None, prep=None, due=_UNSET,
@@ -1302,8 +1351,14 @@ def _recently_noted(history) -> bool:
 
 def task_chat_line(task: dict) -> str:
     """0.9.37: a task's own chat (the app's Task page opens it) says which task it is on every turn, so the bot
-    keeps that task current instead of the person repeating it."""
-    facts = [f"id {task['id']}", f"who {task['who']}", f"status {task['status']}"]
+    keeps that task current instead of the person repeating it. 0.9.43: while the task waits on the person (needs_you,
+    ready) the status carries its status_note, so the bot answering there knows what it asked (the app's Answer puts
+    the person straight in this chat's composer, and they type only their answer)."""
+    status = f"status {task['status']}"
+    note = _text(task.get("status_note"), STATUS_NOTE_MAX)
+    if note and task["status"] in ("needs_you", "ready"):
+        status += f" (\"{note}\")"
+    facts = [f"id {task['id']}", f"who {task['who']}", status]
     if task.get("due"):
         facts.append(f"due {task['due']}")
     if task.get("watch"):

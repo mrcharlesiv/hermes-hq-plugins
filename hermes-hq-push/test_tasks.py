@@ -963,6 +963,26 @@ def test_a_tasks_own_chat_names_its_task_on_every_turn(tmp_path):
     assert elsewhere is None   # an ordinary chat keeps the usual once-in-a-while note
 
 
+# 0.9.43: answering a needs_you in the task's own chat, the bot only knew what it had asked if it called tasks_list.
+def test_a_tasks_own_chat_says_what_its_bot_asked_while_it_waits(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = s.create(together(), created_by="cro", source={})
+    s.update_route(task["id"], task["rev"], {"chat": {"profile": "cro", "session_id": "s_task"}})
+
+    def line():
+        return tasks.context_for(store=s, profile="cro", platform="desktop", user_message="The Loft",
+                                 session_id="s_task")
+    assert "status open)" in line()
+    ctx.tools["tasks_update"]({"id": task["id"], "status": "needs_you", "status_note": "Elm & Oak or The Loft?"})
+    assert 'status needs_you ("Elm & Oak or The Loft?")' in line()
+    ctx.tools["tasks_update"]({"id": task["id"], "status": "ready", "status_note": "The nudge is drafted"})
+    assert 'status ready ("The nudge is drafted")' in line()
+    ctx.tools["tasks_update"]({"id": task["id"], "status": "working"})   # the old note stays on the task, not here
+    assert "status working)" in line() and "nudge" not in line()
+    s.update_route(task["id"], s.get(task["id"])["rev"], {"status": "needs_you", "status_note": "Which one?\nElm or Loft"})
+    assert 'status needs_you ("Which one? Elm or Loft")' in line()   # one line, whoever wrote it
+
+
 def test_the_rules_ask_for_a_time_and_say_when_to_watch():
     add = tasks.ADD_SCHEMA["description"]
     assert "rings at 9:00" in add and "watch" in add and "buy milk" in add
@@ -1121,3 +1141,79 @@ def test_the_reported_version_is_the_manifests():
     import yaml
     manifest = yaml.safe_load((HERE / "plugin.yaml").read_text())
     assert push.PLUGIN_VERSION == manifest["version"]
+
+
+# 0.9.43, the task page redesign (owner 2026-11-07): the app's task shows its Task Page's summary as its bot's words and
+# its next as "Next: …". The list carries those two, short, for the tasks whose bot wrote them, and so does every task a
+# route answers with, so the copy the app keeps never drops them.
+def test_the_list_carries_each_task_pages_summary_and_next(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    plain = s.create(bot_task(title="Water the plants"), created_by="cro", source={})
+    task = s.create(bot_task(), created_by="cro", source={})
+    only_next = s.create(bot_task(title="Book the vet"), created_by="cro", source={})
+    parts_only = s.create(bot_task(title="Sort the photos"), created_by="cro", source={})
+    ctx.tools["tasks_update"]({"id": task["id"], "page": {
+        "summary": "Elm & Oak fits best and holds the 14th until Friday. " * 10, "next": "You pick one; I'll book it."}})
+    ctx.tools["tasks_update"]({"id": only_next["id"], "page": {"summary": "  ", "next": "Waiting on the vet's reply."}})
+    ctx.tools["tasks_update"]({"id": parts_only["id"], "page": {"blocks": [{"title": "Albums", "text": "- 2024"}]}})
+    listed = {t["id"]: t for t in s.list_response(None)["tasks"]}
+    page = listed[task["id"]]["page"]
+    assert set(page) == {"summary", "next"} and page["next"] == "You pick one; I'll book it."
+    assert page["summary"].startswith("Elm & Oak fits best") and page["summary"].endswith("\u2026")
+    assert len(page["summary"]) <= tasks.PAGE_GIST_MAX
+    assert listed[only_next["id"]]["page"] == {"next": "Waiting on the vet's reply."}   # an empty one is left out
+    assert "page" not in listed[plain["id"]] and "page" not in listed[parts_only["id"]]
+    assert "page" not in s.get(task["id"])   # the bots' own reads are as before (compact's outline)
+
+
+def test_the_list_reads_every_page_in_one_query(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    for n in range(5):
+        task = s.create(bot_task(title=f"Draft email {n}"), created_by="cro", source={})
+        ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": f"Draft {n} is ready."}})
+    reads, opened = [], s._db
+
+    def traced():
+        db = opened()
+        db.set_trace_callback(lambda sql: reads.append(sql) if "task_pages" in sql else None)
+        return db
+    s._db = traced
+    assert len([t for t in s.list_response(None)["tasks"] if t.get("page")]) == 5
+    assert len(reads) == 1
+
+
+def test_a_page_write_reaches_the_app_on_its_next_since_read(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = s.create(bot_task(), created_by="cro", source={})
+    rev = s.list_response(None)["rev"]
+    assert s.list_response(rev) == {"rev": rev, "unchanged": True}
+    ctx.tools["tasks_update"]({"id": task["id"], "page": {"next": "I'll shortlist three."}})
+    answer = s.list_response(rev)
+    assert not answer.get("unchanged") and answer["tasks"][0]["page"] == {"next": "I'll shortlist three."}
+
+
+def test_an_update_from_the_last_list_shape_reads_the_whole_list_again(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = s.create(bot_task(), created_by="cro", source={})
+    ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": "Two found."}})
+    rev = s.rev()
+    import sqlite3
+    with sqlite3.connect(tmp_path / "tasks.db") as db:   # as 0.9.42 left it, before `page`
+        db.execute("update meta set value='2' where key='shape'")
+    again = store(tmp_path)
+    assert again.rev() == rev + 1 and again.list_response(since=rev)["tasks"][0]["page"] == {"summary": "Two found."}
+
+
+def test_the_patch_answer_and_a_409_keep_the_page(client, tmp_path):
+    created = client.post(f"{BASE}/tasks", json={"title": "Plan the offsite", "who": "bot", "bot": "cro"}).json()
+    s = tasks.Store(tmp_path / "data" / "tasks.db")
+    s.update_bot(created["id"], "cro", page={"summary": "3 venues shortlisted.", "next": "You pick one."})
+    gist = {"summary": "3 venues shortlisted.", "next": "You pick one."}
+    assert client.get(f"{BASE}/tasks").json()["tasks"][0]["page"] == gist
+    rev = s.get(created["id"])["rev"]
+    patched = client.patch(f"{BASE}/tasks/{created['id']}", json={"rev": rev, "due": "2026-11-09"})
+    assert patched.status_code == 200 and patched.json()["page"] == gist
+    stale = client.patch(f"{BASE}/tasks/{created['id']}", json={"rev": rev, "due": "2026-11-10"})
+    assert stale.status_code == 409 and stale.json()["detail"]["task"]["page"] == gist
+    plain = client.post(f"{BASE}/tasks", json={"title": "Buy stamps", "who": "me"}).json()
+    assert "page" not in client.patch(f"{BASE}/tasks/{plain['id']}", json={"rev": plain["rev"], "notes": "x"}).json()

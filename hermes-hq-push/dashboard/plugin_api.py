@@ -508,7 +508,8 @@ class SectionsIn(BaseModel):
 
 @router.get("/tasks")
 def tasks_list(since: int | None = None):
-    """``{rev, tasks: [...], settings}``, or ``{rev, unchanged: true}`` once ``since`` is already current."""
+    """``{rev, tasks: [...], settings}``, or ``{rev, unchanged: true}`` once ``since`` is already current. A task its
+    bot wrote a summary or next for on its Task Page carries ``page: {summary, next}`` (0.9.43; empty ones left out)."""
     return _tasks_store().list_response(since)
 
 
@@ -527,7 +528,7 @@ def tasks_create(body: TaskIn):
 
 @router.patch("/tasks/{task_id}")
 def tasks_patch(task_id: str, body: TaskPatchIn):
-    """A stale ``rev`` is a 409 carrying the current task: ``{"task": <current>}``."""
+    """A stale ``rev`` is a 409 carrying the current task: ``{"task": <current>}``. Both carry ``page`` as the list does."""
     patch = body.model_dump(exclude_unset=True, exclude={"rev"})
     try:
         updated = _tasks_store().update_route(task_id, body.rev, patch, by="you")
@@ -618,6 +619,8 @@ def tasks_ideas_add(idea_id: str, body: IdeaAddIn):
     if body.start and task.get("prep") and task.get("bot") and not out["already"]:
         home = tasks.bot_home(task["bot"])
         out["start"] = tasks.start_prep_now(store, task, task["bot"], home)
+    if out["already"]:   # a task that was there already can have a Task Page: its `page` (0.9.43), as the list has it
+        out["task"] = store.shown(task)
     return out
 
 

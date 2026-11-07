@@ -463,6 +463,17 @@ def test_idea_routes_round_trip(client):
     assert client.put(f"{BASE}/tasks/settings", json={"ideas_max": 9}).status_code == 422
 
 
+def test_adding_an_idea_that_is_already_a_task_gives_its_page_too(client):
+    client.put(f"{BASE}/tasks/settings", json={"ideas": True})
+    s = _route_store()
+    ideas.suggest(s, [idea("Book a dentist cleaning")], "default", BOTS)
+    twin = s.create({"title": "Book dentist cleaning", "who": "bot", "bot": "scout"}, created_by="scout", source={})
+    s.update_bot(twin["id"], "scout", page={"summary": "Two openings next week.", "next": "You pick one."})
+    added = client.post(f"{BASE}/tasks/ideas/{ideas.page(s)['ideas'][0]['id']}/add", json={}).json()
+    assert added["already"] is True and added["task"]["id"] == twin["id"]
+    assert added["task"]["page"] == {"summary": "Two openings next week.", "next": "You pick one."}   # 0.9.43
+
+
 @needs_cron
 def test_turning_ideas_on_puts_the_job_in_the_picked_bots_schedule(client, tmp_path, monkeypatch):
     from hermes_cli import profiles as hermes_profiles
