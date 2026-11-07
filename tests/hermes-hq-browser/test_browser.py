@@ -1171,6 +1171,41 @@ i.addEventListener('keydown',spin);i.addEventListener('beforeinput',spin);i.addE
             await ws.close()
             heard["task"].cancel()
 
+    def test_the_listing_names_the_page_the_bot_is_on_not_a_jobs_last_navigate(self):
+        asyncio.run(self._listed_address())
+
+    async def _listed_address(self):
+        """Tester naroh 2026-11-07: the chat said "Browsing redcorp.com" (a scheduled job's last browser_navigate on
+        the same Chrome) while Watch Browser showed maldita.es, where the bot had gone since."""
+        import httpx
+        port = int(self.endpoint.split(":")[2].split("/")[0])
+        jim = self.root / "profiles" / "jim"
+        jim.mkdir(parents=True)
+        (jim / "config.yaml").write_text(f"browser:\n  cdp_url: http://127.0.0.1:{port}\n")
+        self.api.fleet.write_state(self.root, "jim", {"port": port})
+        chrome = f"http://127.0.0.1:{port}"
+        # The bot's record on its standing Chrome: the address its last browser_navigate named (a job's).
+        self.publish(profile="jim", source=["cdp", chrome], url="https://redcorp.example/jobs")
+        base = f"http://127.0.0.1:{self.port}/api/plugins/hermes-hq-browser"
+        listed = lambda: [b["url"] for b in httpx.get(base + "/sessions", params={"owner": "jim"}).json()["browsers"]]  # noqa: E731
+        self.assertEqual(listed(), ["https://redcorp.example/jobs"])  # also starts the tab tracker on this Chrome
+        await self._until(lambda: self.api.tracker.connections.get(chrome) is not None)
+        await asyncio.sleep(1.0)  # the tracker attaches to the tab
+        # The bot goes on to another page by other means than browser_navigate (a click, a search, a redirect).
+        page = (self.root / "page.html").as_uri() + "?maldita"
+        self.bot_eval(f"location.href = {json.dumps(page)}; 0")
+        await self._until(lambda: listed() == [page])
+        # One row for the Chrome: the job's record and the standing record together.
+        self.assertEqual(len(listed()), 1)
+        # A job's tab brought to the front (first in Chrome's own list, which agent.page_url reads) while the bot
+        # keeps working in its tab: the listing still names the bot's page.
+        job = self.bot_call("Target.createTarget", {"url": (self.root / "page.html").as_uri() + "?redcorp"})["targetId"]
+        self.bot_call("Target.activateTarget", {"targetId": job})
+        await self._until(lambda: listed() == [(self.root / "page.html").as_uri() + "?redcorp"])
+        later = (self.root / "page.html").as_uri() + "?maldita-2"
+        self.bot_eval(f"location.href = {json.dumps(later)}; 0")
+        await self._until(lambda: listed() == [later])
+
     def test_the_same_phone_coming_back_ends_its_old_stream(self):
         asyncio.run(self._superseded())
 

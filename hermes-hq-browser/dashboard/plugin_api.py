@@ -27,7 +27,7 @@ from fastapi import APIRouter, Body, HTTPException, WebSocket, WebSocketDisconne
 
 log = logging.getLogger("hermes-hq-browser")
 _ROOT = Path(__file__).parents[1]
-VERSION = "3.8.0"
+VERSION = "3.8.1"
 RETAIN_ENDED = 120.0
 MAX_VIEWERS = 8
 VIEWER_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -270,7 +270,7 @@ def _live_records():
             continue
         groups.setdefault(_chrome_of(record), []).append(record)
     rows = []
-    for group in groups.values():
+    for chrome, group in groups.items():
         agents = sorted((r for r in group if not r.get("standing")), key=lambda r: -float(r.get("agent_at") or 0))
         standing = next((r for r in group if r.get("standing")), None)
         newest = agents[0] if agents else standing
@@ -279,6 +279,10 @@ def _live_records():
                    session_ids=list(dict.fromkeys(sid for r in reversed(agents) for sid in (r.get("session_ids") or [])))[-16:])
         if newest is not standing:
             row.update(agent_at=newest.get("agent_at"), url=newest.get("url"), session_id=newest.get("session_id"))
+        # The address the bot's last browser_navigate named, unless the tab tracker sees the page it is really on: the
+        # chat's "Browsing …" chip and the Bots row then name the site Watch Browser opens on.
+        if chrome and (shown := tracker.address(chrome)):
+            row["url"] = shown[:2048]
         rows.append(row)
     return sorted(rows, key=lambda r: -float(r.get("agent_at") or 0))
 

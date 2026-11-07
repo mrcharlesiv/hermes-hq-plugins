@@ -58,6 +58,18 @@ class Tracker:
             used = dict(self.used.get(root(url), {}))
         return sorted(used, key=lambda tab: -used[tab])
 
+    def address(self, url: str) -> str | None:
+        """The address of the tab the bot used last (the one Watch Browser opens on), or None when this Chrome isn't
+        followed or has only empty tabs. A bot moves by clicking and searching as well as by ``browser_navigate``, and
+        a scheduled job's navigate on the same Chrome says nothing about the tab a chat is in: this is what it shows."""
+        key = root(url)
+        with self.lock:
+            used, pages = dict(self.used.get(key, {})), dict(self.pages.get(key) or {})
+        for tab in sorted(used, key=lambda tab: -used[tab]):
+            if tab in pages and not _blank(pages[tab]):
+                return pages[tab]
+        return None
+
     def box(self, url: str, tab) -> tuple | None:
         """``(event, params)`` of the box ``tab`` has open (Chrome's ``Page.javascriptDialogOpening`` or
         ``FedCm.dialogShown``), or None."""

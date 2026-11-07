@@ -106,7 +106,9 @@ Nothing is patched or wrapped. Two shapes of Hermes are read, the newer first (3
   and `browser_tool_session._run_browser_command(key, "get", ["url"])` for the keep-alive.
 
 Both use `browser_use_cli._backend_cache_key`. The page a bot used last (Watch Browser opens on it) is read from the
-browser's own loopback `/json/list` after the bot's calls, at most every 10 seconds. `agent.problems()` checks
+browser's own loopback `/json/list` after the bot's calls, at most every 10 seconds. On a bot's own Chrome the
+listing names the tab the dashboard's tab tracker saw the bot use last instead (3.8.1), so the chat's "Browsing …"
+chip names the site Watch Browser opens on, not a tab a scheduled job left in front. `agent.problems()` checks
 whichever shape is there at load; with neither, or on a mismatch, no hook or tool is registered and `/health`
 reports the drift.
 
