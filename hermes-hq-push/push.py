@@ -865,7 +865,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.44"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
+PLUGIN_VERSION = "0.9.45"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
 
 
 class Relay:
