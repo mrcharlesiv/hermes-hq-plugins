@@ -463,7 +463,10 @@ def status_body(root: Path, sender) -> dict:
     /serve/working lists the chats this server is running a turn in (serve_working.py), the ones /sessions/working can't
     see, so a host restart can wait for them. `deviceAccessKinds` (0.9.21): Device Access takes every kind the app shares
     (location, reminders, calendar, alarms, photos, Health, motion, music, drafts; device_access.OPERATIONS), POST
-    .../pending gives each request's `profile`, and POST .../files/<id> takes a photo before its answer. `liveSteps`
+    .../pending gives each request's `profile`, and POST .../files/<id> takes a photo before its answer.
+    `deviceAccessHealthTypes` (0.9.46): Health takes every type the app shares, each named by its HealthKit identifier
+    (device_access.HEALTH_TYPE), besides the four old switches; device_health asks for them with `format: "types"`
+    and lists them with action `types`; the app says on its Health page when the add-on is older. `liveSteps`
     (0.9.22): PUT /live/<device>/<activity> takes a bot turn's Live Activity push token, and the steps the bot takes are
     pushed to its Lock Screen card (sealed) until the turn ends; the app asks for a token only when this says so.
     `liveEnds` (0.9.23): the steps go at priority 5 and only the end at 10, sent again 30 s later at 5 (iOS rations
@@ -482,7 +485,7 @@ def status_body(root: Path, sender) -> dict:
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "liveSteps": True, "liveEnds": True, "liveQuick": True, "shortTitles": True, "dashboardTile": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "deviceAccessHealthTypes": True, "liveSteps": True, "liveEnds": True, "liveQuick": True, "shortTitles": True, "dashboardTile": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -865,7 +868,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.45"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
+PLUGIN_VERSION = "0.9.46"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
 
 
 class Relay:

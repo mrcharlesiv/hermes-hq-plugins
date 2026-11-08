@@ -171,7 +171,7 @@ Device Access** in Hermes HQ, everything starts off, and the phone checks every 
 | Calendar | see your events; with Add Events, add new ones (never change or delete) | `device_calendar` |
 | Alarms & Timers | set alarms and timers that ring like the Clock app's, and see or cancel only the ones it set | `device_alarms` |
 | Photos | find photos by date, place, favourite or kind; with Send Photos, get a copy of one (saved on the computer for a day) | `device_photos` |
-| Health | read summaries of steps, sleep, workouts and heart rate, whichever you switch on (only while the phone is unlocked) | `device_health` |
+| Health | read summaries of the Health data you switch on: since 0.9.46 any kind the Health app has, before that steps, sleep, workouts and heart rate (only while the phone is unlocked) | `device_health` |
 | Motion & Fitness | see whether you're walking, running, driving or still, and today's steps | `device_motion` |
 | Music | see what's playing; with Play & Pause, play from your library, pause or skip | `device_music` |
 | Email & Text Drafts | write an email or a text that waits on your phone as a draft: nothing is sent until you tap Send | `device_draft` |
@@ -255,6 +255,13 @@ same look for every task. The add-on draws it (`GET /tasks/{id}/page`) from the 
 made, its history) and what its bot writes with `tasks_update(page={summary, next, blocks})`: where it stands, what's
 next, and parts such as options compared in a table, the numbers that matter, or what it found. The bot writes words,
 never HTML. The `task-page` skill (hermes-hq-push:task-page) tells bots what goes on it.
+
+Version 0.9.46 lets a bot read **any kind of Health data you switch on**, not only steps, sleep, workouts and heart
+rate. In Hermes HQ, **Settings › Device Access › Health** lists the Health app's groups (Activity, Heart, Nutrition,
+Symptoms and the rest); each has a switch per kind and Turn On All. `device_health` with action `types` lists what's
+on, without waking the phone, and a summary names types by their HealthKit identifier or asks for whole groups. An
+older Hermes HQ still shares only the four it had. Every bot needs its own copy of this version, and it works after
+Hermes restarts.
 
 This plugin was called `dispatch-push` before version 0.5. It takes over the old plugin's registered phones on its
 first start, and reads the old `DISPATCH_*` settings when the new names aren't set.

@@ -180,6 +180,7 @@ def test_wake_goes_only_to_the_phone_asked(tmp_path):
 def test_status_says_device_access(tmp_path):
     body = push.status_body(tmp_path, None)
     assert body["deviceAccess"] is True and body["deviceAccessKinds"] is True
+    assert body["deviceAccessHealthTypes"] is True
 
 
 # -- 0.9.21: every kind ------------------------------------------------------------------------------------------------
@@ -303,7 +304,10 @@ def test_a_photo_answer_without_its_file_fails_and_a_failed_one_drops_it(tmp_pat
     ("device_alarms", {"action": "timer", "seconds": 600, "label": "Tea"}, "alarms.timer", {"seconds": 600, "label": "Tea"}),
     ("device_alarms", {"action": "list"}, "alarms.list", {}),
     ("device_photos", {"action": "get", "id": "P1", "max_pixels": 800}, "photos.get", {"id": "P1", "max_pixels": 800}),
-    ("device_health", {"metrics": ["sleep", "mood"]}, "health.summary", {"metrics": ["sleep"]}),
+    ("device_health", {"metrics": ["sleep", "mood"]}, "health.summary", {"metrics": ["sleep"], "format": "types"}),
+    ("device_health", {"start": "2026-11-01", "metrics": ["HKQuantityTypeIdentifierHeartRate"], "categories": ["heart", "x"]},
+     "health.summary", {"start": "2026-11-01", "format": "types", "metrics": ["HKQuantityTypeIdentifierHeartRate"],
+                        "categories": ["heart"]}),
     ("device_motion", {"start": "2026-11-01"}, "motion.activity", {"start": "2026-11-01"}),
     ("device_music", {"action": "play", "query": "Abbey Road"}, "music.control", {"action": "play", "query": "Abbey Road"}),
     ("device_music", {"action": "now"}, "music.now", {}),
@@ -324,6 +328,8 @@ def test_each_tool_asks_the_phone_one_request(tool, args, op, sent):
     ("device_alarms", {"action": "timer", "seconds": "ten"}),
     ("device_photos", {"action": "get"}),
     ("device_health", {"metrics": ["mood"]}),
+    ("device_health", {"categories": ["moods"]}),
+    ("device_health", {"action": "delete"}),
     ("device_music", {"action": "shuffle"}),
     ("device_draft", {"kind": "fax", "to": ["Ann"], "body": "Hi"}),
     ("device_draft", {"kind": "email", "to": [], "body": "Hi"}),
@@ -379,3 +385,87 @@ def test_a_photo_round_trip_gives_the_bot_its_file(tmp_path, monkeypatch):
     answer = asyncio.run(run())
     assert answer["status"] == "done" and answer["device"] == "iPhone" and answer["photo"] == {"id": "P1"}
     assert answer["file"].startswith(str(tmp_path / "device-access-files")) and wakes[0][0] == PHONE
+
+
+# -- 0.9.46: every Health type ------------------------------------------------------------------------------------------
+
+HEART = "HKQuantityTypeIdentifierHeartRate"
+GLUCOSE = "HKQuantityTypeIdentifierBloodGlucose"
+
+
+def test_a_phone_shares_health_types_by_their_healthkit_keys(tmp_path):
+    s = store(tmp_path)
+    kept = s.share(PHONE, {"health": {"heart": True, HEART: True, GLUCOSE: False, "HK bad": True, "mood": True,
+                                      "HKQuantityTypeIdentifierBodyMass": "yes"}})["access"]
+    assert kept["health"] == {"steps": False, "sleep": False, "workouts": False, "heart": True, HEART: True}
+    assert device_access.shared(kept, "health") == ["heart", HEART]
+    many = {f"HKQuantityTypeIdentifierX{i}": True for i in range(device_access.HEALTH_MAX_TYPES + 50)}
+    assert len(device_access.clean_access({"health": many})["health"]) == 4 + device_access.HEALTH_MAX_TYPES
+
+
+def test_a_new_type_alone_shares_health(tmp_path):
+    s = store(tmp_path)
+    s.share(PHONE, {"health": {GLUCOSE: True}})
+    assert [p["device_id"] for p in s.sharing("health")] == [PHONE]
+    assert device_access.allows(s.phones()[0]["access"], "health.summary")
+    assert not device_access.allows(s.phones()[0]["access"], "health.summary", (HEART, "heart"))
+
+
+def test_named_types_need_one_of_them_or_the_old_switch_that_stands_for_them():
+    op, request, needed = device_access.plan("device_health", {"metrics": [HEART]})
+    assert op == "health.summary" and request == {"format": "types", "metrics": [HEART]}
+    assert set(needed) == {HEART, "heart"}
+    assert device_access.plan("device_health", {"categories": ["vitals"]})[2] is None, "a group: any Health switch"
+    assert device_access.plan("device_health", {})[1] == {"format": "types"}
+
+
+def test_health_names_are_made_from_their_keys():
+    name = device_access.health_name
+    assert name(HEART) == "Heart Rate" and name("HKCategoryTypeIdentifierSleepAnalysis") == "Sleep Analysis"
+    assert name("HKDataTypeIdentifierElectrocardiogram") == "Electrocardiogram" and name("HKDataTypeStateOfMind") == "State Of Mind"
+    assert name("HKScoredAssessmentTypeIdentifierGAD7") == "GAD7" and name("HKWorkoutTypeIdentifier") == "Workouts"
+    assert name("HKCharacteristicTypeIdentifierBloodType") == "Blood Type"
+
+
+def test_a_type_switched_off_is_answered_here_by_its_name(tmp_path):
+    wakes = []
+    s, registered = tools(tmp_path, wakes)
+    s.share(PHONE, {"health": {HEART: True}})
+    off = json.loads(asyncio.run(registered["device_health"][0]({"metrics": [GLUCOSE]})))
+    assert off["status"] == "unavailable" and "Blood Glucose" in off["error"]
+    assert wakes == [] and s.pending(PHONE) == []
+
+
+def test_an_older_app_is_asked_through_its_old_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr(device_access, "WAIT_SECONDS", 0.05)
+    wakes = []
+    s, registered = tools(tmp_path, wakes)
+    s.share(PHONE, {"health": {"heart": True}})
+    waiting = json.loads(asyncio.run(registered["device_health"][0]({"metrics": [HEART]})))
+    assert waiting["status"] == "waiting" and len(wakes) == 1
+    [asked] = s.pending(PHONE)
+    assert asked["op"] == "health.summary" and asked["args"] == {"format": "types", "metrics": [HEART]}
+
+
+def test_the_types_switched_on_are_listed_without_waking_the_phone(tmp_path):
+    wakes = []
+    s, registered = tools(tmp_path, wakes)
+    handler = registered["device_health"][0]
+    none = json.loads(asyncio.run(handler({"action": "types"})))
+    assert none["status"] == "unavailable"
+    s.share(PHONE, {"health": {"heart": True, HEART: True, GLUCOSE: True}}, name="iPhone")
+    listed = json.loads(asyncio.run(handler({"action": "types"})))
+    assert listed["status"] == "done" and listed["device"] == "iPhone" and listed["count"] == 2
+    assert listed["types"] == [{"key": HEART, "name": "Heart Rate"}, {"key": GLUCOSE, "name": "Blood Glucose"}]
+    assert "vitals" in listed["categories"]
+    s.share(PHONE, {"health": {"sleep": True}}, name="iPhone")
+    old = json.loads(asyncio.run(handler({"action": "types"})))
+    assert old["types"] == [{"key": "sleep", "name": "Sleep"}] and "older" in old["note"]
+    assert wakes == [] and s.pending(PHONE) == []
+
+
+def test_the_health_schema_names_its_groups_and_takes_any_key():
+    properties = device_access.HEALTH_SCHEMA["parameters"]["properties"]
+    assert "enum" not in properties["metrics"]["items"]
+    assert properties["categories"]["items"]["enum"] == list(device_access.HEALTH_CATEGORIES)
+    assert properties["action"]["enum"] == ["summary", "types"]

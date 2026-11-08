@@ -1,6 +1,6 @@
-"""Device Access (0.9.19 Contacts, 0.9.21 every kind): a bot uses what the owner shares from the Hermes HQ app on their
-phone (Settings › Device Access): contacts, location, reminders, calendar, alarms and timers, photos, Health, motion,
-music, and email or text drafts.
+"""Device Access (0.9.19 Contacts, 0.9.21 every kind, 0.9.46 every Health type): a bot uses what the owner shares
+from the Hermes HQ app on their phone (Settings › Device Access): contacts, location, reminders, calendar, alarms and
+timers, photos, Health, motion, music, and email or text drafts.
 
 The data lives on the phone, so every use is a round trip. A tool call saves a request here (one SQLite file in the
 add-on's root plugin-data, shared by every bot and by the gateway, cron and ``hermes serve``), asks the phone to wake
@@ -40,6 +40,7 @@ KINDS = {
     "calendar": ("read", "write"),
     "alarms": ("set",),
     "photos": ("find", "send"),
+    # The four switches before 0.9.46; since then the phone also names each Health type it shares (HEALTH_TYPE).
     "health": ("steps", "sleep", "workouts", "heart"),
     "motion": ("activity",),
     "music": ("nowPlaying", "control"),
@@ -60,7 +61,7 @@ OPERATIONS = {
     "alarms.cancel": ("alarms", ("set",)),
     "photos.search": ("photos", ("find",)),
     "photos.get": ("photos", ("send",)),
-    "health.summary": ("health", ("steps", "sleep", "workouts", "heart")),
+    "health.summary": ("health", ()),   # () = any switch of the kind (0.9.46: any Health type)
     "motion.activity": ("motion", ("activity",)),
     "music.now": ("music", ("nowPlaying",)),
     "music.control": ("music", ("control",)),
@@ -85,6 +86,38 @@ SWITCHES = {
     ("music", "nowPlaying"): "What’s Playing", ("music", "control"): "Play & Pause",
     ("drafts", "email"): "Email Drafts", ("drafts", "text"): "Text Message Drafts",
 }
+# 0.9.46: Health has a switch per type in the app (its HealthCatalog), named by the type's HealthKit identifier
+# ("HKQuantityTypeIdentifierHeartRate"). The phone still sends the four old switches, each on while one of its types
+# is, so an app from before then, which sends only those, keeps working. A type's switch is only ever sent as on.
+HEALTH_TYPE = re.compile(r"HK[A-Za-z0-9]{1,100}")
+HEALTH_MAX_TYPES = 400
+HEALTH_MAX_ASKED = 250
+# The types each old switch stood for (the app's HealthCatalog.legacy).
+HEALTH_LEGACY_TYPES = {
+    "steps": ("HKQuantityTypeIdentifierStepCount", "HKQuantityTypeIdentifierDistanceWalkingRunning",
+              "HKQuantityTypeIdentifierFlightsClimbed"),
+    "sleep": ("HKCategoryTypeIdentifierSleepAnalysis",),
+    "workouts": ("HKWorkoutTypeIdentifier",),
+    "heart": ("HKQuantityTypeIdentifierHeartRate", "HKQuantityTypeIdentifierRestingHeartRate"),
+}
+# The Health app's groups, as the app names them (`categories` asks for every type of a group that is on).
+HEALTH_CATEGORIES = ("activity", "bodyMeasurements", "cycleTracking", "hearing", "heart", "mentalWellbeing", "mobility",
+                     "nutrition", "respiratory", "sleep", "symptoms", "vitals", "other")
+HEALTH_NAMES = {"HKWorkoutTypeIdentifier": "Workouts", "HKActivitySummaryTypeIdentifier": "Activity Rings"}
+
+
+def health_name(key: str) -> str:
+    """A Health type's name made from its key ("HKQuantityTypeIdentifierHeartRate" → "Heart Rate")."""
+    if key in HEALTH_NAMES:
+        return HEALTH_NAMES[key]
+    rest = re.sub(r"^HK[A-Za-z]*?(?:DataTypeIdentifier|DataType|TypeIdentifier)", "", key) or key
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", rest)
+
+
+def switch_name(kind: str, key: str) -> str:
+    return SWITCHES.get((kind, key)) or (health_name(key) if kind == "health" else key)
+
+
 STATUSES = ("pending", "sent", "done", "failed", "unavailable", "expired")
 TERMINAL = {"done", "failed", "unavailable", "expired"}
 # A request no phone fetched in this long expires; one fetched but never answered too (the app was suspended mid-way).
@@ -128,19 +161,31 @@ def clean_access(access) -> dict:
         if kind not in KINDS or not isinstance(details, dict):
             continue
         kept[kind] = {name: details.get(name) is True for name in KINDS[kind]}
+        if kind == "health":
+            kept[kind].update({name: True for name in _health_types(details)})
     return kept
+
+
+def _health_types(details: dict) -> list[str]:
+    """The Health types a phone has on (0.9.46), at most HEALTH_MAX_TYPES."""
+    return [name for name, on in details.items()
+            if on is True and isinstance(name, str) and HEALTH_TYPE.fullmatch(name)][:HEALTH_MAX_TYPES]
 
 
 def shared(access: dict, kind: str) -> list[str]:
     """The switches of `kind` a phone has on (empty: it doesn't share the kind)."""
     details = (access or {}).get(kind) or {}
-    return [name for name in KINDS.get(kind, ()) if details.get(name) is True]
+    names = [name for name in KINDS.get(kind, ()) if details.get(name) is True]
+    return names + _health_types(details) if kind == "health" else names
 
 
 def allows(access: dict, op: str, needed=None) -> bool:
-    """Whether a phone's switches allow `op` (`needed`: the switches, any one of which will do; default the op's)."""
+    """Whether a phone's switches allow `op` (`needed`: the switches, any one of which will do; default the op's,
+    where none named means any switch of its kind)."""
     kind, any_of = OPERATIONS[op]
-    return bool(set(shared(access, kind)) & set(needed or any_of))
+    on = set(shared(access, kind))
+    wanted = set(needed or any_of)
+    return bool(on & wanted) if wanted else bool(on)
 
 
 def shares(access: dict, kind: str) -> bool:
@@ -462,14 +507,29 @@ PHOTOS_SCHEMA = _schema(
 
 HEALTH_SCHEMA = _schema(
     "device_health",
-    "Summaries of the user's Apple Health data, read-only, for the kinds they share: steps {steps, distance_km, "
-    "flights, by_day}, sleep {nights: [{night, asleep_hours, in_bed_hours, start, end}]}, workouts [{type, start, "
-    "end, minutes, energy_kcal?, distance_km?}], heart {resting_bpm, average_bpm, min_bpm, max_bpm}. Health can't be "
-    "read while the phone is locked: the answer then says so. " + DATES_NOTE + " " + WAITING_NOTE,
-    {"start": _string("From (default the start of today)."),
-     "end": _string("Until (default now; at most 31 days after start)."),
-     "metrics": {"type": "array", "items": {"type": "string", "enum": list(KINDS["health"])},
-                 "description": "Only these (default: every kind the user shares)."}})
+    "The user's Apple Health data, read-only, for the kinds they switch on in the app: any type the Health app has "
+    "(activity, body measurements, cycle tracking, hearing, heart, mental wellbeing, mobility, nutrition, "
+    "respiratory, sleep, symptoms, vitals, other). action `types` lists the types switched on, answered here without "
+    "the phone: {types: [{key, name}], count}. action `summary` (the default) reads them: {range, types: {key: entry}, "
+    "count, no_data?: [keys with nothing in the range], off?: [asked for but switched off], trimmed?, left_out?}. "
+    "Each entry has name, category, kind and unit, and then: added up (steps, energy, nutrients) total and by_day "
+    "{day: total}; measured (heart rate, weight, blood oxygen as 0-100) average, min, max, latest {value, at}, by_day; "
+    "logged (symptoms, stand hours, mindful minutes) count, minutes, values {name: count}, latest, by_day; sleep "
+    "nights [{night, asleep_hours, in_bed_hours, stages_hours?, start, end}]; workouts [{type, start, end, minutes, "
+    "energy_kcal?, distance_km?, average_bpm?}]; others their own fields. by_day only for a range over a day. Keys are "
+    "HealthKit identifiers, e.g. HKQuantityTypeIdentifierStepCount, HKQuantityTypeIdentifierHeartRate, "
+    "HKQuantityTypeIdentifierBodyMass, HKCategoryTypeIdentifierSleepAnalysis, HKWorkoutTypeIdentifier. Ask for a few "
+    "types or a short range: a large answer is cut down. A phone with an older Hermes HQ app shares only steps, sleep, "
+    "workouts and heart (metrics by those names) and answers with sections of those names instead of `types`. Health "
+    "can't be read while the phone is locked: the answer then says so. " + DATES_NOTE + " " + WAITING_NOTE,
+    {"action": _string("What to do (default summary).", enum=["summary", "types"]),
+     "start": _string("summary: from (default the start of today)."),
+     "end": _string("summary: until (default now; at most 31 days after start)."),
+     "metrics": {"type": "array", "items": {"type": "string"},
+                 "description": "summary: only these types, by key (from action types); steps, sleep, workouts and "
+                                "heart stand for their types. Default: every type switched on."},
+     "categories": {"type": "array", "items": {"type": "string", "enum": list(HEALTH_CATEGORIES)},
+                    "description": "summary: every type switched on in these groups."}})
 
 MOTION_SCHEMA = _schema(
     "device_motion",
@@ -633,14 +693,28 @@ def plan(tool: str, args: dict):
             return "photos.get", _pick(args, ("id", "max_pixels")), None
         return "action is search or get."
     if tool == "device_health":
-        metrics = _list(args.get("metrics"))
-        kept = [m for m in metrics if m in KINDS["health"]]
-        if metrics and not kept:
-            return "metrics are steps, sleep, workouts or heart."
-        request = _pick(args, ("start", "end"))
+        if action not in ("", "summary"):
+            return "action is summary or types."
+        metrics = _list(args.get("metrics"))[:HEALTH_MAX_ASKED]
+        kept = list(dict.fromkeys(m for m in metrics if m in KINDS["health"] or HEALTH_TYPE.fullmatch(m)))
+        categories = list(dict.fromkeys(c for c in _list(args.get("categories")) if c in HEALTH_CATEGORIES))
+        if metrics and not kept and not categories:
+            return "metrics are Health type keys (see action types), or steps, sleep, workouts or heart."
+        if args.get("categories") and not categories and not kept:
+            return "categories are " + ", ".join(HEALTH_CATEGORIES) + "."
+        # 0.9.46: the phone answers with `types`; an older app ignores `format` and answers its four sections.
+        request = {**_pick(args, ("start", "end")), "format": "types"}
         if kept:
             request["metrics"] = kept
-        return "health.summary", request, tuple(kept) or None
+        if categories:
+            request["categories"] = categories
+        # Named types: a phone must share one of them, or the old switch that stands for it (an older app). A group:
+        # any Health switch (only the phone knows which types are in it).
+        needed = None
+        if kept and not categories:
+            needed = tuple(kept) + tuple(old for old, types in HEALTH_LEGACY_TYPES.items()
+                                         if old not in kept and set(types) & set(kept))
+        return "health.summary", request, needed
     if tool == "device_motion":
         return "motion.activity", _pick(args, ("start", "end")), None
     if tool == "device_music":
@@ -708,7 +782,8 @@ def register_tools(ctx, store_for: Callable[[], Store], wake: Callable[[str, str
                            "hint": f"The user can turn it on in {SETTINGS_HINT}."})
         phone = next((p for p in phones if allows(p["access"], op, needed)), None)
         if phone is None:
-            names = " or ".join(SWITCHES[(kind, key)] for key in needed)
+            named = list(dict.fromkeys(switch_name(kind, key) for key in needed))
+            names = " or ".join(named[:5]) + (f" (or {len(named) - 5} more)" if len(named) > 5 else "") or TITLES[kind]
             return _reply({"status": "unavailable", "error": f"The phone shares {TITLES[kind]}, but not {names}.",
                            "hint": f"The user can turn on {names} in {SETTINGS_HINT} › {TITLES[kind]}."})
         if fields:
@@ -739,8 +814,32 @@ def register_tools(ctx, store_for: Callable[[], Store], wake: Callable[[str, str
         fields = [f for f in _list((args or {}).get("fields")) if f in KINDS["contacts"]]
         return await ask("contacts.search", {"query": query, **({"fields": fields} if fields else {})}, fields=True)
 
+    def health_types(args) -> str | None:
+        """device_health's action `types`: what the phone heard from most recently shares, from what it last said
+        (no round trip)."""
+        if _text(args or {}, "action") != "types":
+            return None
+        phones = store_for().sharing("health")
+        if not phones:
+            return _reply({"status": "unavailable", "error": "No phone shares Health with Hermes.",
+                           "hint": f"The user can turn it on in {SETTINGS_HINT}."})
+        phone = phones[0]
+        on = shared(phone["access"], "health")
+        types = [key for key in on if HEALTH_TYPE.fullmatch(key)]
+        if types:
+            return _reply({"status": "done", "device": phone["name"] or None, "count": len(types),
+                           "types": [{"key": key, "name": health_name(key)} for key in types],
+                           "categories": list(HEALTH_CATEGORIES)})
+        old = [key for key in on if key in KINDS["health"]]
+        return _reply({"status": "done", "device": phone["name"] or None, "count": len(old),
+                       "types": [{"key": key, "name": SWITCHES[("health", key)]} for key in old],
+                       "note": "This phone's Hermes HQ app is older and shares only these: ask with metrics named "
+                               "steps, sleep, workouts or heart."})
+
     def handler_for(tool: str):
         async def handle(args, **kwargs):
+            if tool == "device_health" and (listed := health_types(args)) is not None:
+                return listed
             planned = plan(tool, args or {})
             if isinstance(planned, str):
                 return _failed(planned)
