@@ -448,11 +448,23 @@ def run_now(store) -> dict:
 # ---------------------------------------------------------------------------
 
 def run_job_id(session_id) -> str:
-    """The job a cron run's session belongs to (``cron_<job>_<YYYYmmdd>_<HHMMSS>``, or the scheduler's own context
-    variable), or ""."""
+    """The job a cron run's session belongs to, or "". Older Hermes names the run's session
+    ``cron_<job>_<YYYYmmdd>_<HHMMSS>``. The unified scheduler (Hermes 2026-11) admits each fire into an opaque
+    ``local-*`` session and binds the job to the run's context (``gateway.session_cron.current_execution()``, the
+    way Hermes's own Codex transport finds it); the tool call runs in that context. Owner 2026-11-08: "the daily
+    check for new task idea isn't working": every run since 11-06 was turned away here."""
     match = _RUN_ID.match(str(session_id or ""))
     if match:
         return match.group(1)
+    try:
+        from gateway.session_cron import current_execution
+        execution = current_execution()
+        if execution is not None and (not session_id or str(execution[1]) == str(session_id)):
+            job_id = str(execution[2] or "").strip()
+            if job_id:
+                return job_id
+    except Exception:
+        pass
     try:
         from gateway.session_context import get_session_env
         return get_session_env("HERMES_CRON_JOB_ID") or ""

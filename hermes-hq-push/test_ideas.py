@@ -298,6 +298,22 @@ def test_the_run_id_comes_from_the_cron_session():
     assert ideas.run_job_id("20261105_073000_abcd") == ""
 
 
+def test_run_job_id_in_the_unified_schedulers_session(monkeypatch):
+    """Hermes 2026-11 runs a cron fire in an opaque local-* session and binds the job to the run's context."""
+    import types
+    bound = {"value": None}
+    module = types.ModuleType("gateway.session_cron")
+    module.current_execution = lambda: bound["value"]
+    gateway = sys.modules.get("gateway") or types.ModuleType("gateway")
+    monkeypatch.setitem(sys.modules, "gateway", gateway)
+    monkeypatch.setitem(sys.modules, "gateway.session_cron", module)
+    assert ideas.run_job_id("local-9f2c") == ""                      # no run bound: a chat
+    bound["value"] = (object(), "local-9f2c", "ab12cd34ef56", "exec-1")
+    assert ideas.run_job_id("local-9f2c") == "ab12cd34ef56"          # the run's own session
+    assert ideas.run_job_id("local-other") == ""                     # another session in the same context
+    assert ideas.run_job_id("") == "ab12cd34ef56"                    # a call that names no session
+
+
 def test_guard_leaves_every_other_session_alone(tmp_path, monkeypatch):
     s = store(tmp_path)
     monkeypatch.setattr(ideas, "_known_runs", {})
