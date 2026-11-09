@@ -235,7 +235,22 @@ def pre_llm_call(platform="", parent_session_id="", user_message=None, conversat
             notes.append(note)
     except Exception:
         log.debug("hermes-hq-push: tasks note skipped", exc_info=True)
+    try:  # [tasks] 0.9.47: an answer in a task's own chat starts it moving again (after the note read its question)
+        tasks.answer_started(_tasks_store(), str(session_id or ""), platform=platform, user_message=user_message)
+    except Exception:
+        log.debug("hermes-hq-push: tasks answer not noted", exc_info=True)
     return {"context": " ".join(notes)} if notes else None
+
+
+def post_llm_call(session_id="", **kwargs):
+    """[tasks] 0.9.47: the turn that answered a task's question ended; a task its bot didn't touch goes back to open."""
+    if not _serves_app_sessions():
+        return None
+    try:
+        tasks.answer_finished(_tasks_store(), str(session_id or ""))
+    except Exception:
+        log.debug("hermes-hq-push: tasks answer not finished", exc_info=True)
+    return None
 
 
 def transform_llm_output(response_text=None, session_id="", turn_id="", **kwargs):
@@ -521,6 +536,7 @@ def register(ctx):
     ctx.register_hook("on_human_input_request", on_human_input_request)
     ctx.register_hook("on_human_input_resolved", on_human_input_resolved)
     ctx.register_hook("pre_llm_call", pre_llm_call)
+    ctx.register_hook("post_llm_call", post_llm_call)
     ctx.register_hook("transform_llm_output", transform_llm_output)
     ctx.register_hook("on_session_end", on_session_end)
     _device_tools(ctx)

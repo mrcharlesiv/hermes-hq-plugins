@@ -1217,3 +1217,112 @@ def test_the_patch_answer_and_a_409_keep_the_page(client, tmp_path):
     assert stale.status_code == 409 and stale.json()["detail"]["task"]["page"] == gist
     plain = client.post(f"{BASE}/tasks", json={"title": "Buy stamps", "who": "me"}).json()
     assert "page" not in client.patch(f"{BASE}/tasks/{plain['id']}", json={"rev": plain["rev"], "notes": "x"}).json()
+
+
+# ---------------------------------------------------------------------------
+# 0.9.47, owner 2026-11-09 ("no friction, it just works"): the person's word in a task's own chat, the bot's own
+# next look, one-tap answers, and an answer that starts a waiting task moving again
+# ---------------------------------------------------------------------------
+
+def _with_chat(s, fields, session="s_task"):
+    task = s.create(fields, created_by="cro", source={})
+    return s.update_route(task["id"], task["rev"], {"chat": {"profile": "cro", "session_id": session}})
+
+
+def test_in_its_own_chat_the_bot_can_tick_their_steps_move_the_date_rename_and_finish(tmp_path):
+    s, ctx, notified = wired(tmp_path)
+    task = _with_chat(s, together(due="2026-11-05", steps=[{"title": "Find flights", "who": "bot"},
+                                                          {"title": "Book it", "who": "me"}]))
+    theirs = task["steps"][1]["id"]
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "done_steps": [theirs], "due": "2026-11-13T09:00",
+                                                "title": "Book Vegas"}, session_id="s_task"))
+    assert "error" not in out, out
+    assert out["steps"][1]["done"] is True and out["due"].startswith("2026-11-13T09:00") and out["title"] == "Book Vegas"
+    changes = [e["text"] for e in out["log"] if e.get("kind") == "change"]
+    assert changes == ["Ticked “Book it”", "Renamed it “Book Vegas”", "Moved to Fri Nov 13, 9:00 AM"]
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "undone_steps": [theirs]}, session_id="s_task"))
+    assert out["steps"][1]["done"] is False
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "done"}, session_id="s_task"))
+    assert out["status"] == "done" and notified == []
+
+
+def test_elsewhere_the_old_rules_still_hold(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = _with_chat(s, together(steps=[{"title": "Book it", "who": "me"}]))
+    for args in ({"done_steps": [task["steps"][0]["id"]]}, {"title": "New"}, {"status": "done"}):
+        out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], **args}, session_id="s_other"))
+        if "error" not in out:   # ticking their step elsewhere is ignored, not refused
+            assert out["steps"][0]["done"] is False and args.get("done_steps")
+    # another task's chat is not this task's chat
+    other = _with_chat(s, together(title="Other thing"), session="s_two")
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "done"}, session_id="s_two"))
+    assert "error" in out and other
+
+
+def test_in_its_own_chat_the_bot_can_change_the_users_own_task(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = _with_chat(s, me(due="2026-11-05"))
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "due": "2026-11-06"}, session_id="s_task"))
+    assert "error" not in out and out["due"] == "2026-11-06"
+
+
+def test_choices_go_with_the_question(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = _with_chat(s, together())
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "needs_you", "status_note": "Send it?",
+                                                "choices": ["Send it", "Let me edit it", "Not yet", "Fourth",
+                                                            "Send it"]}))
+    assert out["choices"] == ["Send it", "Let me edit it", "Not yet"]
+    assert s.list_response(None)["tasks"][0]["choices"] == ["Send it", "Let me edit it", "Not yet"]
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "working"}))
+    assert out["choices"] == []
+
+
+def test_next_check_brings_a_run_even_while_it_waits_on_them(tmp_path):
+    s, ctx, _ = wired(tmp_path)   # clock: 1_700_000_000 = Tue Nov 14 2023
+    task = s.create(together(), created_by="cro", source={})
+    s.update_bot(task["id"], "cro", status="needs_you", status_note="Send it?")
+    assert s.next_prep("cro") == {"stop": "no open prep tasks for cro"}
+    later = time.strftime("%Y-%m-%dT%H:%M", time.localtime(1_700_000_000 + 3 * 86400))
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "next_check": later}))
+    assert out["next_check"].startswith(later) and out.get("next_check_said")
+    ready, at = s.prep_schedule("cro")
+    assert ready == 0 and at == pytest.approx(1_700_000_000 + 3 * 86400, abs=60)
+    assert "stop" in s.next_prep("cro")
+    earlier = time.strftime("%Y-%m-%dT%H:%M", time.localtime(1_700_000_000 - 60))
+    ctx.tools["tasks_update"]({"id": task["id"], "next_check": earlier})
+    handed = s.next_prep("cro")
+    assert handed["id"] == task["id"] and handed["status"] == "working" and handed["next_check"] == ""
+    assert "stop" in s.next_prep("cro")   # one check, one run
+
+
+def test_an_answer_in_its_own_chat_starts_a_waiting_task_moving_again(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = _with_chat(s, together())
+    s.update_bot(task["id"], "cro", status="needs_you", status_note="Send it?", choices=["Send it"])
+    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="Send it", session_id="s_task")
+    assert 'needs_you ("Send it?")' in note
+    tasks.answer_started(s, "s_task", platform="desktop", user_message="Send it")
+    assert s.get(task["id"])["status"] == "working"
+    tasks.answer_finished(s, "s_task")   # the bot changed nothing: back to open, so it isn't stuck
+    assert s.get(task["id"])["status"] == "open"
+    # the bot answered with a change: its status stands
+    s.update_bot(task["id"], "cro", status="needs_you", status_note="Which one?")
+    tasks.answer_started(s, "s_task", platform="desktop", user_message="The Loft")
+    ctx.tools["tasks_update"]({"id": task["id"], "status": "ready", "status_note": "Booked"}, session_id="s_task")
+    tasks.answer_finished(s, "s_task")
+    assert s.get(task["id"])["status"] == "ready"
+    # a cron hand-off or another chat changes nothing
+    s.update_bot(task["id"], "cro", status="needs_you", status_note="Again?")
+    tasks.answer_started(s, "s_task", platform="desktop", user_message="[job hand-off]")
+    tasks.answer_started(s, "s_other", platform="desktop", user_message="hi")
+    assert s.get(task["id"])["status"] == "needs_you"
+
+
+def test_its_own_chat_sees_the_whole_task_and_the_persons_word_rule(tmp_path):
+    s, ctx, _ = wired(tmp_path)
+    task = _with_chat(s, together(steps=[{"title": "Book it", "who": "me"}]))
+    ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": "Two flights fit.", "next": "You pick one."}})
+    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi", session_id="s_task")
+    assert "Book it" in note and task["steps"][0]["id"] in note and "Two flights fit." in note
+    assert "You pick one." in note and "their call" in note
