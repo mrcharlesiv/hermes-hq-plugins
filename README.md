@@ -256,6 +256,15 @@ made, its history) and what its bot writes with `tasks_update(page={summary, nex
 next, and parts such as options compared in a table, the numbers that matter, or what it found. The bot writes words,
 never HTML. The `task-page` skill (hermes-hq-push:task-page) tells bots what goes on it.
 
+Version 0.9.47 adds **drafts for review**: when a bot has written something that would go out in your name (a Slack
+message, an email, a text, a post), it shows it in the Hermes HQ app as a card with the text, **Send**, **Edit** and
+**Don't Send** (its `draft_message` tool) instead of sending it or pasting it in the reply. Nothing goes out until you
+tap Send; your edits are what gets sent. The add-on sends nothing itself: your answer goes back to the bot as a
+message, and the bot sends the final text with whatever it already uses for that place. While a draft waits, or after
+Don't Send, the add-on refuses a sending tool that carries that draft's text (best effort: it can't see a send hidden
+in a shell command). Bots get the tool only once an app that draws the card has connected to this computer; create
+`drafts.off` in the add-on's data folder to turn it off for every bot.
+
 Version 0.9.46 lets a bot read **any kind of Health data you switch on**, not only steps, sleep, workouts and heart
 rate. In Hermes HQ, **Settings › Device Access › Health** lists the Health app's groups (Activity, Heart, Nutrition,
 Symptoms and the rest); each has a switch per kind and Turn On All. `device_health` with action `types` lists what's

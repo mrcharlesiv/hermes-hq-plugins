@@ -88,6 +88,13 @@ _media_spec.loader.exec_module(cron_media)
 _access_spec = importlib.util.spec_from_file_location("hermes_hq_device_access", Path(__file__).with_name("device_access.py"))
 device_access = importlib.util.module_from_spec(_access_spec)
 _access_spec.loader.exec_module(device_access)
+if "hermes_hq_drafts" in sys.modules:   # one copy for this process: the tool, the guard and the route share it
+    drafts = sys.modules["hermes_hq_drafts"]
+else:
+    _drafts_spec = importlib.util.spec_from_file_location("hermes_hq_drafts", Path(__file__).with_name("drafts.py"))
+    drafts = importlib.util.module_from_spec(_drafts_spec)
+    sys.modules["hermes_hq_drafts"] = drafts
+    _drafts_spec.loader.exec_module(drafts)
 if "hermes_hq_tasks" in sys.modules:   # one copy for this process: ideas.py and the dashboard routes share it
     tasks = sys.modules["hermes_hq_tasks"]
 else:
@@ -203,6 +210,10 @@ def pre_llm_call(platform="", parent_session_id="", user_message=None, conversat
         cron_media.note_turn(session_id, turn_id, user_message)
     except Exception:
         log.debug("hermes-hq-push: job attachments not noted", exc_info=True)
+    try:  # [drafts] the person's Send or Don't Send on a draft card (drafts.py)
+        drafts.note_decision(user_message, str(session_id or ""))
+    except Exception:
+        log.debug("hermes-hq-push: draft answer not noted")
     # Only turns ``hermes serve`` runs: a card asked from a turn the messaging gateway runs in an app chat (another
     # bot's message, a job's hand-off) can't reach the app and comes back undelivered. [tasks] The same restriction
     # keeps the Tasks note out of cron runs and hand-offs: only a conversation with the user adds it.
@@ -251,11 +262,24 @@ def _desktop_theme():
 
 
 def pre_tool_call(tool_name="", args=None, **kwargs):
-    verdict = _veto(tool_name, args) or _ideas_veto(tool_name, kwargs.get("session_id"))
+    verdict = (_veto(tool_name, args) or _ideas_veto(tool_name, kwargs.get("session_id"))
+               or _draft_veto(tool_name, args, kwargs.get("session_id")))
     if verdict is None:
         _named_site(tool_name, args, kwargs.get("task_id"))
         _live_step(tool_name, args, kwargs)
     return verdict
+
+
+def _draft_veto(tool_name, args, session_id):
+    """[drafts] A sending tool carrying the text of a draft the person hasn't approved (drafts.blocked_message)."""
+    try:
+        message = drafts.blocked_message(tool_name, args, session_id or "")
+    except Exception:
+        return None
+    if not message:
+        return None
+    log.info("hermes-hq-push: %s held: it carries an unapproved draft", tool_name)
+    return {"action": "block", "message": message}
 
 
 def _named_site(tool_name, args, task_id):
@@ -470,6 +494,13 @@ def _tasks_tools(ctx):
         log.warning("hermes-hq-push: task ideas tool not registered", exc_info=True)
 
 
+def _draft_tool(ctx):
+    try:
+        drafts.register_tool(ctx, push.data_dir, _serves_app_sessions)
+    except Exception:
+        log.warning("hermes-hq-push: draft_message tool not registered", exc_info=True)
+
+
 def _tasks_prep_job():
     """Startup safety net: reconcile this bot's "Task prep" job against its tasks.db right now, in case it fell
     out of sync (the job was removed by hand while prep tasks are still open, or vice versa)."""
@@ -494,6 +525,7 @@ def register(ctx):
     ctx.register_hook("on_session_end", on_session_end)
     _device_tools(ctx)
     _tasks_tools(ctx)
+    _draft_tool(ctx)
     _dashboard_skill(ctx)
     _task_page_skill(ctx)
     _desktop_theme()

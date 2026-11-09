@@ -61,6 +61,14 @@ else:
     sys.modules["hermes_hq_device_access"] = device_access
     _access_spec.loader.exec_module(device_access)
 
+if "hermes_hq_drafts" in sys.modules:
+    drafts = sys.modules["hermes_hq_drafts"]
+else:
+    _drafts_spec = importlib.util.spec_from_file_location("hermes_hq_drafts", Path(__file__).parents[1] / "drafts.py")
+    drafts = importlib.util.module_from_spec(_drafts_spec)
+    sys.modules["hermes_hq_drafts"] = drafts
+    _drafts_spec.loader.exec_module(drafts)
+
 if "hermes_hq_terminal" in sys.modules:
     terminal = sys.modules["hermes_hq_terminal"]
 else:
@@ -180,7 +188,14 @@ class ApprovalIn(BaseModel):
 def status():
     """The app probes this to offer push; a 404 means the plugin isn't installed or enabled."""
     return {**push.status_body(push.data_dir(), push.sender_from_env()), **terminal.status(push.data_dir()),
-            **tasks.status()}
+            **tasks.status(), **drafts.status(push.data_dir())}
+
+
+@router.put("/drafts/cards")
+def draft_cards():
+    """[drafts] An app that draws draft cards uses this computer: bots get draft_message from now on (drafts.py)."""
+    drafts.note_cards(push.data_dir())
+    return {"ok": True}
 
 
 @router.put("/devices/{device_id}")
