@@ -79,6 +79,12 @@ def test_a_turn_outside_the_app_is_told_to_ask_in_its_reply(tmp_path):
     {"app": "S" * 41, "body": BODY},
     {"app": "Slack", "to": "t" * 301, "body": BODY},
     {"app": "Email", "from": "f" * 301, "body": BODY},
+    {"app": "Email", "body": BODY, "thread": "Sam said hello"},
+    {"app": "Email", "body": BODY, "thread": [{"from": "Sam"}]},
+    {"app": "Email", "body": BODY, "thread": ["Sam said hello"]},
+    {"app": "Email", "body": BODY, "thread": [{"text": "hi"}] * (drafts.MAX_THREAD + 1)},
+    {"app": "Email", "body": BODY, "thread": [{"text": "x" * (drafts.MAX_THREAD_TEXT + 1)}]},
+    {"app": "Email", "body": BODY, "thread": [{"from": "f" * 301, "text": "hi"}]},
     "not a dict",
 ])
 def test_a_bad_call_is_refused_and_keeps_nothing(args):
@@ -133,6 +139,17 @@ def test_the_id_comes_from_the_drafts_words():
     assert taken(body="  " + BODY + "\n")["id"] == taken()["id"]
     assert taken(subject="Q3")["id"] != taken()["id"]
     assert taken(**{"from": "me@example.com"})["id"] == taken()["id"]
+
+
+def test_a_draft_carries_the_conversation_it_answers():
+    thread = [{"from": "Sam Rivera", "when": "Mon 9:12 AM", "text": "Can you look at the proposal?"},
+              {"from": "Sam Rivera", "text": "Section 3 especially."}]
+    with_thread = taken(thread=thread)
+    assert with_thread["draft"] == "waiting"
+    assert with_thread["id"] == taken()["id"] == taken(thread=[])["id"]
+    assert "thread" in drafts.SCHEMA["parameters"]["properties"]
+    # The conversation is someone else's words: carrying it to the card is not a send of the draft.
+    assert drafts.blocked_message("draft_message", {"body": BODY, "thread": thread}, "s1") is None
 
 
 def test_a_send_naming_an_unknown_draft_lets_the_chats_drafts_out():

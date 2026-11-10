@@ -39,6 +39,10 @@ CARDS = "draft-cards.on"
 MAX_BODY = 20_000
 MAX_PLACE = 300
 MAX_APP = 40
+# The conversation a draft answers (`thread`): the card shows it behind a button, so the person can check the reply
+# against what was said.
+MAX_THREAD = 30
+MAX_THREAD_TEXT = 40_000
 KEEP = 200
 TTL = 7 * 86400.0
 # The guard needs enough words to tell a draft from a coincidence ("Thanks!" appears in many messages).
@@ -60,7 +64,8 @@ SCHEMA = {
         "line saying the draft is ready and stop. Their answer arrives as a message starting "
         "\"[Hermes HQ draft <id>: send]\" followed by the final text (send exactly that, to the same place, with "
         "the tool you'd normally use, then confirm in a few words) or \"[Hermes HQ draft <id>: skip]\" (don't send "
-        "it). One call per message."),
+        "it). When the draft answers something (an email, a Slack thread, a text), pass the messages it answers in "
+        "`thread` so the user can read them on the card before deciding. One call per message."),
     "parameters": {
         "type": "object",
         "properties": {
@@ -72,6 +77,23 @@ SCHEMA = {
             "from": {"type": "string",
                      "description": "The account or address it is sent from, when the user has more than one."},
             "body": {"type": "string", "description": "The message, exactly as it would be sent."},
+            "thread": {
+                "type": "array",
+                "description": (
+                    "When the draft is a reply: the earlier messages of that conversation, oldest first, ending with "
+                    "the one being answered (for an email, the message being answered and any before it that matter; "
+                    f"for Slack or a text, the last several messages). Their real words, not a summary. Up to {MAX_THREAD} "
+                    f"messages and {MAX_THREAD_TEXT} characters in all: when there are more, keep the newest."),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "from": {"type": "string", "description": "Who wrote it: a name or an address."},
+                        "when": {"type": "string", "description": "When, as you'd say it: \"Tue 3:14 PM\", \"Nov 3\"."},
+                        "text": {"type": "string", "description": "What it says."},
+                    },
+                    "required": ["text"],
+                },
+            },
         },
         "required": ["app", "body"],
     },
@@ -160,16 +182,40 @@ def take(args, session_id: str = "") -> str:
     if (len(app) > MAX_APP or len(_text(args, "to")) > MAX_PLACE or len(_text(args, "subject")) > MAX_PLACE
             or len(_text(args, "from")) > MAX_PLACE):
         return _failed(f"`app` takes {MAX_APP} characters, `to`, `from` and `subject` {MAX_PLACE} each.")
+    wrong = _thread_error(args.get("thread"))
+    if wrong:
+        return _failed(wrong)
     new_id = draft_id(app, _text(args, "to"), _text(args, "subject"), body)
     remember(session_id, new_id, body)
     return _reply({"draft": "waiting", "id": new_id, "note": WAITING_NOTE})
 
 
+def _thread_error(thread) -> str | None:
+    """What is wrong with `thread` (the conversation the draft answers), or None. The card reads it from the call."""
+    if thread is None or thread == []:
+        return None
+    if not isinstance(thread, list):
+        return "`thread` is a list of messages ({from, when, text}), oldest first. Leave it out when there is none."
+    if len(thread) > MAX_THREAD:
+        return f"`thread` holds {len(thread)} messages; a draft card shows {MAX_THREAD}. Keep the newest."
+    total = 0
+    for item in thread:
+        if not isinstance(item, dict) or not _text(item, "text"):
+            return "Each message in `thread` is {from, when, text} with `text` filled in."
+        if len(_text(item, "from")) > MAX_PLACE or len(_text(item, "when")) > MAX_PLACE:
+            return f"In `thread`, `from` and `when` take {MAX_PLACE} characters each."
+        total += len(_text(item, "text"))
+    if total > MAX_THREAD_TEXT:
+        return (f"`thread` is {total} characters; a draft card holds {MAX_THREAD_TEXT}. Keep the newest messages, and "
+                "cut quoted history out of the older ones.")
+    return None
+
+
 def draft_id(app: str, to: str, subject: str, body: str) -> str:
     """A draft's id is made from its own words, so the app makes the same one from the call it draws (its
     DraftCards.id) without reading this tool's result: "d-" and 8 hex digits of SHA-256 over the four values (as
-    checked here: stripped) joined by newlines. `from` isn't part of it: the card shows it, and the person's Send
-    names it back."""
+    checked here: stripped) joined by newlines. `from` and `thread` aren't part of it: the card shows them, and the
+    person's Send names `from` back."""
     return "d-" + hashlib.sha256("\n".join([app, to, subject, body]).encode("utf-8")).hexdigest()[:8]
 
 
