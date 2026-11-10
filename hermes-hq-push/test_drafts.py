@@ -78,6 +78,7 @@ def test_a_turn_outside_the_app_is_told_to_ask_in_its_reply(tmp_path):
     {"app": "Slack", "body": "x" * (drafts.MAX_BODY + 1)},
     {"app": "S" * 41, "body": BODY},
     {"app": "Slack", "to": "t" * 301, "body": BODY},
+    {"app": "Email", "from": "f" * 301, "body": BODY},
     "not a dict",
 ])
 def test_a_bad_call_is_refused_and_keeps_nothing(args):
@@ -131,6 +132,7 @@ def test_the_id_comes_from_the_drafts_words():
         ("Slack\n#finance\n\n" + BODY).encode()).hexdigest()[:8]
     assert taken(body="  " + BODY + "\n")["id"] == taken()["id"]
     assert taken(subject="Q3")["id"] != taken()["id"]
+    assert taken(**{"from": "me@example.com"})["id"] == taken()["id"]
 
 
 def test_a_send_naming_an_unknown_draft_lets_the_chats_drafts_out():

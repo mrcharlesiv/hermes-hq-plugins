@@ -65,10 +65,12 @@ SCHEMA = {
         "type": "object",
         "properties": {
             "app": {"type": "string",
-                    "description": "Where it will be sent, as the user would say it: Slack, Email, Telegram, X…"},
+                    "description": "The app it will be sent with, its name alone: Slack, Email, Telegram, X…"},
             "to": {"type": "string",
                    "description": "Who or where it goes: a channel, a person, an address, a thread."},
             "subject": {"type": "string", "description": "Email only: the subject line."},
+            "from": {"type": "string",
+                     "description": "The account or address it is sent from, when the user has more than one."},
             "body": {"type": "string", "description": "The message, exactly as it would be sent."},
         },
         "required": ["app", "body"],
@@ -155,8 +157,9 @@ def take(args, session_id: str = "") -> str:
     app = _text(args, "app")
     if not app:
         return _failed("`app` is missing: say where it will be sent (Slack, Email, …).")
-    if len(app) > MAX_APP or len(_text(args, "to")) > MAX_PLACE or len(_text(args, "subject")) > MAX_PLACE:
-        return _failed(f"`app` takes {MAX_APP} characters, `to` and `subject` {MAX_PLACE} each.")
+    if (len(app) > MAX_APP or len(_text(args, "to")) > MAX_PLACE or len(_text(args, "subject")) > MAX_PLACE
+            or len(_text(args, "from")) > MAX_PLACE):
+        return _failed(f"`app` takes {MAX_APP} characters, `to`, `from` and `subject` {MAX_PLACE} each.")
     new_id = draft_id(app, _text(args, "to"), _text(args, "subject"), body)
     remember(session_id, new_id, body)
     return _reply({"draft": "waiting", "id": new_id, "note": WAITING_NOTE})
@@ -165,7 +168,8 @@ def take(args, session_id: str = "") -> str:
 def draft_id(app: str, to: str, subject: str, body: str) -> str:
     """A draft's id is made from its own words, so the app makes the same one from the call it draws (its
     DraftCards.id) without reading this tool's result: "d-" and 8 hex digits of SHA-256 over the four values (as
-    checked here: stripped) joined by newlines."""
+    checked here: stripped) joined by newlines. `from` isn't part of it: the card shows it, and the person's Send
+    names it back."""
     return "d-" + hashlib.sha256("\n".join([app, to, subject, body]).encode("utf-8")).hexdigest()[:8]
 
 
