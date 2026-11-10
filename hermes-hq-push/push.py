@@ -36,6 +36,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -868,7 +869,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.48"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
+PLUGIN_VERSION = "0.9.49"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
 
 
 class Relay:
@@ -1081,9 +1082,49 @@ def room_pass(content) -> bool:
     return bool(_ROOM_PASS.fullmatch(str(content or "").strip()))
 
 
+# Hermes's own silence markers (gateway/response_filters.py LIVE_GATEWAY_SILENT_MARKERS, the app's
+# Hydration.silenceMarkers): a reply that is only "NO_REPLY" (a bot answering another bot's message) is silence too.
+# Keep the three lists in step; the gateway's own rule is used as well when this process can import it.
+SILENCE_MARKERS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY", "[静默]", "静默", "[沉默]", "沉默"})
+
+
+def _edge_punctuation(ch: str) -> bool:
+    return ch not in "[]" and unicodedata.category(ch).startswith("P")  # a broken "[SILENT" isn't "SILENT"
+
+
+def silence_marker(content) -> bool:
+    """The gateway's is_intentional_silence_response: exactly a marker, give or take case, spaces and edge
+    punctuation ("NO_REPLY.", "*NO_REPLY*"). Prose that mentions NO_REPLY is a reply."""
+    text = str(content or "").strip()
+    if not 0 < len(text) <= 64:
+        return False
+    core = text
+    while core and _edge_punctuation(core[0]):
+        core = core[1:]
+    while core and _edge_punctuation(core[-1]):
+        core = core[:-1]
+    if any(" ".join(form.upper().split()) in SILENCE_MARKERS for form in (text, core)):
+        return True
+    try:
+        from gateway.response_filters import is_intentional_silence_response
+    except Exception:
+        return False
+    try:
+        return bool(is_intentional_silence_response(text))
+    except Exception:
+        return False
+
+
+def without_closing_marker(content: str) -> str:
+    """"Here is the answer.\n\nNO_REPLY" alerts "Here is the answer.": the gateway delivers it so too
+    (strip_trailing_silence_marker)."""
+    head, _, tail = content.rstrip().rpartition("\n")
+    return head.rstrip() if head.strip() and silence_marker(tail) else content
+
+
 def silent_reply(content) -> bool:
     text = str(content or "")
-    if _SILENT_REPLY.fullmatch(text):
+    if _SILENT_REPLY.fullmatch(text) or silence_marker(text):
         return True
     text = text.strip()
     while len(text) > 2 and text[0] in "*_" and text[-1] == text[0]:  # "*(no reply needed)*" is the same stand-in
@@ -1187,7 +1228,7 @@ class ReplyWatcher:
             for _, session, content, source in sorted(rows):
                 if silent_reply(content) or (session in rooms and room_pass(content)):
                     continue
-                last[session] = (content, source)  # a burst of turns in one chat: its last reply
+                last[session] = (without_closing_marker(str(content)), source)  # a burst of turns: its last reply
             for session, (content, source) in last.items():
                 self.submit(Push("turnDone", session=session, profile=profile, sender=self.sender(profile),
                                  text=str(content)[:4000], outside=source if source in OUTSIDE_LABELS else ""))
