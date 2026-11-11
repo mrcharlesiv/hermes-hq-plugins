@@ -1,0 +1,43 @@
+{
+ "name": "Crypto Prices",
+ "title": "Crypto",
+ "look": "terminal",
+ "blocks": [
+  {
+   "type": "status",
+   "order": "given",
+   "items": [
+    {
+     "name": "BTC",
+     "value": "$104,280",
+     "state": "good",
+     "detail": "+3.1% this week",
+     "series": [
+      99.5,
+      100.2,
+      101.8,
+      100.9,
+      102.6,
+      103.1,
+      104.3
+     ]
+    },
+    {
+     "name": "ETH",
+     "value": "$3,910",
+     "state": "bad",
+     "detail": "-2.6% this week",
+     "series": [
+      4.02,
+      4.05,
+      3.98,
+      3.96,
+      3.99,
+      3.93,
+      3.91
+     ]
+    }
+   ]
+  }
+ ]
+}

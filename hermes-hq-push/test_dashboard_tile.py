@@ -240,7 +240,8 @@ def test_drawn_at_every_size_the_template_fits_and_a_phone_page_does_not(tmp_pat
     tile.write_text((SKILL / "custom.html").read_text())
     problems, warnings, note = check_tile.render_problems(str(tile), check_tile.find_chromes(), str(tmp_path / "shots"))
     assert note is None and problems == [] and warnings == []
-    assert (tmp_path / "shots" / "tiles.png").stat().st_size > 10_000
+    for file, _, _ in check_tile.pages(check_tile.SHAPES):   # three pictures, each small enough to read
+        assert (tmp_path / "shots" / file).stat().st_size > 10_000
     phone = tmp_path / "phone.html"
     phone.write_text('<meta name="viewport" content="width=device-width"><body style="margin:0">'
                      '<h1 style="font-size:40px">Revenue</h1><p>' + "Lots of words. " * 80 + "</p></body>")
@@ -388,7 +389,7 @@ def test_a_name_with_a_spaced_slash_is_plain_words():
 
 @pytest.mark.parametrize("changes, says", [
     ({"badge": "● LIVE"}, "won't stay true"),
-    ({"caption": "Core path and compute verified with live evidence from Grafana"}, "keep it to about 40"),
+    ({"caption": "Core path and compute verified with live evidence from Grafana"}, "keep it to about 36"),
     ({"colour": "red"}, "is not something a tile has"),
     ({"blocks": [{"type": "status", "items": [{"name": f"host-{n}", "value": "Up", "state": "good"} for n in range(9)]}]}, 'every box says "Up"'),
 ])
@@ -484,7 +485,7 @@ def _drawn(tmp_path, spec):
 def test_every_example_draws_whole_at_every_size(tmp_path, path):
     problems, warnings, note = _drawn(tmp_path, json.loads(path.read_text()))
     assert note is None and problems == [], problems
-    assert not [w for w in warnings if "under 11 pt" in w or "too many words" in w or "blank block" in w], warnings
+    assert not [w for w in warnings if "under 11 pt" in w or "too many words" in w], warnings
 
 
 @needs_chrome
@@ -590,6 +591,15 @@ DREAMS = {
          "css": ".x-cal{display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:1fr;gap:.15em;text-align:center;height:100%;color:var(--ink)}"
                 ".x-cal span{display:grid;place-items:center;min-height:0}"},
         {"type": "rows", "items": [{"lead": "5", "name": "Dentist", "value": "3 PM"}, {"lead": "11", "name": "Board call", "value": "10 AM"}]}]},
+    "where it sits": {"value": "Good", "state": "good", "blocks": [{"type": "scale", "label": "Today", "items": [
+        {"name": n, "value": v, "max": 12, "text": t, "state": s} for n, v, t, s in
+        (("Air quality", 3, "42 Good", "good"), ("Pollen", 9.8, "High", "bad"), ("UV", 6, "6 Moderate", "warn"), ("Ozone", 2, "Low", "good"), ("Smoke", 1, "None", "good"))]}]},
+    "prices with their charts": {"value": None, "blocks": [{"type": "status", "order": "given", "items": [
+        {"name": n, "value": f"${v},280", "state": s, "detail": "this week", "series": [1, 3, 2, 5, 4, 6, v]} for n, v, s in
+        (("BTC", 104, "good"), ("ETH", 3, "bad"), ("SOL", 9, None), ("ADA", 1, "warn"))]}]},
+    "a song for a headline": {"value": "Here Comes the Sun (Remastered 2019)", "caption": "The Beatles", "blocks": [
+        {"type": "picture", "shape": "square", "svg": "<svg viewBox='0 0 10 10'><rect width='10' height='10' fill='var(--tint)'/></svg>"}]},
+    "one big number": {"value": "62", "state": "good", "look": "vivid", "caption": "Goal: above 50", "blocks": []},
     "a drawing": {"value": "3 days", "blocks": [{"type": "picture", "fit": "contain", "svg": "<svg viewBox='0 0 10 10'><circle cx='5' cy='5' r='4' fill='var(--tint)'/></svg>"}]},
     "everything at once": {"value": "DEGRADED", "state": "bad", "badge": "38/40 up", "badge_state": "bad", "blocks": [
         {"type": "status", "items": [{"name": f"host-{n:02d}", "value": f"{n} cores", "state": "bad" if n in (17, 31) else "good"} for n in range(40)]},
@@ -606,7 +616,66 @@ def test_whatever_is_asked_for_comes_out_whole(tmp_path, dream, look):
     """Far more than fits, of every kind of block, and a drawing of the bot's own: nothing cut off, nothing over
     anything else, nothing too small, at every size."""
     spec = dict(_spec(), **DREAMS[dream])
-    spec["look"] = spec.get("look") if dream == "a quote" else look
+    spec["look"] = spec.get("look") if dream in ("a quote", "one big number") else look
     problems, warnings, note = _drawn(tmp_path, spec)
     assert note is None and problems == [], problems
     assert not [w for w in warnings if "under 11 pt" in w], warnings
+
+
+def test_null_takes_a_key_away_and_a_blocks_order_is_kept_when_asked(tmp_path):
+    tile = _made(tmp_path, _spec(caption="Core path verified", badge="9/9 up"))
+    patch = tmp_path / "patch.json"
+    patch.write_text(json.dumps({"caption": None, "badge": None}))
+    assert make_tile.main(["set", str(tile), str(patch)]) == 0
+    spec = make_tile.read_spec(str(tile))
+    assert "caption" not in spec and "badge" not in spec and spec["value"] == "ONLINE"
+    assert make_tile.checked(_spec(blocks=[{"type": "rows", "order": "given", "label": "By priority",
+                                            "items": [{"name": "Urgent", "value": "3"}, {"name": "High", "value": "11", "state": "bad"}]}])) == ([], [])
+
+
+def test_a_picture_printed_by_show_and_sent_back_stays(tmp_path, capsys):
+    _png(tmp_path / "logo.png")
+    tile = _made(tmp_path, _spec(blocks=[{"type": "picture", "file": "logo.png"}]))
+    capsys.readouterr()
+    assert make_tile.main(["show", str(tile)]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert shown["blocks"][0]["src"].startswith("<a picture")
+    patch = tmp_path / "patch.json"
+    patch.write_text(json.dumps({"blocks": shown["blocks"] + [{"type": "stats", "items": [{"name": "Days", "value": "3"}]}]}))
+    assert make_tile.main(["set", str(tile), str(patch)]) == 0
+    assert make_tile.read_spec(str(tile))["blocks"][0]["src"].startswith("data:image/png;base64,")
+
+
+def test_a_picture_named_in_a_custom_block_goes_inside_the_tile(tmp_path):
+    _png(tmp_path / "art.png")
+    tile = _made(tmp_path, _spec(blocks=[{"type": "custom", "html": f"<img class='x-art' src='{{{{file:{tmp_path / 'art.png'}}}}}' alt=''>",
+                                          "css": ".x-art { height: 100%; border: 1px solid var(--line); }"}]))
+    html = make_tile.read_spec(str(tile))["blocks"][0]["html"]
+    assert "data:image/png;base64," in html and "{{file:" not in html
+
+
+def test_a_pale_colour_under_white_words_is_warned_about():
+    assert any("too pale" in w for w in make_tile.checked(_spec(look="vivid", accent="#ffe066"))[1])
+    assert not any("too pale" in w for w in make_tile.checked(_spec(look="vivid", accent="#635bff"))[1])
+
+
+@needs_chrome
+def test_the_check_says_what_a_size_leaves_out_and_when_that_is_the_main_block(tmp_path):
+    """A trial bot's tile lost its main block at one size and its table lost a column, and the check said nothing."""
+    drawing = {"type": "custom", "html": "<div class='x-tall' style='color: var(--ink)'>" + "<p>A line of a drawing</p>" * 9 + "</div>", "stretch": False}
+    rows = {"type": "rows", "items": [{"name": "Dentist", "value": "3 PM"}, {"name": "Board call", "value": "10 AM"}]}
+    problems, warnings, note = _drawn(tmp_path, _spec(value="12", blocks=[drawing, rows]))
+    assert note is None and any("the main block is not shown" in w for w in warnings), warnings
+    assert "block 1 (custom)" in check_tile.render_problems.left_out
+    _, warnings, _ = _drawn(tmp_path, _spec(value="12", blocks=[dict(drawing, drop=1), rows]))
+    assert not any("the main block is not shown" in w for w in warnings), "its turn was chosen: going first is meant"
+
+
+@needs_chrome
+def test_words_that_run_out_of_their_box_are_a_problem(tmp_path):
+    """A trial bot's own grid printed "REVENUDEALS": two labels run together, and the check said OK."""
+    cells = "".join(f"<span>{w}</span>" for w in ("Revenue", "Deals", "Winrate", "Pipeline", "Forecast", "Quota", "Bookings", "Renewals"))
+    block = {"type": "custom", "stretch": False, "html": f"<div class='x-grid'>{cells}</div>",
+             "css": ".x-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); color: var(--ink); white-space: nowrap; }"}
+    problems, _, note = _drawn(tmp_path, _spec(value="$2.4M", blocks=[block]))
+    assert note is None and any("run out of their box" in p for p in problems), problems

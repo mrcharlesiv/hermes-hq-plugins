@@ -28,11 +28,12 @@ kit's layout and colours. So whatever they dream up, the answer is a spec.
    only the way in (delete it, or keep it as a note). Every later change goes through `make_tile.py set`, never by
    making the tile again from the old `.json`, which would put old numbers back.
 4. **Check it:** `python3 ${HERMES_SKILL_DIR}/check_tile.py ~/dashboards/<short-name>.html`. It draws the tile in
-   every window the app uses and says what is wrong and where. When it says `PICTURES:`, **look at that `tiles.png`**
-   (every size, side by side) before handing the tile over: you are the one who can tell whether it reads at a
-   glance. Something off is fixed in the tile's **data** (fewer or shorter words, a different block, another order)
-   with `set`, then checked again. A `PROBLEM` must be fixed; a `WARNING` is yours to fix where you can, and
-   doesn't stop the hand-over. `NOT DRAWN` means there was no browser to draw it with: install one
+   every window the app uses and says what is wrong and where. `LEFT OUT` lists what each size leaves out so that
+   it fits: that is by design, but make sure nothing the person asked for is missing from the sizes they will use.
+   When it says `PICTURES:`, **look at each picture** (the small sizes, the large ones, the biggest) before handing
+   the tile over: you are the one who can tell whether it reads at a glance. Something off is fixed in the tile's
+   **data** (fewer or shorter words, a different block, another order) with `set`, then checked again. A `PROBLEM`
+   must be fixed; a `WARNING` is yours to fix where you can, and doesn't stop the hand-over. `NOT DRAWN` means there was no browser to draw it with: install one
    (`npx playwright install chromium`, or `apt install chromium`) or point `HQ_TILE_CHROME` at one; if you can't,
    say the tile wasn't checked by eye.
 5. **Keep it live** with a scheduled job (see *Keeping it live*), and give the tile the job's id:
@@ -45,6 +46,20 @@ kit's layout and colours. So whatever they dream up, the answer is a spec.
 
    Tell them: hold the card and choose **Pin as Tile**, then pick its size. (If they asked from **Tiles › New Tile**,
    the app pins it for them.) Say how often it updates.
+
+## Where a tile is seen
+
+The person picks the view and the size and changes them at will, so one tile must work in all of these (the check
+draws each):
+
+| | Phone | iPad / Mac |
+|---|---|---|
+| Grid: Small | ~160–175 pt square | ~190 square |
+| Grid: Medium | ~360 × 175 (wide) | wider |
+| Grid: Large | ~360 × 380 | larger |
+| Grid: Extra Large | ~360 × 590 (tall) | ~760 × 570 (wide) |
+| Cards (the other view of Tiles) | ~390 × 200–235 (wide) | down to 390 × 140 |
+| Opened (a tap) | the whole screen | a large sheet |
 
 ## The spec
 
@@ -87,17 +102,18 @@ Only `name` is required.
 | The person wants | Block | In short |
 |---|---|---|
 | a number over time; this against that | `chart` | a line over a soft fill, up to four lines, or bars |
-| is each thing all right | `status` | a box per thing with a light: `name`, `value`, `state` |
+| is each thing all right; a few things each with its own little chart | `status` | a box per thing with a light: `name`, `value`, `state`, a `series` |
 | a breakdown, an agenda, to-dos, a leaderboard, prices | `rows` | a ruled list: `lead` (a time, a rank), `name`, `value`, a small `series` line |
 | how full: disk, quota, budget | `meters` | a bar under each name |
+| where it sits between good and bad: air quality, a risk | `scale` | a bar from green to red, a mark on it |
 | how far along a goal; a score | `rings` | up to four rings, the number in the middle |
 | the few figures beside the headline | `stats` | two to four small numbers under their labels |
 | a forecast, the days of a week, steps in a row | `strip` | small columns in order: a label, a glyph, a value |
 | up or down by day; a habit over a year | `heat` | a grid of small cells |
 | where it went: money, time, traffic | `split` | one bar cut into shares, each named |
 | a few things compared on a few figures | `table` | up to four columns |
-| a note, a summary, a quote | `text` | words, as many lines as fit |
-| a photo, a logo, a drawing | `picture` | a file (put inside the tile) or SVG |
+| a note, a summary, a quote; a title with a line under it (a song, a book) | `text` | words, as many lines as fit |
+| a photo, a logo, a cover, a drawing | `picture` | a file (put inside the tile) or SVG; `"shape": "square"` for a cover |
 | to act from the tile | `buttons` | each sends you a message when pressed |
 | anything else | `custom` | your own markup and styles, in the tile's colours |
 
@@ -106,14 +122,32 @@ blocks you use.
 
 **How blocks are laid out.** The first block is the main one and gets the room. The others sit beside or under it,
 and are the first to go when the tile is small: the last one first. So order them by what matters, and give a list
-all its items: the tile shows as many as fit. `"drop": 1` on a block makes it the first to go; `"keep": 3` is the
-fewest items worth showing.
+all its items: the tile shows as many as fit, in full rows. In a wide tile (Medium, a card) the heading runs across
+the top, the headline and caption sit on the left and the main block on the right; with no headline or caption the
+main block has the whole width. In a small tile the caption, the foot and the badge give way too, so what must
+always show goes in the headline. Any block can take:
 
-**When no block draws it** (a month's calendar, a seating plan, a gauge of your own, a diagram): make that part a
-`custom` block and keep the rest of the tile (heading, headline, other blocks, foot) the kit's. Write its markup
-and styles with the tile's colours (`var(--ink)`, `var(--tint)`, `var(--surface)` ...) and sizes in `em`, so it
-matches every look and both light and dark. The check judges it like everything else. If the drawing needs room,
-give it `"drop": 1` and follow it with a block a small tile can show instead.
+- `"label": "Up next"`: a heading over it;
+- `"drop": 1`: it is the first to go;
+- `"keep": 3`: the fewest items worth showing (with room for fewer, the block goes instead);
+- `"order": "given"`: its items stay in your order (otherwise what is `bad` or `warn` comes first).
+
+A tile bigger than what it has to show stays partly empty, and that is fine: an Extra Large tile of five rows is
+five rows. Don't pad it with things nobody asked for; a block that stretches (a chart, a picture, rings) is what
+fills a big tile, when there is one worth showing.
+
+**When no block draws it** (a month's calendar, a seating plan, a map of a cluster, a funnel): make that part a
+`custom` block and keep the rest of the tile (heading, headline, other blocks, foot) the kit's. Read
+`make_tile.py blocks custom` first: it says what your markup and styles can use. In short: the tile's colours
+(`var(--ink)`, `var(--tint)`, `var(--surface)` ...) and sizes in `em` (never under `1em`), so it matches every look
+and both light and dark; `height: 100%` to fill the room it is given; `@container` or `@media` queries to change
+with the tile's size, since one drawing must work from 160 pt to a whole screen. The check judges it like
+everything else, and you must look at the pictures: a drawing is where tiles go wrong. If it needs room, give it
+`"drop": 1` and follow it with a block a small tile can show instead.
+
+**Things that tick** (a clock, a timer): a tile is a picture except where it runs live, which is in the app's Grid
+when the tile has `"refresh"` or buttons, and when it is opened. So show what stays true (when a timer ends, not
+the seconds left), and if you draw a clock in a `custom` block's `js`, say that it is only right where it is live.
 
 ## What to put on a tile
 
@@ -133,7 +167,9 @@ A tile is read in a second. Whatever the subject, choose for that:
 - **Two or three blocks at most** for most tiles. A small tile shows the headline and the first block; the rest
   appear as the tile gets bigger.
 - **Their words win.** If they describe how it should look or what goes where, do that, with the blocks that come
-  closest and a `custom` block where none does.
+  closest and a `custom` block where none does. A colour they name is the `accent`; "one big number in green" or
+  "make it pop" is `vivid`; "pretty" for words is a `text` block with `"face": "serif"` and `"align": "center"`,
+  over a `backdrop` if they gave a picture.
 
 ## Keeping it live
 
@@ -175,8 +211,11 @@ when it next opens the Dashboard.
 ## Changing a tile
 
 `python3 ${HERMES_SKILL_DIR}/make_tile.py show <tile>` prints its data. Change what was asked (a look, a block, the
-words) and give it back with `set`; if a refresh script writes those keys, change the script too. Keep the path, the
-`name` and the `job`. `rebuild <tile>` draws it again with the newest kit after the add-on is updated.
+words) and give it back with `set`; if a refresh script writes those keys, change the script too. `null` takes a
+key away. A picture is printed as `<a picture ... inside the tile>`: send that back as it is and the picture
+stays. Keep the path, the `name` and the `job`. `rebuild <tile>` draws it again with the newest kit after the
+add-on is updated. (While you are still making a tile, before you hand it over, making it again from its `.json`
+is fine.)
 
 A tile that `show` refuses was written by hand before the kit. Leave it for a small change. When the person says it
 is cut off, cramped or plain, or asks for a new look, make it again as a spec at the same path (its data, its

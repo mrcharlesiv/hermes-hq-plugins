@@ -3,7 +3,8 @@
 // data-keep is the fewest worth showing); data-least is the least height of a part that stretches, in px or as a
 // share of the tile's height ("44 14%": whichever is more); data-whole shows
 // whole or not at all; data-shrink is one line that shrinks to its width; data-clamp is words that take the lines
-// they have room for; data-fits is a part that goes when its contents run out of it. Kept identical in custom.html.
+// they have room for; data-fits is a part that goes when its contents run out of it. With nothing left out, the tile
+// gets data-roomy. Kept identical in custom.html.
 (function () {
   function fitTile() {
     var tile = document.querySelector(".tile"); if (!tile) return;
@@ -79,6 +80,7 @@
       }
     }
     // Start again from everything showing (the tile changed size); the page lays out what goes by its width first.
+    tile.removeAttribute("data-roomy");
     q("[data-off]").forEach(on);
     if (typeof window.hqTileLayout === "function") window.hqTileLayout();
     q("[data-items]").forEach(more);
@@ -116,6 +118,9 @@
     });
     q("[data-shrink]").forEach(shrink);
     q("[data-whole]").forEach(function (e) { if (shown(e) && e.scrollWidth > e.clientWidth + 1) off(e); });
+    // Room to spare: nothing had to go, so the tile is marked "roomy" (its look can then show more about each
+    // thing), unless that is what makes it not fit.
+    if (!q("[data-off]").length) { tile.setAttribute("data-roomy", ""); if (misfit()) tile.removeAttribute("data-roomy"); }
     // data-clamp: words that take as many whole lines as their box has room for.
     q("[data-clamp]").forEach(function (e) {
       e.style.webkitLineClamp = "";

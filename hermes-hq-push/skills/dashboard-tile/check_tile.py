@@ -193,12 +193,14 @@ setTimeout(function(){
   function label(e){ var c=typeof e.className==="string"&&e.className ? "."+e.className.split(" ")[0] : ""; return e.tagName.toLowerCase()+(e.id?"#"+e.id:"")+c; }
   function says(e){ var t=e.textContent.trim().replace(/\s+/g," "); return " “"+(t.length>48 ? t.slice(0,46)+"…" : t)+"”"; }
   function ownText(e){ for (var c=e.firstChild;c;c=c.nextSibling) if(c.nodeType===3&&c.nodeValue.trim()) return c; return null; }
-  function rgb(c){ var m=c&&c.match(/[\d.]+/g); return m&&m.length>=3 ? [+m[0],+m[1],+m[2],m.length>3?+m[3]:1] : null; }
+  // "rgb(r, g, b)" or "rgba(...)", and what a mixed colour computes to: "color(srgb r g b / a)", each from 0 to 1.
+  function rgb(c){ var m=c&&c.match(/-?[\d.]+(?:e-?\d+)?/g); if (!m||m.length<3) return null;
+    var k=/^color\(/.test(c) ? 255 : 1; return [m[0]*k,m[1]*k,m[2]*k,m.length>3?+m[3]:1]; }
   function lum(c){ return [c[0],c[1],c[2]].map(function(v){ v/=255; return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4); })
     .reduce(function(a,v,i){ return a+v*[0.2126,0.7152,0.0722][i]; },0); }
   function back(e){ for (var n=e;n&&n.nodeType===1;n=n.parentElement){ var b=rgb(getComputedStyle(n).backgroundColor); if (b&&b[3]>0.5) return b; }
     return matchMedia("(prefers-color-scheme: dark)").matches ? [0,0,0,1] : [255,255,255,1]; }
-  var past=0, pastFirst="", tiny=0, small=0, smallFirst="", faint=0, faintFirst="", clipped=0, clippedFirst="",
+  var spill=0, spillFirst="", past=0, pastFirst="", tiny=0, small=0, smallFirst="", faint=0, faintFirst="", clipped=0, clippedFirst="",
       boxes=0, boxFirst="", under=0, underFirst="", ink=[];
   var page=getComputedStyle(document.body).backgroundColor;
   all.forEach(function(e){
@@ -218,11 +220,16 @@ setTimeout(function(){
     if (size<9) tiny++; else if (size<10.5) { small++; if(!smallFirst) smallFirst=label(e)+" "+(Math.round(size*10)/10)+" px"; }
     var fg=rgb(st.color), bg=back(e);
     if (fg&&bg){ var a=lum(fg), b=lum(bg), ratio=(Math.max(a,b)+0.05)/(Math.min(a,b)+0.05); if (ratio<3){ faint++; if(!faintFirst) faintFirst=label(e)+" "+ratio.toFixed(1)+":1"; } }
-    if (st.overflow!=="visible" && e.scrollWidth>e.clientWidth+1){ clipped++; if(!clippedFirst) clippedFirst=label(e)+says(e); }
-    // The words themselves: where they are drawn, and whether something else is drawn over them.
+    // The words themselves: where they are drawn; whether their box cuts them off (an ellipsis) or they run out of
+    // it sideways (over whatever is beside them); and whether something else is drawn over them.
     var range=document.createRange(); range.selectNodeContents(text);
     var rects=range.getClientRects(); for (var i=0;i<rects.length;i++) ink.push(rects[i]);
     if (!rects.length) return;
+    var box=e; while (box.parentElement && getComputedStyle(box).display==="inline") box=box.parentElement;
+    var bs=getComputedStyle(box), br=box.getBoundingClientRect(), tr=range.getBoundingClientRect();
+    if (tr.right > br.right-(parseFloat(bs.paddingRight)||0)+0.75 || tr.left < br.left+(parseFloat(bs.paddingLeft)||0)-0.75){
+      if (bs.overflowX!=="visible"){ clipped++; if(!clippedFirst) clippedFirst=label(e)+says(e); }
+      else { spill++; if(!spillFirst) spillFirst=label(e)+says(e); } }
     var t=rects[0], x=(Math.max(t.left,r.left)+Math.min(t.right,r.right))/2, y=(Math.max(t.top,r.top)+Math.min(t.bottom,r.bottom))/2;
     if (x<0||y<0||x>=w||y>=h) return;
     var top=document.elementFromPoint(x,y);
@@ -230,7 +237,16 @@ setTimeout(function(){
   });
   function say(kind,n,first){ if (n) out.push({k:kind,n:n,first:first||""}); }
   say("past",past,pastFirst); say("boxes",boxes,boxFirst); say("under",under,underFirst); say("faint",faint,faintFirst);
-  say("tiny",tiny); say("small",small,smallFirst); say("clipped",clipped,clippedFirst);
+  say("tiny",tiny); say("small",small,smallFirst); say("clipped",clipped,clippedFirst); say("spill",spill,spillFirst);
+  // A tile made with the kit: what it left out at this size, so that it fits (and whether that is its main block).
+  var left=[];
+  [].forEach.call(document.querySelectorAll(".block"), function(b){
+    var off=b.hasAttribute("data-off") || b.getClientRects().length===0, what="block "+(b.getAttribute("data-block")||"");
+    if (off) { left.push(what); if (/^1 /.test(b.getAttribute("data-block")||"") && !b.hasAttribute("data-chosen")) out.push({k:"nomain",n:1,first:what}); }
+    var cols=b.getAttribute("data-columns")||""; if (!off && cols && cols.split(" of ")[0]!==cols.split(" of ")[1]) left.push(what+": "+cols+" columns");
+  });
+  [["caption","the caption"],["foot","the foot"],["badge","the badge"]].forEach(function(p){ var e=document.querySelector(".tile > ."+p[0]+", .head > ."+p[0]); if (e && e.getClientRects().length===0) left.push(p[1]); });
+  if (left.length) out.push({k:"left",n:left.length,first:left.join(", ")});
   var words=document.body ? document.body.innerText.trim().split(/\s+/).filter(function(t){ return /[A-Za-zÀ-￿]/.test(t); }).length : 0;
   if (!words && !document.querySelector("svg,canvas,img")) out.push({k:"nothing",n:1,first:""});
   var glance=Math.round(w*h/1300);
@@ -273,8 +289,13 @@ FINDINGS = {
     "quirks": (True, "no <!doctype html> on the first line (the page is laid out in quirks mode)", None, "add it"),
     "small": (False, "text is under 11 pt, hard to read on a phone", "piece", "show fewer things, larger (the kit keeps to .85em of its base size)"),
     "clipped": (False, "text is cut off with \u2026", "piece", "shorten the words (a long name may be a choice; a headline, a status or a note cut short is not)"),
+    "spill": (True, "words run out of their box, over what is beside them", "piece", "give them room (fewer columns, shorter words), or let their box cut them "
+              "(overflow: hidden; text-overflow: ellipsis)"),
+    "nomain": (False, "the main block is not shown, only what follows it", None, "it doesn't fit there: make it smaller for small tiles, or put first a block "
+               "a small tile can show"),
     "crowded": (False, "too many words for a glance", "words", "show fewer things at these sizes: a tile is read in a second, the details are a tap away"),
-    "empty": (False, "a blank block covers a third of the tile or more", "% blank", "let the chart or the items stretch into it, or lay that shape out differently"),
+    "empty": (False, "a blank block covers a third of the tile or more", "% blank", "a block that stretches fills it (a chart, a picture, rings); "
+              "with nothing more worth showing, leave it"),
 }
 
 
@@ -285,6 +306,9 @@ def worded(found, shapes):
         for f in found.get(str(i), []):
             where = kinds.setdefault(f["k"], {})
             where.setdefault(f"{shape} {w}×{h}", f)
+    # What a kit tile leaves out to fit is by design: said, so it is known without reading it off the pictures.
+    left = kinds.pop("left", {})
+    render_problems.left_out = "; ".join(f"{size}: {f['first']}" for size, f in left.items())
     problems, warnings = [], []
     for kind, where in kinds.items():
         fails, what, unit, fix = FINDINGS.get(kind, (True, kind, None, ""))
@@ -303,12 +327,12 @@ def worded(found, shapes):
     return problems, warnings
 
 
-def sheet(shapes):
+def sheet(shapes, numbers=None):
     """The page holding one frame per tile window, each exactly the tile's size, in its look."""
     frames = "".join(
         f'<figure><iframe src="tile.html#{i}" width="{w}" height="{h}" style="color-scheme:{look}"></iframe>'
         f'<figcaption>{name} · {w}×{h} · {look}</figcaption></figure>'
-        for i, (name, w, h, look) in enumerate(shapes))
+        for i, (name, w, h, look) in zip(numbers or range(len(shapes)), shapes))
     return f"""<!doctype html><meta charset="utf-8"><style>
 body{{margin:0;padding:16px;background:#8a8f98;font:13px -apple-system,system-ui,sans-serif;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;width:{SHEET_WIDTH}px}}
 figure{{margin:0}} iframe{{border:0;display:block;border-radius:18px;background:transparent}} figcaption{{color:#fff;margin-top:4px}}
@@ -338,6 +362,14 @@ def with_probe(html):
     if re.search(r"</body>", html, re.I):
         return re.sub(r"</body>", lambda _: PROBE + "</body>", html, count=1, flags=re.I)
     return html + PROBE
+
+
+def pages(shapes):
+    """The sizes in three pictures small enough to read: (file, what it holds, the shapes with their numbers)."""
+    numbered = list(enumerate(shapes))
+    return [("tiles-1-small.png", "Small, Medium and the cards", [(i, s) for i, s in numbered if s[2] <= 240]),
+            ("tiles-2-large.png", "Large and Extra Large", [(i, s) for i, s in numbered if s[2] > 240 and s[1] < 500 and s[2] < 700]),
+            ("tiles-3-biggest.png", "an iPad's Extra Large and the opened tile", [(i, s) for i, s in numbered if s[1] >= 500 or s[2] >= 700])]
 
 
 def render_problems(path, chromes, shots):
@@ -382,10 +414,14 @@ def render_with(path, chrome, shots):
             problems, warnings = worded(found, SHAPES)
             if shots:
                 os.makedirs(shots, exist_ok=True)
-                try:
-                    subprocess.run(base + [f"--screenshot={os.path.join(shots, 'tiles.png')}", url], capture_output=True, timeout=45)
-                except subprocess.TimeoutExpired:
-                    pass
+                for file, _, some in pages(SHAPES):
+                    with open(host, "w", encoding="utf-8") as f:
+                        f.write(sheet([s for _, s in some], [i for i, _ in some]).replace('src="tile.html', f'src="{os.path.basename(tile)}'))
+                    size = [a for a in base if not a.startswith("--window-size")] + [f"--window-size={SHEET_WIDTH + 32},{sheet_height([s for _, s in some])}"]
+                    try:
+                        subprocess.run(size + [f"--screenshot={os.path.join(shots, file)}", url], capture_output=True, timeout=45)
+                    except subprocess.TimeoutExpired:
+                        pass
             return problems, warnings, None
         finally:
             for f in (tile, host):
@@ -398,7 +434,7 @@ def render_with(path, chrome, shots):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("file")
-    ap.add_argument("--shots", help="folder for tiles.png, every tile size side by side (default: one in the temporary folder)")
+    ap.add_argument("--shots", help="folder for the pictures of every tile size (default: one in the temporary folder)")
     ap.add_argument("--no-render", action="store_true", help="only the file checks")
     args = ap.parse_args()
     path = os.path.abspath(os.path.expanduser(args.file))
@@ -413,10 +449,13 @@ def main():
     problems, warnings = static_problems(html)
     note = None
     shots = None
+    render_problems.left_out = ""
     chromes = [] if args.no_render else find_chromes()
     if chromes:
         # Not beside the tile: a folder of pictures per tile piled up in ~/dashboards.
-        shots = args.shots or os.path.join(tempfile.gettempdir(), "hq-tile-pictures", os.path.splitext(os.path.basename(path))[0])
+        # ... and one folder per tile's whole path, so two tiles with one name don't share it.
+        shots = args.shots or os.path.join(tempfile.gettempdir(), "hq-tile-pictures",
+                                           re.sub(r"[^A-Za-z0-9]+", "-", os.path.splitext(path)[0]).strip("-")[-80:])
         found, looks, note = render_problems(path, chromes, shots)
         problems += found
         warnings += looks
@@ -432,14 +471,18 @@ def main():
         print("PROBLEM:", p)
     for w in warnings:
         print("WARNING:", w)
+    left_out = getattr(render_problems, "left_out", "")
+    if left_out and not args.no_render:
+        print("LEFT OUT to fit (by design; say so if it matters):", left_out)
     if (problems or warnings) and 'name="hq-tile-kit"' in html:
         print("This tile was made by make_tile.py: fix these in its data (fewer or shorter words, another block, another order: "
-              "`make_tile.py show`, then `set`), never in the page's HTML or CSS")
+              "`make_tile.py show`, then `set`), never in the page's HTML or CSS"
+              + ("; a custom block's own html and css are yours to fix, in the data" if '"type": "custom"' in html else ""))
     if note:
         print(note)
-    if shots and not note and os.path.isfile(os.path.join(shots, "tiles.png")):
-        print(f"PICTURES: {os.path.join(shots, 'tiles.png')} has every tile size side by side: look at it before you hand "
-              "the tile over")
+    drawn = [(os.path.join(shots, file), what) for file, what, _ in pages(SHAPES) if os.path.isfile(os.path.join(shots, file))] if shots and not note else []
+    if drawn:
+        print("PICTURES: look at each before you hand the tile over: " + "; ".join(f"{path} ({what})" for path, what in drawn))
     if problems:
         return 1
     print(("OK by the file rules, but not drawn" if note else "OK, with the warnings above to fix where you can" if warnings

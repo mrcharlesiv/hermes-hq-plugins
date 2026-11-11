@@ -1,0 +1,37 @@
+{
+ "name": "Air Today",
+ "title": "Air today",
+ "look": "app",
+ "value": "Good",
+ "state": "good",
+ "caption": "Pollen is the one to watch",
+ "blocks": [
+  {
+   "type": "scale",
+   "items": [
+    {
+     "name": "Air quality",
+     "value": 42,
+     "max": 200,
+     "text": "42 Good",
+     "state": "good"
+    },
+    {
+     "name": "Pollen",
+     "value": 9.8,
+     "max": 12,
+     "text": "High",
+     "state": "bad"
+    },
+    {
+     "name": "UV",
+     "value": 6,
+     "max": 11,
+     "text": "6 Moderate",
+     "state": "warn"
+    }
+   ]
+  }
+ ],
+ "source": "AirNow"
+}

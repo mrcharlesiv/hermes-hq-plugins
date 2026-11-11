@@ -6,8 +6,9 @@ for every tile size, in the look the spec names. You never write the page.
 
     python3 make_tile.py spec.json [-o tile.html]     make the tile (default: the spec's name with .html, beside it)
     python3 make_tile.py set tile.html [patch.json]   new data for a tile already made (the patch, or stdin): each key
-                                                      given replaces the tile's ("blocks" whole); "updated" becomes
-                                                      now and "error" clears. A patch that is wrong changes nothing
+                                                      given replaces the tile's ("blocks" whole; null takes a key
+                                                      away); "updated" becomes now and "error" clears. A patch that
+                                                      is wrong changes nothing
     python3 make_tile.py fail tile.html "reason"      the update failed: the last good data stays, the tile says why
     python3 make_tile.py show tile.html               print the tile's data (pictures left out)
     python3 make_tile.py rebuild tile.html            draw it again with this kit (after the add-on is updated)
@@ -61,13 +62,16 @@ BLOCKS = {
         "for": "a number over time; this week against last",
         "fields": ['series: numbers, oldest first; or up to four lines as [{"name": "This week", "values": [...]}, ...]',
                    "kind: area (default), line or bars", 'label: what and how long ("Hourly, 24 h")',
+                   "zero: true starts the chart at zero (a line otherwise runs from its lowest value, which shows the "
+                   "change and overstates it)",
                    'high: the top value as it should read ("5.2k")', 'labels: what it runs along (["Mon", ..., "Sun"]), shown under it'],
         "example": {"type": "chart", "series": [3, 5, 4, 7, 6, 9], "label": "Daily, 6 days", "high": "9"},
     },
     "status": {
         "draws": "a box per thing, each with a light for its state",
         "for": "is each service, server, check or goal all right",
-        "fields": [f"items: {ITEM}, detail (one more line, shown in big tiles)"],
+        "fields": [f"items: {ITEM}, detail (one more line, shown when there is room to spare)",
+                   "series: numbers, drawn as a small chart along the foot of the box (two prices, each with its week)"],
         "items": (12, 12),
         "example": {"type": "status", "items": [{"name": "Storage", "value": "6/6 pools", "state": "good"},
                                                 {"name": "Monitoring", "value": "52/56", "state": "bad"}]},
@@ -77,9 +81,18 @@ BLOCKS = {
         "for": "a breakdown, an agenda, a to-do list, a leaderboard, prices that moved",
         "fields": [f"items: {ITEM}, detail", 'lead: a few characters before the name (a time "9:30", a rank "1", a mark "✓")',
                    "series: numbers, drawn as a small line beside the value"],
-        "items": (20, 10),
+        "items": (18, 10),
         "example": {"type": "rows", "items": [{"lead": "9:30", "name": "Standup", "value": "15 min"},
                                               {"lead": "11:00", "name": "Dana, pricing", "value": "1 h", "state": "warn"}]},
+    },
+    "scale": {
+        "draws": "where a value sits between good and bad: a bar from green to red, a mark on it",
+        "for": "air quality, pollen, a risk, a score against a target",
+        "fields": ["items: name, value (a number), min (0 unless given), max (100 unless given), text (what is shown beside it), state",
+                   'good: "low" (default: the left end is the good one) or "high"'],
+        "items": (16, 10),
+        "example": {"type": "scale", "items": [{"name": "Air quality", "value": 42, "max": 200, "text": "42 Good", "state": "good"},
+                                               {"name": "Pollen", "value": 9.8, "max": 12, "text": "High", "state": "bad"}]},
     },
     "meters": {
         "draws": "how full, as a bar under each name",
@@ -92,7 +105,7 @@ BLOCKS = {
         "draws": "up to four rings, the number in the middle of each",
         "for": "how far along a goal is; a score; a battery",
         "fields": ["items: name, value (a number), max (100 unless given), text (what is shown in the ring), state"],
-        "items": (10, 5),
+        "items": (12, 5),
         "example": {"type": "rings", "items": [{"name": "Move", "value": 420, "max": 600, "text": "70%"},
                                                {"name": "Stand", "value": 9, "max": 12, "text": "9/12", "state": "good"}]},
     },
@@ -135,20 +148,24 @@ BLOCKS = {
     "text": {
         "draws": "words, as many lines as the tile has room for",
         "for": "a note, a summary in a sentence or two, a quote",
-        "fields": ["text: the words (a new line is kept)", "kind: note (default) or quote", "by: who said it"],
+        "fields": ["text: the words (a new line is kept)", "title: a line in bold over them (a song, a book)",
+                   "kind: note (default) or quote", "by: who said it",
+                   'align: "center"', 'face: "serif" (a quote set in italics)'],
         "example": {"type": "text", "kind": "quote", "text": "Make it work, make it right, make it fast.", "by": "Kent Beck"},
     },
     "picture": {
         "draws": "a picture, covering its box",
         "for": "a photo, a logo, a map or a chart you have as an image",
         "fields": [f"file: the path of a .png, .jpg, .gif, .webp or .svg (it is put inside the tile; {PICTURE_BYTES // 1000} KB at most)",
-                   "svg: or the drawing itself, as SVG markup with a viewBox", "fit: cover (default) or contain (shown whole)", "alt: what it shows"],
+                   "svg: or the drawing itself, as SVG markup with a viewBox", "fit: cover (default) or contain (shown whole)",
+                   'shape: "square" keeps it a rounded square (an album cover, a face, an app icon)', "alt: what it shows"],
         "example": {"type": "picture", "file": "~/Pictures/logo.png", "fit": "contain", "alt": "The company logo"},
     },
     "buttons": {
         "draws": "buttons that ask you (the tile's bot) for something",
         "for": "an action from the tile: refresh now, mark done, snooze",
-        "fields": ["items: label, send (what you are told when it is pressed)",
+        "fields": ["items: label, send (what you are told when it is pressed), state (good, warn, bad: its colour)",
+                   "the first button is the main one (filled)",
                    "they work in the app's Grid and in the opened tile; answer by giving the tile new data with `set`"],
         "items": (14, 400),
         "example": {"type": "buttons", "items": [{"label": "Refresh now", "send": "Update my Revenue tile now"}]},
@@ -158,12 +175,23 @@ BLOCKS = {
         "for": "what no block here draws: a month's calendar, a seating plan, a diagram",
         "fields": ["html: the markup (inline SVG is welcome)", "css: its styles (start your class names with x-)",
                    "js: a script run once, given `block` (your element) and `data` (the tile's data)",
-                   "stretch: false when it has a height of its own (default: it fills the room it is given)",
+                   "stretch: false when it has a height of its own. By default it fills the room it is given: lay it out to "
+                   "fill that (height: 100%), and never let another block squeeze it (it goes when it gets under least)",
+                   'least: the least height it needs, in px or a share of the tile ("60 30%"); under it, the block goes',
+                   "{{file:/path/to/picture.png}} in html or css is replaced by the picture itself, put inside the tile",
+                   "the tile is its own window: @media (max-width: 260px) and @container queries (cqw, cqh) work, and are how "
+                   "a drawing changes with the tile's size and shape",
+                   "1em in your block is the tile's smallest text (11 px in a Small tile): never size text under 1em",
+                   "a script that keeps time (a clock) runs while the tile is live: in the app's Grid when the tile has "
+                   '"refresh" or buttons, and when it is opened; anywhere else the tile is a picture of when it was drawn',
                    'a drawing that needs room goes altogether in a tile too small for it: give it "drop": 1 and put a block after it '
                    "(rows, stats) that a small tile can show instead",
-                   "use the tile's colours: var(--ink), var(--ink2), var(--tint), var(--good), var(--warn), var(--bad), var(--surface), "
-                   "var(--line), var(--radius), var(--c1) to var(--c6); sizes in em, nothing in px over 150 or under 11",
-                   "classes you can use: box (a soft card), label (small capitals), strong, muted, t-good, t-warn, t-bad, t-tint, pip",
+                   "use the tile's colours: var(--ink), var(--ink2) for words, var(--page) the tile's own background, var(--tint), "
+                   "var(--good), var(--warn), var(--bad) for words and var(--good-fill), var(--warn-fill), var(--bad-fill) for shapes, "
+                   "var(--surface) (a faint see-through fill), var(--line), var(--radius), var(--c1) to var(--c6); sizes in em, "
+                   "nothing in px over 150 or under 11",
+                   "classes you can use: box (a soft card), label (small capitals, wide), strong, muted, t-good, t-warn, t-bad, "
+                   't-tint, and <i class="pip good"></i> (a light: good, warn or bad)',
                    'data-drop="1" on a part of yours that may go when the tile is small (1 goes first)'],
         "example": {"type": "custom", "html": '<div class="x-week"><div class="box"><span class="label">Mon</span> <span class="strong">3</span></div></div>',
                     "css": ".x-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: .3em; }"},
@@ -214,14 +242,25 @@ def checked(spec):
         problems.append('"refresh" is a number of seconds, 30 or more')
     long('"title"', spec.get("title"), 20)
     long('"badge"', spec.get("badge"), 12)
-    long('"value"', spec.get("value"), 12)
-    long('"caption"', spec.get("caption"), 40)
+    long('"value"', spec.get("value"), 40)
+    long('"caption"', spec.get("caption"), 36)
     long('"error"', spec.get("error"), 30)
     if isinstance(spec.get("badge"), str) and re.search(r"\b(live|now|online now|real[- ]?time)\b", spec["badge"], re.I):
         warnings.append(f'the badge "{spec["badge"]}" won\'t stay true: a tile is a picture, redrawn now and then. Use a fact (a count)')
     backdrop = spec.get("backdrop")
     if backdrop is not None and not (isinstance(backdrop, dict) and (backdrop.get("file") or backdrop.get("src"))):
         problems.append('"backdrop" is {"file": "<the path of a picture>"}')
+    elif isinstance(backdrop, dict):
+        if backdrop.get("focus") not in (None, "top", "bottom", "left", "right", "center"):
+            problems.append('"backdrop": "focus" (the part of the picture kept when it is cropped) is top, bottom, left, right or center')
+        if backdrop.get("shade") not in (None, "dark", "light"):
+            problems.append('"backdrop": "shade" is dark (default) or light (a picture already dark enough for white words)')
+    # White words on a colour of the person's: a pale one can't be read.
+    if spec.get("look") == "vivid" and isinstance(spec.get("accent"), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", spec["accent"]):
+        r, g, b = (int(spec["accent"][i:i + 2], 16) / 255 for i in (1, 3, 5))
+        light = sum(k * (v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4) for k, v in ((0.2126, r), (0.7152, g), (0.0722, b)))
+        if (1.05) / (light + 0.05) < 4.5:
+            warnings.append(f'"accent" {spec["accent"]} is too pale for vivid\'s white words: pick a darker shade of it')
     blocks = spec.get("blocks") or []
     if not isinstance(blocks, list):
         problems.append('"blocks" is a list')
@@ -251,6 +290,7 @@ def checked(spec):
                 problems.append(f'{where}: "kind" is area, line or bars')
             if block.get("kind") == "bars" and len(lines) > 1:
                 problems.append(f"{where}: bars draw one series; use lines for several")
+            long(f"{where}: the label", block.get("label"), 18)
         elif kind == "heat":
             values = block.get("values")
             if not isinstance(values, list) or not values:
@@ -269,9 +309,9 @@ def checked(spec):
                 for heading in columns:
                     long(f"{where}: the heading", str(heading), 8)
         elif kind == "text":
-            if not isinstance(block.get("text"), str) or not block["text"].strip():
+            if not (isinstance(block.get("text"), str) and block["text"].strip()) and not block.get("title"):
                 problems.append(f'{where} needs "text": the words')
-            elif len(block["text"]) > 600:
+            elif len(block.get("text") or "") > 600:
                 warnings.append(f"{where}: {len(block['text'])} characters of text: a tile shows a few lines; say it in a sentence or two")
             if block.get("kind") not in (None, "note", "quote"):
                 problems.append(f'{where}: "kind" is note or quote')
@@ -282,6 +322,8 @@ def checked(spec):
                 problems.append(f'{where}: the "svg" needs a viewBox, so it stretches to its box')
             if block.get("fit") not in (None, "cover", "contain"):
                 problems.append(f'{where}: "fit" is cover or contain')
+            if block.get("shape") not in (None, "square"):
+                problems.append(f'{where}: "shape" is square, or left out')
         elif kind == "custom":
             html = block.get("html")
             if not isinstance(html, str) or not html.strip():
@@ -321,7 +363,7 @@ def checked(spec):
                 called = item[label]
                 if item.get("state") not in (None, "") + STATES:
                     problems.append(f'{where}, item "{called}": "state" is good, warn, bad or null')
-                if kind in ("meters", "rings", "split"):
+                if kind in ("meters", "rings", "split", "scale"):
                     if not number(item.get("value")):
                         problems.append(f'{where}, item "{called}": "value" is a number ("text" is what is shown)')
                 elif kind == "buttons":
@@ -333,7 +375,7 @@ def checked(spec):
                     problems.append(f'{where}, item "{called}": "series" is a list of numbers')
                 most_name, most_value = BLOCKS[kind].get("items", (16, 12))
                 long(f"{where}: the {label}", called, most_name)
-                long(f"{where}: the value", item.get("text") if kind in ("meters", "rings", "split") else item.get("value"), most_value)
+                long(f"{where}: the value", item.get("text") if kind in ("meters", "rings", "split", "scale") else item.get("value"), most_value)
                 long(f"{where}: the lead", item.get("lead"), 6)
                 long(f"{where}: the glyph", item.get("glyph"), 3)
             if kind == "status":
@@ -380,11 +422,22 @@ def embedded(spec, folder):
             holder["src"] = f"data:{kind};base64," + base64.b64encode(raw).decode("ascii")
             del holder["file"]
 
+    def named(what):
+        def swap(match):   # {{file:/path}} in a custom block's markup or styles: the picture itself
+            holder = {"file": match.group(1).strip()}
+            inside(holder, what)
+            return holder.get("src", match.group(0))
+        return swap
+
     if isinstance(spec.get("backdrop"), dict):
         inside(spec["backdrop"], '"backdrop"')
     for n, block in enumerate(spec.get("blocks") or [], 1):
         if isinstance(block, dict) and block.get("type") == "picture":
             inside(block, f"block {n} (picture)")
+        if isinstance(block, dict) and block.get("type") == "custom":
+            for key in ("html", "css"):
+                if isinstance(block.get(key), str):
+                    block[key] = re.sub(r"\{\{file:([^}]+)\}\}", named(f"block {n} (custom)"), block[key])
     return problems
 
 
@@ -485,7 +538,12 @@ def about(kind=None):
         print("  " + field)
     if "items" in block:
         print(f"  (in a Small tile about {block['items'][0]} characters of a name and {block['items'][1]} of a value show whole)")
-    print("  drop, keep: optional; when it goes in a small tile (1 first) and the fewest items worth showing")
+    if kind not in ("chart", "heat"):
+        print('  label: a heading over the block ("Up next")')
+    if "items" in block and kind not in ("stats", "strip", "rings", "buttons", "split"):
+        print('  order: "given" keeps the items in your order (default: what is bad or warn comes first)')
+    print("  drop: when it goes in a small tile (1 goes first; default: the last block first)")
+    print("  keep: the fewest items worth showing: with room for fewer, the block goes instead")
     print("Example:\n  " + json.dumps(block["example"], ensure_ascii=False))
     return 0
 
@@ -535,13 +593,24 @@ def main(argv):
             if not isinstance(patch, dict):
                 print("PROBLEM: the patch is a JSON object of the keys to replace")
                 return 1
+            before = json.loads(json.dumps(spec))
             spec.update(patch)
+            spec = {k: v for k, v in spec.items() if v is not None or k in ("error",)}   # null takes a key away
+            # A picture `show` printed as "<a picture, ... inside the tile>" and sent back as it was: the one already there.
+            def kept(holder, old):
+                if isinstance(holder, dict) and str(holder.get("src", "")).startswith("<a picture") and isinstance(old, dict) and old.get("src"):
+                    holder["src"] = old["src"]
+            kept(spec.get("backdrop"), before.get("backdrop"))
+            for n, block in enumerate(spec.get("blocks") or []):
+                kept(block, (before.get("blocks") or [])[n] if n < len(before.get("blocks") or []) else None)
             if set(patch) - SETTINGS:   # new data: stamped now, and the last failure is over
                 spec["updated"] = patch.get("updated") or now()
                 spec["error"] = patch.get("error")
         done = write(tile, spec)
         if done == 0:
             print(f"UPDATED: {tile}" if command != "rebuild" else f"REBUILT: {tile}")
+            if command == "set" and set(patch) & {"blocks", "look", "title", "caption", "value", "badge", "backdrop"}:
+                print(f"What it shows changed, so check it again:  python3 {os.path.join(HERE, 'check_tile.py')} {tile}")
         return done
     except (OSError, IndexError) as exc:
         print(f"PROBLEM: {exc}" if isinstance(exc, OSError) else "PROBLEM: something is missing from the command (python3 make_tile.py --help)")
