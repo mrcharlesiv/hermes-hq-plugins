@@ -131,6 +131,9 @@
   .foot { font-size: .85em; color: var(--ink2); line-height: 1.25;
           display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .foot.failed { color: var(--bad); }
+  /* In a narrow column the time alone ("Wed 2:26 PM") stays on one line. */
+  .foot { container-type: inline-size; }
+  @container (max-width: 10.6em) { .lead { display: none; } }
 </style>
 </head>
 <body>
@@ -204,7 +207,7 @@
   // KEEP: a failed update always says so (it has no data-drop then: the chart or the items go before it does).
   if (d.error) { foot.textContent = "Couldn’t update" + (when ? " · last " + when : "") + " · " + d.error; foot.className = "foot failed";
                  foot.removeAttribute("data-drop"); }
-  else if (when) { foot.textContent = "Updated " + when; }
+  else if (when) { foot.innerHTML = '<span class="lead">Updated </span>'; foot.appendChild(document.createTextNode(when)); }
   else { foot.remove(); }
   if (d.source && !d.error && when) { var from = document.createElement("span"); from.className = "source"; from.textContent = " · " + d.source; foot.appendChild(from); }
   // Items: what's wrong comes first, so it is what stays when only a few fit.
