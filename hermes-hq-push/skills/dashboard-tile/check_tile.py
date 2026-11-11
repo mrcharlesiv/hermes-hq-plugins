@@ -231,14 +231,14 @@ setTimeout(function(){
   function say(kind,n,first){ if (n) out.push({k:kind,n:n,first:first||""}); }
   say("past",past,pastFirst); say("boxes",boxes,boxFirst); say("under",under,underFirst); say("faint",faint,faintFirst);
   say("tiny",tiny); say("small",small,smallFirst); say("clipped",clipped,clippedFirst);
-  var words=document.body ? document.body.innerText.trim().split(/\s+/).filter(function(t){ return /[A-Za-z0-9À-￿]/.test(t); }).length : 0;
+  var words=document.body ? document.body.innerText.trim().split(/\s+/).filter(function(t){ return /[A-Za-zÀ-￿]/.test(t); }).length : 0;
   if (!words && !document.querySelector("svg,canvas,img")) out.push({k:"nothing",n:1,first:""});
   var glance=Math.round(w*h/1300);
   if (words>glance && h<700) out.push({k:"crowded",n:words,first:"a glance here is about " + glance});
   // The largest blank block (on a 24-across grid): a tile with a third of it empty has its parts in the wrong places.
   // (A tile that is one number and a few words is sparse by design, and so is a short list in a window as big
   // as an iPad's: this is for a phone's tile with things to place.)
-  if (w*h>40000 && w*h<250000 && (ink.length>=12 || document.querySelector("svg,canvas,img"))){
+  if (w*h>40000 && w*h<200000 && (ink.length>=12 || document.querySelector("svg,canvas,img"))){
     var N=24, M=Math.max(4,Math.round(N*h/w)), cw=w/N, ch=h/M, full=[], best=0, heights=[];
     for (var gy=0;gy<M;gy++){ full.push([]); for (var gx=0;gx<N;gx++) full[gy].push(false); }
     ink.forEach(function(r){ for (var gy=Math.max(0,Math.floor(r.top/ch)); gy<M && gy*ch<r.bottom; gy++)

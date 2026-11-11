@@ -350,7 +350,21 @@ def test_a_made_tile_is_one_page_that_passes_the_file_rules(tmp_path):
     ({"look": "neon"}, '"look" is "neon"'),
     ({"state": "ok"}, "good, warn, bad or null"),
     ({"accent": "blue"}, "#rrggbb"),
-    ({"blocks": [{"type": "table", "items": []}]}, 'type "table"'),
+    ({"blocks": [{"type": "gauge", "items": []}]}, 'type "gauge"'),
+    ({"blocks": [{"type": "table", "columns": ["Rep"], "rows": [["Dana"]]}]}, "two to four headings"),
+    ({"blocks": [{"type": "table", "columns": ["Rep", "Won"], "rows": [["Dana"]]}]}, "each with 2 values"),
+    ({"blocks": [{"type": "heat", "values": ["up", "down"]}]}, "good, warn, bad or null"),
+    ({"blocks": [{"type": "text"}]}, 'needs "text"'),
+    ({"blocks": [{"type": "picture"}]}, 'needs "file"'),
+    ({"blocks": [{"type": "picture", "svg": "<svg><circle r='4'/></svg>"}]}, "needs a viewBox"),
+    ({"blocks": [{"type": "buttons", "items": [{"label": "Refresh"}]}]}, 'needs "send"'),
+    ({"blocks": [{"type": "rings", "items": [{"name": "Move", "value": "70%"}]}]}, '"value" is a number'),
+    ({"blocks": [{"type": "chart", "kind": "bars", "series": [{"name": "A", "values": [1, 2]}, {"name": "B", "values": [2, 3]}]}]}, "bars draw one series"),
+    ({"blocks": [{"type": "custom", "html": "<img src='https://example.com/a.png'>"}]}, "loads from the network"),
+    ({"blocks": [{"type": "custom", "html": "<b style='font-size: 8px; color: var(--ink)'>x</b>"}]}, "under 11 px"),
+    ({"blocks": [{"type": "custom", "html": "<div style='width: 400px; color: var(--ink)'>x</div>"}]}, "bigger than a Small tile"),
+    ({"refresh": 5}, "30 or more"),
+    ({"backdrop": {}}, '"backdrop" is'),
     ({"blocks": [{"type": "chart", "series": [1]}]}, "two numbers or more"),
     ({"blocks": [{"type": "chart", "series": [1, None, 3]}]}, "is a number"),
     ({"blocks": [{"type": "rows", "items": []}]}, "leave the block out"),
@@ -483,6 +497,116 @@ def test_every_look_is_readable_and_a_long_board_shows_what_fits(tmp_path, look)
         {"type": "chart", "series": [3, 1, 4, 1, 5, 9, 2, 6], "label": "Load"},
         {"type": "meters", "items": [{"name": "Disk", "value": 91, "state": "bad"}, {"name": "Memory", "value": 40}]},
         {"type": "stats", "items": [{"name": "7 days", "value": "99.2%"}, {"name": "Worst", "value": "host-17"}]}])
+    problems, warnings, note = _drawn(tmp_path, spec)
+    assert note is None and problems == [], problems
+    assert not [w for w in warnings if "under 11 pt" in w], warnings
+
+
+# ---- Whatever the person dreams up (owner 2026-11-11: "the skill needs to work well no matter what kind of tile the
+# user requests"): more blocks, a block for the bot's own drawing, and the same check for all of it.
+
+def test_the_blocks_can_be_asked_about(capsys):
+    assert make_tile.main(["blocks"]) == 0
+    listed = capsys.readouterr().out
+    assert all(f"  {name}" in listed for name in make_tile.BLOCKS)
+    for name, block in make_tile.BLOCKS.items():
+        assert make_tile.main(["blocks", name]) == 0
+        said = capsys.readouterr().out
+        assert "Example:" in said and block["draws"] in said
+        example = dict(block["example"])
+        if name != "picture":   # its example names a file of the person's
+            assert make_tile.checked(_spec(blocks=[example]))[0] == [], name
+    assert make_tile.main(["blocks", "gauge"]) == 1
+
+
+def test_only_a_tile_with_buttons_runs_live_in_the_grid(tmp_path):
+    """The app runs a page live when its first 64,000 characters name a bot button; the kit must not name one in
+    every tile (each live tile is a web view)."""
+    plain = _made(tmp_path, _spec(), "plain").read_text()
+    assert "data-hermes-send" not in plain and "hermes.send(" not in plain and 'name="hq-tile" content="live"' not in plain
+    assert plain.index("<title>") < 2000, "the app reads the head from the start of the page"
+    pressed = _made(tmp_path, _spec(refresh=300, blocks=[{"type": "buttons", "items": [{"label": "Refresh", "send": "Update my tile"}]}]), "pressed").read_text()
+    assert '<meta name="hq-tile" content="live">' in pressed and '<meta name="hq-tile-refresh" content="300">' in pressed
+
+
+def _png(path, bytes_=0):
+    import struct, zlib
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    raw = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"\x00\xff\x80\x40")) + chunk(b"IEND", b"")
+    path.write_bytes(raw + b"\0" * bytes_)
+
+
+def test_a_picture_goes_inside_the_tile(tmp_path, capsys):
+    _png(tmp_path / "logo.png")
+    tile = _made(tmp_path, _spec(backdrop={"file": "logo.png"}, blocks=[{"type": "picture", "file": str(tmp_path / "logo.png"), "alt": "Logo"}]))
+    spec = make_tile.read_spec(str(tile))
+    assert spec["blocks"][0]["src"].startswith("data:image/png;base64,") and "file" not in spec["blocks"][0]
+    assert spec["backdrop"]["src"].startswith("data:image/png;base64,")
+    assert check_tile.static_problems(tile.read_text())[0] == []
+    capsys.readouterr()
+    assert make_tile.main(["show", str(tile)]) == 0
+    assert "base64" not in capsys.readouterr().out, "its bytes are not printed"
+    patch = tmp_path / "patch.json"
+    patch.write_text(json.dumps({"value": "DEGRADED"}))
+    assert make_tile.main(["set", str(tile), str(patch)]) == 0   # the picture stays through an update
+    assert make_tile.read_spec(str(tile))["blocks"][0]["src"].startswith("data:image/png")
+
+
+@pytest.mark.parametrize("block, says", [
+    ({"type": "picture", "file": "missing.png"}, "can't read"),
+    ({"type": "picture", "file": "notes.txt"}, "is not a picture"),
+    ({"type": "picture", "file": "huge.png"}, "make it smaller"),
+])
+def test_a_picture_that_cannot_go_in_is_said(tmp_path, capsys, block, says):
+    (tmp_path / "notes.txt").write_text("words")
+    _png(tmp_path / "huge.png", make_tile.PICTURE_BYTES)
+    source = tmp_path / "tile.json"
+    source.write_text(json.dumps(_spec(blocks=[block])))
+    assert make_tile.main([str(source)]) == 1
+    assert says in capsys.readouterr().out and not (tmp_path / "tile.html").exists()
+
+
+DREAMS = {
+    "a forecast": {"value": "72°", "blocks": [{"type": "strip", "items": [{"name": f"{h} PM", "glyph": "☀️", "value": f"{70 + h}°"} for h in range(1, 13)]},
+                                               {"type": "rows", "items": [{"lead": d, "name": "Clear", "value": "80° / 62°"} for d in ("Thu", "Fri", "Sat", "Sun")]}]},
+    "a year of a habit": {"value": "12 days", "blocks": [{"type": "heat", "rows": 7, "values": [n % 4 for n in range(7 * 52)], "label": "This year", "note": "212"},
+                                                         {"type": "rings", "items": [{"name": "Week", "value": 4, "max": 5, "text": "4/5"}, {"name": "Month", "value": 14, "max": 20}]}]},
+    "days up and down": {"value": "99.2%", "state": "warn", "blocks": [{"type": "heat", "values": ["good"] * 20 + ["bad"] + ["good"] * 9, "label": "30 days"},
+                                                                       {"type": "stats", "items": [{"name": "Response", "value": "212 ms"}, {"name": "Last down", "value": "Nov 2"}]}]},
+    "a table": {"value": "$84k", "blocks": [{"type": "table", "columns": ["Rep", "Calls", "Won", "Value"], "rows": [[f"Rep {n}", str(40 - n), str(n), f"${n}k"] for n in range(1, 25)]}]},
+    "a quote": {"value": None, "look": "vivid", "foot": False, "blocks": [{"type": "text", "kind": "quote", "by": "A long-winded author",
+                                                                           "text": "It was the best of times, it was the worst of times, " * 6}]},
+    "shares and a budget": {"value": "$3,240", "blocks": [{"type": "split", "items": [{"name": f"Part {n}", "value": 100 * n} for n in range(1, 7)]},
+                                                          {"type": "meters", "items": [{"name": "Budget used", "value": 81, "state": "warn"}]}]},
+    "two lines and bars": {"value": "1,284", "blocks": [{"type": "chart", "series": [{"name": "This week", "values": [1, 3, 2, 5, 4, 6, 5]}, {"name": "Last week", "values": [1, 2, 2, 3, 3, 4, 3]}],
+                                                         "labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]},
+                                                        {"type": "chart", "kind": "bars", "series": [3, 1, 4, 1, 5, 9, 2], "labels": list("MTWTFSS")}]},
+    "rings and buttons": {"value": None, "blocks": [{"type": "rings", "items": [{"name": "Move", "value": 70}, {"name": "Exercise", "value": 22, "max": 30, "text": "22m"},
+                                                                                 {"name": "Stand", "value": 9, "max": 12, "text": "9/12"}]},
+                                                    {"type": "buttons", "items": [{"label": "Log workout", "send": "Log a workout"}, {"label": "Refresh", "send": "Update it"}]}]},
+    "a drawing of its own": {"value": None, "badge": "3 events", "blocks": [
+        {"type": "custom", "drop": 1, "html": "<div class='x-cal'>" + "".join(f"<span>{n}</span>" for n in range(1, 31)) + "</div>",
+         "css": ".x-cal{display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:1fr;gap:.15em;text-align:center;height:100%;color:var(--ink)}"
+                ".x-cal span{display:grid;place-items:center;min-height:0}"},
+        {"type": "rows", "items": [{"lead": "5", "name": "Dentist", "value": "3 PM"}, {"lead": "11", "name": "Board call", "value": "10 AM"}]}]},
+    "a drawing": {"value": "3 days", "blocks": [{"type": "picture", "fit": "contain", "svg": "<svg viewBox='0 0 10 10'><circle cx='5' cy='5' r='4' fill='var(--tint)'/></svg>"}]},
+    "everything at once": {"value": "DEGRADED", "state": "bad", "badge": "38/40 up", "badge_state": "bad", "blocks": [
+        {"type": "status", "items": [{"name": f"host-{n:02d}", "value": f"{n} cores", "state": "bad" if n in (17, 31) else "good"} for n in range(40)]},
+        {"type": "table", "columns": ["Pool", "Used", "Free"], "rows": [[f"pool-{n}", f"{n}0%", f"{10 - n} TB"] for n in range(1, 9)]},
+        {"type": "split", "items": [{"name": "Used", "value": 70}, {"name": "Free", "value": 30}]},
+        {"type": "text", "text": "Two hosts dropped off the network at 2:10 AM and have not come back."}]},
+}
+
+
+@needs_chrome
+@pytest.mark.parametrize("dream", DREAMS, ids=list(DREAMS))
+@pytest.mark.parametrize("look", ["app", "terminal"])
+def test_whatever_is_asked_for_comes_out_whole(tmp_path, dream, look):
+    """Far more than fits, of every kind of block, and a drawing of the bot's own: nothing cut off, nothing over
+    anything else, nothing too small, at every size."""
+    spec = dict(_spec(), **DREAMS[dream])
+    spec["look"] = spec.get("look") if dream == "a quote" else look
     problems, warnings, note = _drawn(tmp_path, spec)
     assert note is None and problems == [], problems
     assert not [w for w in warnings if "under 11 pt" in w], warnings

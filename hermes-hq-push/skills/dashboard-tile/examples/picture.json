@@ -1,0 +1,16 @@
+{
+ "name": "Launch Day",
+ "title": "Launch",
+ "value": "3 days",
+ "caption": "Version 2 ships Friday",
+ "look": "app",
+ "foot": false,
+ "blocks": [
+  {
+   "type": "picture",
+   "fit": "contain",
+   "alt": "A rocket",
+   "svg": "<svg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'><path d='M50 8c14 12 20 30 18 50H32C30 38 36 20 50 8z' fill='var(--tint)'/><circle cx='50' cy='38' r='7' fill='var(--page)'/><path d='M32 58l-12 16 14-4zM68 58l12 16-14-4z' fill='var(--c2)'/><path d='M42 62h16l-8 26z' fill='var(--warn)'/></svg>"
+  }
+ ]
+}

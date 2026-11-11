@@ -17,6 +17,8 @@ body { container-type: size; background: var(--page); color: var(--ink); font-fa
   --line: var(--border, rgba(0, 0, 0, .1)); --surface: rgba(118, 124, 140, .12); --wash: none; --mood-strength: 13%;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; --display: var(--font);
   --radius: .65em; --caps: uppercase; --track: .05em;
+  /* Colours for several lines or shares, in order: the tint first. */
+  --c1: var(--tint); --c2: #e8930c; --c3: #a45cf0; --c4: #12a594; --c5: #e0528f; --c6: #7b8496;
 }
 @media (prefers-color-scheme: dark) {
   :root { --page: var(--card, #15171c); --ink: var(--foreground, #f3f4f7); --ink2: var(--muted-foreground, #a4aab6);
@@ -32,7 +34,7 @@ body { container-type: size; background: var(--page); color: var(--ink); font-fa
 :root.look-terminal {
   color-scheme: dark;
   --page: #080c09; --ink: #d9f7df; --ink2: #8fb79a; --tint: #54e08a; --good: #54e08a; --warn: #f2c744; --bad: #ff7b72;
-  --line: rgba(120, 200, 150, .28); --surface: rgba(90, 200, 130, .09); --mood-strength: 0%;
+  --line: rgba(120, 200, 150, .28); --surface: rgba(90, 200, 130, .09); --mood-strength: 0%; --c2: #f2c744; --c3: #7dd3fc; --c4: #f0abfc; --c5: #ff7b72; --c6: #8fb79a;
   --font: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; --radius: .2em; --track: .08em;
 }
 :root.look-vivid {
@@ -40,6 +42,7 @@ body { container-type: size; background: var(--page); color: var(--ink); font-fa
   --page: #4338ca; --wash: linear-gradient(160deg, #5a50e6 0%, #3d32b8 100%); --ink: #ffffff; --ink2: rgba(255, 255, 255, .86);
   --tint: #ffffff; --good: #ffffff; --warn: #ffffff; --bad: #ffffff; --line: rgba(255, 255, 255, .28);
   --surface: rgba(255, 255, 255, .16); --mood-strength: 0%; --display: ui-rounded, var(--font);
+  --c2: rgba(255, 255, 255, .7); --c3: rgba(255, 255, 255, .5); --c4: rgba(255, 255, 255, .36); --c5: rgba(255, 255, 255, .26); --c6: rgba(255, 255, 255, .18);
 }
 /* Vivid wears its state as its colour (each dark enough for white words on it). */
 :root.look-vivid.mood-good { --page: #15803d; --wash: linear-gradient(160deg, #17914a 0%, #136c35 100%); }
@@ -48,6 +51,12 @@ body { container-type: size; background: var(--page); color: var(--ink); font-fa
 :root { --mood: var(--tint); }
 :root.mood-good { --mood: var(--good); } :root.mood-warn { --mood: var(--warn); } :root.mood-bad { --mood: var(--bad); }
 body { background-image: var(--wash); }
+/* A picture behind the whole tile: white words on it, under a shade dark enough to read them. */
+:root.has-backdrop { color-scheme: dark; --page: #101216; --wash: none; --ink: #ffffff; --ink2: rgba(255, 255, 255, .88); --tint: #ffffff;
+  --good: #7ef0a8; --warn: #ffd66b; --bad: #ff9c9c; --line: rgba(255, 255, 255, .3); --surface: rgba(20, 22, 28, .46); --mood-strength: 0%; }
+.backdrop { position: fixed; inset: 0; z-index: 0; background-size: cover; background-position: center; pointer-events: none; }
+.backdrop::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(8, 10, 14, .5) 0%, rgba(8, 10, 14, .28) 38%, rgba(8, 10, 14, .78) 100%); }
+.has-backdrop .tile { z-index: 1; text-shadow: 0 1px 3px rgba(0, 0, 0, .5); }
 
 /* ---- Layout ---- */
 .tile {
@@ -70,12 +79,20 @@ body { background-image: var(--wash); }
 .headline, .main, .side, .foot { margin-top: var(--gap); }
 .main { display: grid; } .main > * { min-width: 0; min-height: 0; }
 .side { display: flex; flex-direction: column; gap: var(--gap); } .side > * { min-width: 0; flex: 0 0 auto; }
+/* A block that stretches (a chart, a picture) has the main room to itself, and a set height beside or under it. */
+.side > .stretch { height: clamp(46px, 20cqh, 120px); }
 .main:not(:has(> :not([data-off]))), .side:not(:has(> :not([data-off]))) { display: none; }
 /* No main part: the side parts take the room. Neither: the number takes it and grows. */
 .tile:not(:has(.main > :not([data-off]))) { grid-template-rows: auto auto auto 0 minmax(0, 1fr) auto; }
 .tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) { grid-template-rows: auto minmax(0, 1fr) auto 0 0 auto; }
 .tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) .headline { align-content: center; }
 .tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) .big:not(.empty) { font-size: clamp(2.3em, 30cqmin, 7em); }
+/* Tall or square, with a main part that has a height of its own (rows, a strip, a table) and more under it: the
+   main part takes what it needs, the rest follows it, and what room is left sits above the foot. */
+@container (max-aspect-ratio: 8/5) and (max-width: 559px) {
+  .tile:has(.main > :not(.stretch):not([data-off])):has(.side > :not([data-off])) { grid-template-rows: auto auto auto auto minmax(0, 1fr) auto; }
+  .tile:has(.side > :not([data-off])) .main > .rows, .tile:has(.side > :not([data-off])) .main > .meters { grid-auto-rows: min-content; }
+}
 /* Wide (Medium, a card): words on the left, the main part on the right. */
 @container (min-aspect-ratio: 8/5) {
   .tile:has(.main > :not([data-off])) {
@@ -89,6 +106,15 @@ body { background-image: var(--wash); }
     grid-template-rows: auto auto auto minmax(0, 1fr) auto;
     grid-template-areas: "head side" "headline side" "caption side" ". side" "foot side"; }
   .tile:not(:has(.main > :not([data-off]))) .side { margin-top: 0; }
+  /* No headline and nothing beside the main part (a quote, a table, a picture): one column, the heading over it. */
+  .tile:not(:has(.headline)):not(:has(.side > :not([data-off]))):has(.main > :not([data-off])) {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "head" "headline" "caption" "main" "side" "foot"; }
+  .tile:not(:has(.headline)):not(:has(.side > :not([data-off]))) .main { margin-top: var(--gap); }
+  /* A main part with a height of its own: what follows goes under it, on the right, not under the words. */
+  .tile:has(.main > :not(.stretch):not([data-off])):has(.side > :not([data-off])) {
+    grid-template-areas: "head main" "headline main" "caption main" ". side" "foot side"; }
+  .tile:has(.side > :not([data-off])) .main > .rows, .tile:has(.side > :not([data-off])) .main > .meters { grid-auto-rows: min-content; }
 }
 /* Big and wide (Extra Large on an iPad or Mac): the words across the top, main and side beside each other. */
 @container (min-width: 560px) and (min-height: 300px) {
@@ -137,21 +163,29 @@ body { background-image: var(--wash); }
 
 /* ---- A chart: a line over its fill, or bars ---- */
 .chart { display: flex; flex-direction: column; min-height: 0; gap: .3em; }
-.side .chart { height: clamp(46px, 20cqh, 120px); }
-.chart-words { display: flex; justify-content: space-between; gap: 1em; font-size: .85em; color: var(--ink2); white-space: nowrap; }
-.chart-words span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.chart-words .high { font-variant-numeric: tabular-nums; font-weight: 600; flex: 0 0 auto; }
+.words-row { display: flex; justify-content: space-between; gap: 1em; font-size: .85em; color: var(--ink2); white-space: nowrap; }
+.words-row span { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.words-row .high { font-variant-numeric: tabular-nums; font-weight: 600; flex: 0 0 auto; }
+.legend { display: flex; flex-wrap: wrap; gap: .1em .9em; font-size: .85em; color: var(--ink2); }
+.key { display: inline-flex; align-items: center; min-width: 0; white-space: nowrap; }
+.swatch { flex: 0 0 auto; width: .6em; height: .6em; border-radius: .2em; margin-right: .4em; background: var(--c1); }
+.c2 > .swatch, .c2 .swatch, .seg.c2, .dot.c2 { background: var(--c2); } .c3 > .swatch, .c3 .swatch, .seg.c3, .dot.c3 { background: var(--c3); }
+.c4 > .swatch, .c4 .swatch, .seg.c4, .dot.c4 { background: var(--c4); } .c5 > .swatch, .c5 .swatch, .seg.c5 { background: var(--c5); }
+.c6 > .swatch, .c6 .swatch, .seg.c6 { background: var(--c6); }
+.axis { display: flex; justify-content: space-between; gap: .5em; font-size: .85em; color: var(--ink2); white-space: nowrap; }
+.plot.bars + .axis { justify-content: space-around; }
 .plot { position: relative; flex: 1 1 0; min-height: 0; border-bottom: 1px solid var(--line); }
 .plot svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
 .plot .dot { position: absolute; width: .5em; height: .5em; border-radius: 50%; background: var(--tint); transform: translate(-70%, -50%);
              box-shadow: 0 0 0 .22em color-mix(in srgb, var(--tint) 28%, transparent); }
+.plot .dot.c2, .plot .dot.c3, .plot .dot.c4 { width: .4em; height: .4em; box-shadow: none; }
 .plot.bars { display: flex; align-items: flex-end; gap: clamp(2px, .28em, 6px); }
 .bar { flex: 1 1 0; min-width: 0; border-radius: .3em .3em 0 0; background: color-mix(in srgb, var(--tint) 42%, transparent); }
 .bar.last { background: var(--tint); }
 
 /* ---- Lists of items. Each is a grid that takes as many across as fit; the fit script trims it from its end ---- */
-.status, .rows, .meters, .stats { display: grid; font-size: .85em; }
-.status > *, .rows > *, .meters > *, .stats > * { min-width: 0; }
+.status, .rows, .meters, .stats, .strip, .rings, .split-keys, .table, .buttons { display: grid; font-size: .85em; }
+.status > *, .rows > *, .meters > *, .stats > *, .strip > *, .rings > *, .split-keys > *, .table > * { min-width: 0; }
 .name, .amount { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .name { color: var(--ink2); } .amount { font-weight: 650; font-variant-numeric: tabular-nums; }
 .more { color: var(--ink2); font-weight: 600; }
@@ -183,8 +217,14 @@ body { background-image: var(--wash); }
 .rows { grid-template-columns: repeat(auto-fit, minmax(min(100%, 14em), 1fr)); column-gap: 2em; align-content: start;
         grid-auto-rows: min-content; }
 .main > .rows { grid-auto-rows: minmax(min-content, 4.4em); }   /* with the room to itself, rows open up a little */
-.rows .item, .rows .more { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; column-gap: 1em;
+.rows .item, .rows .more { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; column-gap: .8em;
         border-top: 1px solid var(--line); padding: .32em 0; }
+.lead-in { flex: 0 0 auto; min-width: 2.6em; color: var(--ink2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.spark { flex: 0 0 3.6em; height: 1.3em; color: var(--tint); }
+.rows { container-type: inline-size; }
+@container (max-width: 15em) { .spark { display: none; } }   /* a narrow list keeps its names whole */
+.spark svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.item.good .spark { color: var(--good); } .item.warn .spark { color: var(--warn); } .item.bad .spark { color: var(--bad); }
 .rows .name { flex: 1 1 0; color: var(--ink); display: flex; align-items: center; } .rows .name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .rows .amount { flex: 0 0 auto; }
 .rows .item.good .amount { color: var(--good); } .rows .item.warn .amount { color: var(--warn); } .rows .item.bad .amount { color: var(--bad); }
@@ -220,3 +260,82 @@ body { background-image: var(--wash); }
   opacity: 1; box-shadow: 0 0 0 .2em rgba(255, 255, 255, .35); }
 .look-vivid .bar { background: rgba(255, 255, 255, .45); }
 .look-vivid .more.bad, .look-vivid .more.warn { color: #fff; text-decoration: underline; }
+
+/* ---- More blocks ---- */
+/* A strip: small columns in order (hours, days), each a label, a glyph, a value. */
+.strip { grid-template-columns: repeat(auto-fit, minmax(min(100%, 3.3em), 1fr)); gap: .35em; align-content: start; }
+.strip .item { display: flex; flex-direction: column; align-items: center; text-align: center; gap: .1em; padding: .35em .2em;
+               background: var(--surface); border-radius: var(--radius); }
+.strip .name, .strip .amount { max-width: 100%; }
+.strip .glyph { font-size: 1.45em; line-height: 1.15; white-space: nowrap; }
+.strip .amount { color: var(--ink); }
+.strip .item.good .amount { color: var(--good); } .strip .item.warn .amount { color: var(--warn); } .strip .item.bad .amount { color: var(--bad); }
+
+/* Rings: how far along, the number in the middle. */
+.rings { grid-template-columns: repeat(auto-fit, minmax(min(100%, 4.4em), 1fr)); grid-template-rows: minmax(0, 1fr); gap: .5em; min-height: 0; }
+.rings .item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .25em; min-height: 0; }
+/* A ring is as big as its cell allows, up to a size; its name sits right under it. */
+.ring { position: relative; flex: 0 1 auto; width: min(100%, 8.5em); aspect-ratio: 1; max-height: calc(100% - 1.7em); min-height: 0; container-type: size; }
+.ring svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.ring-track { stroke: var(--surface); } .ring-fill { stroke: var(--tint); }
+.item.good .ring-fill { stroke: var(--good); } .item.warn .ring-fill { stroke: var(--warn); } .item.bad .ring-fill { stroke: var(--bad); }
+.ring-text { position: absolute; inset: 0; display: grid; place-items: center; font-weight: 700; font-variant-numeric: tabular-nums;
+             font-size: clamp(11px, 23cqmin, 2.2em); letter-spacing: -.02em; }
+.rings .name { max-width: 100%; }
+
+/* Heat: a grid of small cells, oldest first. */
+.heat { display: flex; flex-direction: column; gap: .3em; min-height: 0; }
+.heat .plot { border-bottom: 0; }
+.heat.flat .plot { flex: 0 0 auto; height: 1.9em; }
+
+/* Split: one bar cut into its shares, each named under it. */
+.split { display: flex; flex-direction: column; gap: .45em; min-height: 0; }
+.split-bar { display: flex; gap: 2px; height: .75em; border-radius: 99px; overflow: hidden; flex: 0 0 auto; }
+.seg { flex: 1 1 0; min-width: 3px; background: var(--c1); }
+.split-keys { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8em), 1fr)); column-gap: 1.4em; row-gap: .15em; align-content: start;
+              flex: 1 1 auto; min-height: 0; }
+.split-keys .item, .split-keys .more { display: flex; justify-content: space-between; align-items: center; gap: .8em; padding: .12em 0; }
+.split-keys .name { display: flex; align-items: center; color: var(--ink); } .split-keys .name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* A small table. */
+.table-box { display: flex; flex-direction: column; min-height: 0; font-size: .85em; }
+.table { font-size: 1em; grid-template-columns: minmax(0, 1fr); align-content: start; flex: 1 1 auto; min-height: 0; }
+.table-head, .table .item { display: grid; column-gap: .9em; align-items: center; padding: .3em 0; }
+.table-head { color: var(--ink2); font-weight: 600; letter-spacing: .02em; }
+.table .item, .table .more { border-top: 1px solid var(--line); }
+.table .more { padding: .3em 0; }
+.cell { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cell.amount { text-align: right; } .table .cell.name { color: var(--ink); }
+.table .item.good .amount:last-child { color: var(--good); } .table .item.warn .amount:last-child { color: var(--warn); } .table .item.bad .amount:last-child { color: var(--bad); }
+
+/* Words: a note or a quote. */
+.text { display: flex; flex-direction: column; justify-content: center; gap: .3em; min-height: 0; }
+.text-body { flex: 0 1 auto; min-height: 0; overflow: hidden; line-height: 1.35; white-space: pre-line;
+             display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+/* The words are the tile (no headline): larger, in the middle. */
+.tile:not(:has(.headline)) .main > .text .text-body { font-size: clamp(1.05em, 4.5cqmin + .55em, 1.7em); line-height: 1.28; }
+.text.quote .text-body { font-size: 1.12em; font-weight: 550; border-left: 3px solid var(--tint); padding-left: .7em; }
+.text-by { font-size: .85em; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto; }
+
+/* A picture. */
+.picture { border-radius: var(--radius); background-size: cover; background-position: center; background-repeat: no-repeat; min-height: 0; overflow: hidden; }
+.picture.whole { background-size: contain; }
+.picture.drawn { display: grid; place-items: center; } .picture.drawn > svg { width: 100%; height: 100%; display: block; }
+
+/* Buttons that ask the tile's bot for something. */
+.buttons { display: flex; flex-wrap: wrap; gap: .4em; }
+.button { font: inherit; font-weight: 650; color: var(--tint); background: color-mix(in srgb, var(--tint) 15%, transparent); border: 0;
+          border-radius: 99px; padding: .4em .95em; white-space: nowrap; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.look-vivid .button, .has-backdrop .button { color: var(--ink); background: var(--surface); }
+.look-terminal .button { border-radius: var(--radius); border: 1px solid var(--tint); background: none; }
+
+/* The bot's own drawing. It may use: var(--ink), var(--ink2), var(--tint), var(--good), var(--warn), var(--bad),
+   var(--surface), var(--line), var(--radius), var(--c1) to var(--c6); sizes in em; the classes below. */
+.custom { min-width: 0; min-height: 0; overflow: hidden; font-size: .85em; }
+.custom.stretch { display: grid; }
+.custom svg { max-width: 100%; max-height: 100%; }
+.box { background: var(--surface); border-radius: var(--radius); padding: .4em .6em; }
+.label { color: var(--ink2); font-weight: 600; letter-spacing: var(--track); text-transform: var(--caps); }
+.strong { font-weight: 700; font-variant-numeric: tabular-nums; }
+.muted { color: var(--ink2); }
+.t-good { color: var(--good); } .t-warn { color: var(--warn); } .t-bad { color: var(--bad); } .t-tint { color: var(--tint); }

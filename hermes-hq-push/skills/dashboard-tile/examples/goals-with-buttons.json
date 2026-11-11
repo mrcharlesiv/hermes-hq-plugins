@@ -1,0 +1,44 @@
+{
+ "name": "Daily Goals",
+ "title": "Today",
+ "look": "app",
+ "blocks": [
+  {
+   "type": "rings",
+   "items": [
+    {
+     "name": "Move",
+     "value": 420,
+     "max": 600,
+     "text": "70%"
+    },
+    {
+     "name": "Exercise",
+     "value": 22,
+     "max": 30,
+     "text": "22m",
+     "state": "good"
+    },
+    {
+     "name": "Stand",
+     "value": 9,
+     "max": 12,
+     "text": "9/12"
+    }
+   ]
+  },
+  {
+   "type": "buttons",
+   "items": [
+    {
+     "label": "Log workout",
+     "send": "Log a workout for me now"
+    },
+    {
+     "label": "Refresh",
+     "send": "Update my Daily Goals tile"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,52 @@
+{
+ "name": "Team This Week",
+ "title": "Team",
+ "look": "app",
+ "value": "$84k",
+ "delta": "+12%",
+ "trend": "up",
+ "caption": "Closed this week",
+ "blocks": [
+  {
+   "type": "table",
+   "columns": [
+    "Rep",
+    "Calls",
+    "Won",
+    "Value"
+   ],
+   "rows": [
+    [
+     "Dana",
+     "42",
+     "6",
+     "$31k"
+    ],
+    [
+     "Lee",
+     "37",
+     "9",
+     "$28k"
+    ],
+    [
+     "Sam",
+     "51",
+     "4",
+     "$14k"
+    ],
+    [
+     "Ravi",
+     "29",
+     "3",
+     "$8k"
+    ],
+    [
+     "Mia",
+     "33",
+     "1",
+     "$3k"
+    ]
+   ]
+  }
+ ]
+}

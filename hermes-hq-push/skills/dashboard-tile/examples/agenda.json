@@ -1,0 +1,41 @@
+{
+ "name": "Today's Agenda",
+ "title": "Today",
+ "look": "app",
+ "value": "5 events",
+ "caption": "Next: Standup in 20 min",
+ "blocks": [
+  {
+   "type": "rows",
+   "items": [
+    {
+     "lead": "9:30",
+     "name": "Standup",
+     "value": "15 min"
+    },
+    {
+     "lead": "11:00",
+     "name": "Dana, pricing call",
+     "value": "1 h",
+     "state": "warn",
+     "detail": "Zoom"
+    },
+    {
+     "lead": "12:30",
+     "name": "Lunch with Lee",
+     "value": "1 h"
+    },
+    {
+     "lead": "2:00",
+     "name": "Design review",
+     "value": "45 min"
+    },
+    {
+     "lead": "4:30",
+     "name": "School pickup",
+     "value": "30 min"
+    }
+   ]
+  }
+ ]
+}

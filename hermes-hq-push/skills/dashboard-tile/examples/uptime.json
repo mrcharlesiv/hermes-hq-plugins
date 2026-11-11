@@ -1,0 +1,60 @@
+{
+ "name": "Site Uptime",
+ "title": "Uptime",
+ "look": "app",
+ "value": "99.2%",
+ "state": "warn",
+ "caption": "2 outages in 30 days",
+ "blocks": [
+  {
+   "type": "heat",
+   "values": [
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "bad",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "warn",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good",
+    "good"
+   ],
+   "label": "Last 30 days",
+   "note": "28 clean"
+  },
+  {
+   "type": "stats",
+   "items": [
+    {
+     "name": "Response",
+     "value": "212 ms"
+    },
+    {
+     "name": "Last down",
+     "value": "Nov 2"
+    }
+   ]
+  }
+ ]
+}

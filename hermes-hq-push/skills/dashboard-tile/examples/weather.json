@@ -1,0 +1,77 @@
+{
+ "name": "Weather Today",
+ "title": "Weather",
+ "look": "app",
+ "value": "72°",
+ "caption": "Sunny, high 78°, low 61°",
+ "badge": "UV 6",
+ "badge_state": "warn",
+ "blocks": [
+  {
+   "type": "strip",
+   "items": [
+    {
+     "name": "Now",
+     "glyph": "☀️",
+     "value": "72°"
+    },
+    {
+     "name": "1 PM",
+     "glyph": "☀️",
+     "value": "75°"
+    },
+    {
+     "name": "2 PM",
+     "glyph": "⛅",
+     "value": "77°"
+    },
+    {
+     "name": "3 PM",
+     "glyph": "⛅",
+     "value": "78°"
+    },
+    {
+     "name": "4 PM",
+     "glyph": "🌧",
+     "value": "74°"
+    },
+    {
+     "name": "5 PM",
+     "glyph": "🌧",
+     "value": "70°"
+    },
+    {
+     "name": "6 PM",
+     "glyph": "⛅",
+     "value": "68°"
+    },
+    {
+     "name": "7 PM",
+     "glyph": "🌙",
+     "value": "65°"
+    }
+   ]
+  },
+  {
+   "type": "rows",
+   "items": [
+    {
+     "lead": "Thu",
+     "name": "Showers",
+     "value": "74° / 60°"
+    },
+    {
+     "lead": "Fri",
+     "name": "Clear",
+     "value": "80° / 62°"
+    },
+    {
+     "lead": "Sat",
+     "name": "Clear",
+     "value": "83° / 64°"
+    }
+   ]
+  }
+ ],
+ "source": "NWS"
+}

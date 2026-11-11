@@ -1,0 +1,48 @@
+{
+ "name": "Spending This Month",
+ "title": "Spending",
+ "look": "app",
+ "value": "$3,240",
+ "delta": "-6%",
+ "trend": "down",
+ "caption": "Of a $4,000 budget",
+ "blocks": [
+  {
+   "type": "split",
+   "items": [
+    {
+     "name": "Rent",
+     "value": 1500
+    },
+    {
+     "name": "Food",
+     "value": 640
+    },
+    {
+     "name": "Travel",
+     "value": 520
+    },
+    {
+     "name": "Bills",
+     "value": 380
+    },
+    {
+     "name": "Other",
+     "value": 200
+    }
+   ]
+  },
+  {
+   "type": "meters",
+   "items": [
+    {
+     "name": "Budget used",
+     "value": 3240,
+     "max": 4000,
+     "text": "81%",
+     "state": "warn"
+    }
+   ]
+  }
+ ]
+}

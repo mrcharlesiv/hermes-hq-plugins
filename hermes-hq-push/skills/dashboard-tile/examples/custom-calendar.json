@@ -1,0 +1,35 @@
+{
+ "name": "November",
+ "title": "November",
+ "look": "app",
+ "badge": "3 events",
+ "blocks": [
+  {
+   "type": "custom",
+   "html": "<div class='x-cal'><span class='label'>S</span><span class='label'>M</span><span class='label'>T</span><span class='label'>W</span><span class='label'>T</span><span class='label'>F</span><span class='label'>S</span><span class='x-d'>1</span><span class='x-d'>2</span><span class='x-d'>3</span><span class='x-d'>4</span><span class='x-d x-on'>5</span><span class='x-d'>6</span><span class='x-d'>7</span><span class='x-d'>8</span><span class='x-d'>9</span><span class='x-d'>10</span><span class='x-d x-on x-today'>11</span><span class='x-d'>12</span><span class='x-d'>13</span><span class='x-d'>14</span><span class='x-d'>15</span><span class='x-d'>16</span><span class='x-d'>17</span><span class='x-d'>18</span><span class='x-d x-on'>19</span><span class='x-d'>20</span><span class='x-d'>21</span><span class='x-d'>22</span><span class='x-d'>23</span><span class='x-d'>24</span><span class='x-d'>25</span><span class='x-d'>26</span><span class='x-d'>27</span><span class='x-d'>28</span><span class='x-d'>29</span><span class='x-d'>30</span></div>",
+   "css": ".x-cal{display:grid;grid-template-columns:repeat(7,1fr);grid-auto-rows:1fr;gap:.15em;text-align:center;height:100%}.x-cal span{display:grid;place-items:center;border-radius:var(--radius);min-height:0}.x-on{background:var(--surface);color:var(--tint);font-weight:700}.x-today{background:var(--tint);color:var(--page);font-weight:700}",
+   "drop": 1
+  },
+  {
+   "type": "rows",
+   "items": [
+    {
+     "lead": "5",
+     "name": "Dentist",
+     "value": "3 PM"
+    },
+    {
+     "lead": "11",
+     "name": "Board call",
+     "value": "10 AM",
+     "state": "warn"
+    },
+    {
+     "lead": "19",
+     "name": "Flight",
+     "value": "6:40 AM"
+    }
+   ]
+  }
+ ]
+}

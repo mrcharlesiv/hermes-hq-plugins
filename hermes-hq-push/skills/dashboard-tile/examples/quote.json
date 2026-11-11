@@ -1,0 +1,14 @@
+{
+ "name": "Quote Of The Day",
+ "title": "Today",
+ "look": "vivid",
+ "foot": false,
+ "blocks": [
+  {
+   "type": "text",
+   "kind": "quote",
+   "text": "The best way to predict the future is to invent it.",
+   "by": "Alan Kay"
+  }
+ ]
+}

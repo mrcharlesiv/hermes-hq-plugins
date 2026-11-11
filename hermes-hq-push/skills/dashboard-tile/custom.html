@@ -249,7 +249,8 @@
 // in order (1 first) until the rest fits; a data-items list loses items from its end (data-more stands in for them,
 // data-keep is the fewest worth showing); data-least is the least height of a part that stretches, in px or as a
 // share of the tile's height ("44 14%": whichever is more); data-whole shows
-// whole or not at all; data-shrink is one line that shrinks to its width. Kept identical in custom.html.
+// whole or not at all; data-shrink is one line that shrinks to its width; data-clamp is words that take the lines
+// they have room for; data-fits is a part that goes when its contents run out of it. Kept identical in custom.html.
 (function () {
   function fitTile() {
     var tile = document.querySelector(".tile"); if (!tile) return;
@@ -289,6 +290,9 @@
         box = lists[i].getBoundingClientRect().bottom + 1; ks = lists[i].children;
         for (k = 0; k < ks.length; k++) if (shown(ks[k]) && ks[k].getBoundingClientRect().bottom > box) return true;
       }
+      // data-fits: a part whose own contents must not run out of it (a drawing in a box too small for it).
+      var whole = q("[data-fits]");
+      for (i = 0; i < whole.length; i++) if (shown(whole[i]) && whole[i].scrollHeight > whole[i].clientHeight + 2) return true;
       // data-least: px, or a share of the tile's height ("44 14%": whichever is more).
       for (i = 0; i < least.length; i++) {
         if (!shown(least[i])) continue;
@@ -309,14 +313,21 @@
       while (hi - lo > 1) { mid = (lo + hi) >> 1; show(c, mid); if (misfit()) hi = mid; else lo = mid; }
       show(c, lo); return true;
     }
+    // The list a part trims: the part itself, or the one list inside it that has no turn of its own (a table's rows).
+    function listOf(part) {
+      if (part.hasAttribute("data-items")) return part;
+      var inside = [].slice.call(part.querySelectorAll("[data-items]")).filter(function (l) { return !l.hasAttribute("data-drop"); });
+      return inside.length === 1 ? inside[0] : null;
+    }
     function shrink(e) {
       e.style.fontSize = "";
       for (var size = parseFloat(getComputedStyle(e).fontSize); size > 12 && e.scrollWidth > e.parentNode.clientWidth; ) {
         size -= 1; e.style.fontSize = size + "px";
       }
     }
-    // Start again from everything showing (the tile changed size).
+    // Start again from everything showing (the tile changed size); the page lays out what goes by its width first.
     q("[data-off]").forEach(on);
+    if (typeof window.hqTileLayout === "function") window.hqTileLayout();
     q("[data-items]").forEach(more);
     q("[data-shrink]").forEach(shrink);
     q("[data-whole]").forEach(function (e) { if (e.scrollWidth > e.clientWidth + 1) off(e); });
@@ -325,7 +336,7 @@
     var gone = [], p;
     for (p = 0; p < parts.length && misfit(); p++) {
       if (!shown(parts[p])) continue;
-      if (parts[p].hasAttribute("data-items") && most(parts[p], keep(parts[p]))) break;
+      if (listOf(parts[p]) && most(listOf(parts[p]), keep(listOf(parts[p])))) break;
       off(parts[p]); gone.push(parts[p]);
     }
     // What went comes back, the most wanted first, when it fits after all: as it is, or with a list giving up
@@ -336,8 +347,8 @@
     var lists = q("[data-items]").filter(shown), least = lists.map(function (c) { return Math.max(keep(c), Math.ceil(count(c) * 2 / 3)); });
     for (p = gone.length - 1; p >= 0; p--) {
       on(gone[p]);
-      if (gone[p].hasAttribute("data-items") ? most(gone[p], keep(gone[p])) : !misfit()) continue;
-      var made = lists.some(function (c, i) { return c !== gone[p] && shown(c) && most(c, least[i]); });
+      if (listOf(gone[p]) ? most(listOf(gone[p]), keep(listOf(gone[p]))) : !misfit()) continue;
+      var made = lists.some(function (c, i) { return c !== listOf(gone[p]) && shown(c) && most(c, least[i]); });
       if (!made) off(gone[p]);
     }
     q("[data-items]").forEach(function (c) { if (shown(c)) most(c, count(c)); });
@@ -352,6 +363,16 @@
     });
     q("[data-shrink]").forEach(shrink);
     q("[data-whole]").forEach(function (e) { if (shown(e) && e.scrollWidth > e.clientWidth + 1) off(e); });
+    // data-clamp: words that take as many whole lines as their box has room for.
+    q("[data-clamp]").forEach(function (e) {
+      e.style.webkitLineClamp = "";
+      var line = parseFloat(getComputedStyle(e).lineHeight) || parseFloat(getComputedStyle(e).fontSize) * 1.3;
+      if (!shown(e)) return;
+      // Its room: its box's height less what else is in the box (who said it, under a quote).
+      var room = e.parentNode.clientHeight;
+      [].slice.call(e.parentNode.children).forEach(function (k) { if (k !== e && shown(k)) room -= k.getBoundingClientRect().height + 6; });
+      e.style.webkitLineClamp = Math.max(1, Math.floor((room + 1) / line));
+    });
   }
   window.hqTileFit = fitTile;   // call it again after changing what the tile shows (tabs, a button)
   fitTile();

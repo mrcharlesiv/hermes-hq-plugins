@@ -1,0 +1,67 @@
+{
+ "name": "Signups",
+ "title": "Signups",
+ "look": "app",
+ "value": "1,284",
+ "delta": "+18%",
+ "trend": "up",
+ "caption": "This week, against last",
+ "blocks": [
+  {
+   "type": "chart",
+   "series": [
+    {
+     "name": "This week",
+     "values": [
+      150,
+      170,
+      190,
+      180,
+      210,
+      190,
+      194
+     ]
+    },
+    {
+     "name": "Last week",
+     "values": [
+      140,
+      150,
+      160,
+      150,
+      170,
+      160,
+      158
+     ]
+    }
+   ],
+   "labels": [
+    "Mon",
+    "Tue",
+    "Wed",
+    "Thu",
+    "Fri",
+    "Sat",
+    "Sun"
+   ]
+  },
+  {
+   "type": "stats",
+   "items": [
+    {
+     "name": "Paid",
+     "value": "212"
+    },
+    {
+     "name": "Trial",
+     "value": "1,072"
+    },
+    {
+     "name": "Churn",
+     "value": "1.2%",
+     "state": "good"
+    }
+   ]
+  }
+ ]
+}
