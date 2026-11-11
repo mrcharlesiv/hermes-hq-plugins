@@ -24,8 +24,8 @@ _spec.loader.exec_module(cron_working)
 @pytest.fixture
 def homes(tmp_path):
     root = (tmp_path / "hermes").resolve()
-    (root / "profiles" / "cro").mkdir(parents=True)
-    return root, root / "profiles" / "cro"
+    (root / "profiles" / "otto").mkdir(parents=True)
+    return root, root / "profiles" / "otto"
 
 
 def hermes_key(monkeypatch, source, job, profile):
@@ -47,13 +47,13 @@ def hermes_key(monkeypatch, source, job, profile):
 
 
 def test_the_key_is_hermes_own(monkeypatch, homes):
-    root, cro = homes
+    root, otto = homes
     job = {"id": "abc123", "name": "Brief", "execution_id": "e" * 32}
     home, key = hermes_key(monkeypatch, root, job, "")
     assert home == root
     assert key == cron_working.delivery_key(root, "abc123", "e" * 32, root)
-    home, key = hermes_key(monkeypatch, root, job, "cro")  # a named profile: the one get_profile_dir gives (route's too)
-    assert home.resolve() == get_profile_dir("cro").resolve()
+    home, key = hermes_key(monkeypatch, root, job, "otto")  # a named profile: the one get_profile_dir gives (route's too)
+    assert home.resolve() == get_profile_dir("otto").resolve()
     assert key == cron_working.delivery_key(root, "abc123", "e" * 32, home.resolve())
 
 
@@ -70,57 +70,57 @@ def job(job_id, run_id="r1", deliver="bot-chat", **more):
     return {"id": job_id, "deliver": deliver, "latest_execution": {"id": run_id, "status": "completed"}, **more}
 
 
-def run(root, cro, jobs):
-    profiles = [("default", root), ("cro", cro)]
+def run(root, otto, jobs):
+    profiles = [("default", root), ("otto", otto)]
     return cron_working.working(profiles, lambda name, home: jobs.get(name, []), lambda name: root / "profiles" / name)
 
 
 def test_pending_handoffs_are_working(homes):
-    root, cro = homes
+    root, otto = homes
     jobs = {"default": [job("queued"), job("claimed"), job("old-spelling"), job("settled"), job("failed"), job("none")],
-            "cro": [job("own-cro", deliver="telegram,bot-chat:cro")]}
+            "otto": [job("own-otto", deliver="telegram,bot-chat:otto")]}
     receipt(root, cron_working.delivery_key(root, "queued", "r1", root), "queued")
     receipt(root, cron_working.delivery_key(root, "claimed", "r1", root), "claimed")
     receipt(root, cron_working.delivery_key(root, "old-spelling", "r1", root), "canonical")
     receipt(root, cron_working.delivery_key(root, "settled", "r1", root), "settled")
     receipt(root, cron_working.delivery_key(root, "failed", "r1", root), "failed")
-    receipt(cro, cron_working.delivery_key(cro, "own-cro", "r1", cro), "claimed")
-    found = run(root, cro, jobs)
+    receipt(otto, cron_working.delivery_key(otto, "own-otto", "r1", otto), "claimed")
+    found = run(root, otto, jobs)
     assert [(f["profile"], f["id"], f["status"]) for f in found] == [
         ("default", "queued", "queued"), ("default", "claimed", "claimed"), ("default", "old-spelling", "queued"),
-        ("cro", "own-cro", "claimed")]
+        ("otto", "own-otto", "claimed")]
     assert found[0]["run"] == "r1" and found[0]["since"].endswith("Z")
 
 
 def test_output_handed_to_another_bot(homes):
-    root, cro = homes
-    jobs = {"default": [job("to-cro", deliver="bot-chat:cro"), job("failure-to-cro", deliver="local",
-                                                                    failure_deliver="Bot-Chat:cro"),
-                        job("listed", deliver=["telegram", "bot-chat:cro"])]}
-    for job_id in ("to-cro", "failure-to-cro", "listed"):
-        receipt(cro, cron_working.delivery_key(root, job_id, "r1", cro), "claimed")
-    assert [f["id"] for f in run(root, cro, jobs)] == ["to-cro", "failure-to-cro", "listed"]
+    root, otto = homes
+    jobs = {"default": [job("to-otto", deliver="bot-chat:otto"), job("failure-to-otto", deliver="local",
+                                                                    failure_deliver="Bot-Chat:otto"),
+                        job("listed", deliver=["telegram", "bot-chat:otto"])]}
+    for job_id in ("to-otto", "failure-to-otto", "listed"):
+        receipt(otto, cron_working.delivery_key(root, job_id, "r1", otto), "claimed")
+    assert [f["id"] for f in run(root, otto, jobs)] == ["to-otto", "failure-to-otto", "listed"]
 
 
 def test_only_the_latest_run_fresh_and_readable(homes):
-    root, cro = homes
+    root, otto = homes
     jobs = {"default": [job("newer-run", run_id="r2"), job("stale"), job("no-run", latest_execution=None),
                         job("garbled")]}
     receipt(root, cron_working.delivery_key(root, "newer-run", "r1", root), "claimed")  # the run before
     receipt(root, cron_working.delivery_key(root, "stale", "r1", root), "queued", age=cron_working.STALE_AFTER + 60)
     garbled = Path(root).joinpath(*cron_working.DELIVERY_DIR, cron_working.delivery_key(root, "garbled", "r1", root) + ".json")
     garbled.write_text("{not json")
-    assert run(root, cro, jobs) == []
+    assert run(root, otto, jobs) == []
 
 
 def test_a_profile_that_cannot_list_is_skipped(homes):
-    root, cro = homes
-    receipt(cro, cron_working.delivery_key(cro, "j", "r1", cro), "claimed")
+    root, otto = homes
+    receipt(otto, cron_working.delivery_key(otto, "j", "r1", otto), "claimed")
 
     def jobs_for(name, home):
         if name == "default":
             raise OSError("locked")
         return [job("j")]
 
-    found = cron_working.working([("default", root), ("cro", cro)], jobs_for, lambda name: root / "profiles" / name)
-    assert [(f["profile"], f["id"]) for f in found] == [("cro", "j")]
+    found = cron_working.working([("default", root), ("otto", otto)], jobs_for, lambda name: root / "profiles" / name)
+    assert [(f["profile"], f["id"]) for f in found] == [("otto", "j")]

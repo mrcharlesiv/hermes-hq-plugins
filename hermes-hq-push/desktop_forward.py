@@ -3,7 +3,7 @@
 The desktop app runs its chats in the gateway (``hermes gateway ensure`` attaches to it), and a chat it has open holds
 Hermes's one-writer lease for as long as its tile stays open (``tui_gateway/session_lifecycle.py``). ``hermes serve``,
 the process the app talks to, then refuses the app's message ``4090 SESSION_NOT_OWNED``: "This chat is open in another
-Hermes window". Tester Polo, 2026-10-30, with the chat open in the desktop app.
+Hermes window". A tester, 2026-10-30, with the chat open in the desktop app.
 
 Hermes already has the answer for a chat the gateway is working on: one owner, one queue, and clients that submit
 (``tui_gateway/owner_forward.py``, RT-37). ``hermes serve`` hands the message to the gateway's queue, the gateway runs

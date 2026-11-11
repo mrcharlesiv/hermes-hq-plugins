@@ -54,11 +54,11 @@ def me(**extra):
 
 
 def bot_task(**extra):
-    return {"title": "Draft the email", "who": "bot", "bot": "cro", **extra}
+    return {"title": "Draft the email", "who": "bot", "bot": "otto", **extra}
 
 
 def together(**extra):
-    return {"title": "Plan the trip", "who": "together", "bot": "cro", **extra}
+    return {"title": "Plan the trip", "who": "together", "bot": "otto", **extra}
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +67,9 @@ def together(**extra):
 
 def test_create_fills_in_defaults(tmp_path):
     s = store(tmp_path)
-    task = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    assert task["id"] and task["rev"] == 1 and task["status"] == "open" and task["bot"] == "cro"
-    assert task["created_by"] == "cro" and task["created_at"] == task["updated_at"] and task["log"] == []
+    task = s.create(bot_task(), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    assert task["id"] and task["rev"] == 1 and task["status"] == "open" and task["bot"] == "otto"
+    assert task["created_by"] == "otto" and task["created_at"] == task["updated_at"] and task["log"] == []
     assert s.get(task["id"]) == task and s.rev() == 1
 
 
@@ -86,9 +86,9 @@ def test_me_task_never_gets_a_bot_or_repeat_unless_asked(tmp_path):
     assert plain["bot"] is None and plain["repeat"] is None
     repeating = s.create(me(repeat="daily", due="2026-11-04"), created_by="you", source={"kind": "app"})
     assert repeating["repeat"] == "daily"
-    bot_only = s.create({"title": "x", "who": "bot", "repeat": "daily"}, created_by="cro",
-                        source={"kind": "chat", "profile": "cro"})
-    assert bot_only["repeat"] is None and bot_only["bot"] == "cro"  # repeat only applies to who='me'
+    bot_only = s.create({"title": "x", "who": "bot", "repeat": "daily"}, created_by="otto",
+                        source={"kind": "chat", "profile": "otto"})
+    assert bot_only["repeat"] is None and bot_only["bot"] == "otto"  # repeat only applies to who='me'
 
 
 def test_patch_conflict_on_stale_rev_carries_the_current_task(tmp_path):
@@ -113,12 +113,12 @@ def test_patch_distinguishes_unset_from_explicit_null(tmp_path):
 def test_two_connections_writing_at_once_lose_nothing(tmp_path):
     path = tmp_path / "tasks.db"
     a, b = tasks.Store(path), tasks.Store(path)
-    task = a.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    task = a.create(bot_task(), created_by="otto", source={"kind": "chat", "profile": "otto"})
     errors = []
 
     def write(which, text):
         try:
-            which.update_bot(task["id"], "cro", note=text)
+            which.update_bot(task["id"], "otto", note=text)
         except Exception as error:
             errors.append(error)
 
@@ -158,8 +158,8 @@ def test_repeat_weekdays_skips_the_weekend(tmp_path):
 
 def test_repeat_only_rolls_forward_for_a_me_task(tmp_path):
     s = store(tmp_path)
-    task = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    done = s.update_bot(task["id"], "cro", status="done")
+    task = s.create(bot_task(), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    done = s.update_bot(task["id"], "otto", status="done")
     assert done["status"] == "done" and done["done_at"]  # no repeat field at all: stays done
 
 
@@ -171,24 +171,24 @@ def test_bot_cannot_change_a_me_task_except_add_a_note(tmp_path):
     s = store(tmp_path)
     task = s.create(me(), created_by="you", source={"kind": "app"})
     with pytest.raises(tasks.TaskError) as exc:
-        s.update_bot(task["id"], "cro", status="done")
+        s.update_bot(task["id"], "otto", status="done")
     assert exc.value.status_code == 403
     with pytest.raises(tasks.TaskError):
-        s.update_bot(task["id"], "cro", status_note="found a slot")
-    noted = s.update_bot(task["id"], "cro", note="found a slot Tuesday 3pm")
-    assert noted["status"] == "open" and noted["log"][-1] == {"at": noted["updated_at"], "by": "cro",
+        s.update_bot(task["id"], "otto", status_note="found a slot")
+    noted = s.update_bot(task["id"], "otto", note="found a slot Tuesday 3pm")
+    assert noted["status"] == "open" and noted["log"][-1] == {"at": noted["updated_at"], "by": "otto",
                                                                "text": "found a slot Tuesday 3pm"}
 
 
 def test_bot_can_only_finish_a_task_it_owns_alone(tmp_path):
     s = store(tmp_path)
-    solo = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    pair = s.create(together(), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    assert s.update_bot(solo["id"], "cro", status="done")["status"] == "done"
+    solo = s.create(bot_task(), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    pair = s.create(together(), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    assert s.update_bot(solo["id"], "otto", status="done")["status"] == "done"
     with pytest.raises(tasks.TaskError) as exc:
-        s.update_bot(pair["id"], "cro", status="done")
+        s.update_bot(pair["id"], "otto", status="done")
     assert exc.value.status_code == 403
-    ready = s.update_bot(pair["id"], "cro", status="ready", status_note="Flights found, pick one")
+    ready = s.update_bot(pair["id"], "otto", status="ready", status_note="Flights found, pick one")
     assert ready["status"] == "ready"
 
 
@@ -196,16 +196,16 @@ def test_done_steps_only_ticks_the_bots_own_steps(tmp_path):
     s = store(tmp_path)
     task = s.create(together(steps=[{"id": "s1", "title": "book flight", "who": "bot"},
                                     {"id": "s2", "title": "pack a bag", "who": "me"}]),
-                    created_by="cro", source={"kind": "chat", "profile": "cro"})
-    updated = s.update_bot(task["id"], "cro", done_steps=["s1", "s2"])
+                    created_by="otto", source={"kind": "chat", "profile": "otto"})
+    updated = s.update_bot(task["id"], "otto", done_steps=["s1", "s2"])
     assert {step["id"]: step["done"] for step in updated["steps"]} == {"s1": True, "s2": False}
 
 
 def test_add_steps_and_made_accumulate(tmp_path):
     s = store(tmp_path)
-    task = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    step1 = s.update_bot(task["id"], "cro", add_steps=[{"title": "draft v1"}])
-    step2 = s.update_bot(task["id"], "cro", add_steps=[{"title": "draft v2"}],
+    task = s.create(bot_task(), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    step1 = s.update_bot(task["id"], "otto", add_steps=[{"title": "draft v1"}])
+    step2 = s.update_bot(task["id"], "otto", add_steps=[{"title": "draft v2"}],
                          made=[{"title": "draft.txt", "kind": "file", "ref": "/tmp/draft.txt"}])
     assert [s["title"] for s in step2["steps"]] == ["draft v1", "draft v2"]
     assert step2["made"][0]["title"] == "draft.txt"
@@ -230,42 +230,42 @@ def test_settings_defaults_and_partial_updates(tmp_path):
 
 def test_next_prep_stops_in_quiet_hours(tmp_path):
     s = store(tmp_path, hour=23)
-    s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    assert s.next_prep("cro") == {"stop": "it's quiet hours (22:00–08:00)"}
+    s.create(bot_task(prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    assert s.next_prep("otto") == {"stop": "it's quiet hours (22:00–08:00)"}
 
 
 def test_next_prep_stops_when_none_left(tmp_path):
     s = store(tmp_path, hour=10)
-    assert s.next_prep("cro") == {"stop": "no open prep tasks for cro"}
+    assert s.next_prep("otto") == {"stop": "no open prep tasks for otto"}
 
 
 def test_next_prep_marks_working_and_hands_out_the_next_one(tmp_path):
     s = store(tmp_path, hour=10)
-    first = s.create(bot_task(title="A", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    s.create(bot_task(title="B", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    handed = s.next_prep("cro")
+    first = s.create(bot_task(title="A", prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    s.create(bot_task(title="B", prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    handed = s.next_prep("otto")
     assert handed["status"] == "working" and handed["id"] == first["id"]
-    again = s.next_prep("cro")
+    again = s.next_prep("otto")
     assert again["id"] != handed["id"]  # already-working task isn't handed out a second time
 
 
 def test_next_prep_only_considers_this_bots_prep_tasks(tmp_path):
     s = store(tmp_path, hour=10)
     s.create(bot_task(bot="finance", prep=True), created_by="finance", source={"kind": "chat", "profile": "finance"})
-    assert s.next_prep("cro") == {"stop": "no open prep tasks for cro"}
+    assert s.next_prep("otto") == {"stop": "no open prep tasks for otto"}
 
 
 def test_next_prep_stops_at_the_daily_limit_across_calls(tmp_path):
     s = store(tmp_path, hour=10)
     s.put_settings({"prep_per_day": 2})
     for i in range(3):
-        s.create(bot_task(title=f"T{i}", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    first = s.next_prep("cro")
-    s.update_bot(first["id"], "cro", status="ready", status_note="done")
-    second = s.next_prep("cro")
-    s.update_bot(second["id"], "cro", status="ready", status_note="done")
+        s.create(bot_task(title=f"T{i}", prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    first = s.next_prep("otto")
+    s.update_bot(first["id"], "otto", status="ready", status_note="done")
+    second = s.next_prep("otto")
+    s.update_bot(second["id"], "otto", status="ready", status_note="done")
     assert "stop" not in first and "stop" not in second
-    assert s.next_prep("cro") == {"stop": "today's prep limit (2 runs) is reached"}
+    assert s.next_prep("otto") == {"stop": "today's prep limit (2 runs) is reached"}
 
 
 # ---------------------------------------------------------------------------
@@ -275,14 +275,14 @@ def test_next_prep_stops_at_the_daily_limit_across_calls(tmp_path):
 def test_context_note_lists_open_tasks_and_the_default_capture_line(tmp_path):
     s = store(tmp_path)
     s.create(bot_task(title="Call the vet about Max's shots"), created_by="you", source={"kind": "app"})
-    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    note = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi")
     assert note.startswith(tasks.MARK) and note.endswith("]")
     assert "Call the vet about Max's shots (open)" in note
     # 0.9.34: Ask First is the default: one clarify card offering what the bot could do, nothing added without a yes.
     assert "clarify" in note and "multi_select=true" in note and "Just add it to my list" in note
     assert "add nothing" in note
     s.put_settings({"capture": "auto"})
-    auto = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    auto = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi")
     assert "add it to Tasks with tasks_add" in auto and "clarify" not in auto
 
 
@@ -291,7 +291,7 @@ def test_context_note_lists_at_most_five_and_truncates_long_titles(tmp_path):
     for i in range(7):
         s.create(bot_task(title=f"Task number {i} has a fairly long title to check truncation works"),
                  created_by="you", source={"kind": "app"})
-    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    note = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi")
     assert note.count(" (open)") == 5 and ", +2 more" in note
     assert len(note) < 1250  # 0.9.34's ask-first rule (once per 12 messages, app chats only)
 
@@ -300,45 +300,45 @@ def test_context_note_lists_at_most_five_and_truncates_long_titles(tmp_path):
 def test_tasks_off_drops_the_note_the_tools_and_the_prep_job(tmp_path, monkeypatch):
     s = store(tmp_path)
     s.create(bot_task(prep=True), created_by="you", source={"kind": "app"})
-    assert s.enabled() and tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    assert s.enabled() and tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi")
     ctx = FakeCtx()
-    tasks.register_tools(ctx, lambda: s, lambda: "cro", lambda task, prof: None)
+    tasks.register_tools(ctx, lambda: s, lambda: "otto", lambda task, prof: None)
     assert set(ctx.checks) == {"tasks_list", "tasks_add", "tasks_update", "tasks_next_prep"}
     assert all(check() for check in ctx.checks.values())
 
     saved = s.put_settings({"enabled": False})
     assert saved["enabled"] is False and not s.enabled()
-    assert tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi") is None
+    assert tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi") is None
     assert not any(check() for check in ctx.checks.values())   # no bot sees the tools
     assert json.loads(ctx.tools["tasks_next_prep"]({}))["task"] is None
     removed, ensured = [], []
     monkeypatch.setattr(tasks, "remove_prep_job", lambda: removed.append(1))
     monkeypatch.setattr(tasks, "ensure_prep_job", lambda hours: ensured.append(hours))
-    tasks.reconcile_prep_job(s, "cro")
+    tasks.reconcile_prep_job(s, "otto")
     assert removed and not ensured
     assert len(s.list_all()) == 1   # the list is kept
-    assert s.bots_with_tasks() == ["cro"]
+    assert s.bots_with_tasks() == ["otto"]
 
     s.put_settings({"enabled": True, "capture": "nonsense"})
     assert s.enabled() and all(check() for check in ctx.checks.values())
-    tasks.reconcile_prep_job(s, "cro")
+    tasks.reconcile_prep_job(s, "otto")
     assert ensured
 
 
 def test_context_note_skipped_when_nothing_to_say(tmp_path):
     s = store(tmp_path)
     s.put_settings({"capture": "off"})
-    assert tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi") is None
+    assert tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi") is None
 
 
 def test_context_note_only_for_a_typed_app_chat(tmp_path):
     s = store(tmp_path)
     s.create(bot_task(), created_by="you", source={"kind": "app"})
     for platform in ("telegram", "cron", "", "cli"):
-        assert tasks.context_for(store=s, profile="cro", platform=platform, user_message="hi") is None
-    assert tasks.context_for(store=s, profile="cro", platform="desktop", parent_session_id="20261101_x",
+        assert tasks.context_for(store=s, profile="otto", platform=platform, user_message="hi") is None
+    assert tasks.context_for(store=s, profile="otto", platform="desktop", parent_session_id="20261101_x",
                              user_message="hi") is None
-    assert tasks.context_for(store=s, profile="cro", platform="desktop",
+    assert tasks.context_for(store=s, profile="otto", platform="desktop",
                              user_message='[Cronjob "Task prep" output]') is None
 
 
@@ -347,9 +347,9 @@ def test_context_note_not_resent_while_still_recent(tmp_path):
     s.create(bot_task(), created_by="you", source={"kind": "app"})
     sent = {"role": "user", "content": "hi", "api_content": "hi\n\n" + tasks.MARK + " capture line]"}
     filler = [{"role": "assistant", "content": "ok"}] * (tasks.RESEND_AFTER - 1)
-    assert tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi",
+    assert tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi",
                              conversation_history=[sent, *filler]) is None
-    assert tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi",
+    assert tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi",
                              conversation_history=[sent, *filler, {"role": "user", "content": "x"}]) is not None
 
 
@@ -357,9 +357,9 @@ def test_context_note_scopes_to_this_bot_and_skips_done(tmp_path):
     s = store(tmp_path)
     s.create(bot_task(bot="finance", title="Finance's own task"), created_by="finance",
              source={"kind": "chat", "profile": "finance"})
-    done = s.create(bot_task(title="Already finished"), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    s.update_bot(done["id"], "cro", status="done")
-    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi")
+    done = s.create(bot_task(title="Already finished"), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    s.update_bot(done["id"], "otto", status="done")
+    note = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi")
     assert note is not None and "Finance's own task" not in note and "Already finished" not in note
 
 
@@ -378,7 +378,7 @@ class FakeCtx:
         self.checks[name] = check_fn
 
 
-def wired(tmp_path, profile_name="cro", hour=10):
+def wired(tmp_path, profile_name="otto", hour=10):
     s = store(tmp_path, hour=hour)
     ctx = FakeCtx()
     notified = []
@@ -406,7 +406,7 @@ def test_tasks_update_tool_pushes_on_ready_and_needs_you_only(tmp_path):
     assert notified == []  # "working" never pushes
     out = json.loads(ctx.tools["tasks_update"]({"id": added["id"], "status": "ready", "status_note": "Tuesday 3pm"}))
     assert out["status"] == "ready" and len(notified) == 1
-    assert notified[0][0]["id"] == added["id"] and notified[0][1] == "cro"
+    assert notified[0][0]["id"] == added["id"] and notified[0][1] == "otto"
 
 
 def test_tasks_update_tool_reports_permission_errors_as_json_not_an_exception(tmp_path):
@@ -435,7 +435,7 @@ def test_tasks_list_tool_scopes_to_mine_by_default_and_hides_done(tmp_path):
 
 def test_tasks_next_prep_tool_round_trips_the_store(tmp_path):
     s, ctx, notified = wired(tmp_path, hour=10)
-    assert json.loads(ctx.tools["tasks_next_prep"]({}))["stop"] == "no open prep tasks for cro"
+    assert json.loads(ctx.tools["tasks_next_prep"]({}))["stop"] == "no open prep tasks for otto"
     json.loads(ctx.tools["tasks_add"]({"title": "Research flights", "who": "bot", "prep": True}))
     handed = json.loads(ctx.tools["tasks_next_prep"]({}))
     assert handed["status"] == "working" and handed["title"] == "Research flights"
@@ -471,12 +471,12 @@ def test_remove_prep_job_is_a_no_op_when_there_is_none(tmp_path):
 @needs_cron
 def test_reconcile_prep_job_follows_whether_open_prep_tasks_remain(tmp_path):
     s = store(tmp_path, hour=10)
-    task = s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    task = s.create(bot_task(prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
     with cron_jobs.use_cron_store(tmp_path):
-        tasks.reconcile_prep_job(s, "cro")
+        tasks.reconcile_prep_job(s, "otto")
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None
-        s.update_bot(task["id"], "cro", status="ready", status_note="done")
-        tasks.reconcile_prep_job(s, "cro")
+        s.update_bot(task["id"], "otto", status="ready", status_note="done")
+        tasks.reconcile_prep_job(s, "otto")
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None  # no open prep tasks left: job removed
 
 
@@ -492,10 +492,10 @@ def test_ready_alerts_once_not_again_for_a_later_note(tmp_path):
 @needs_cron
 def test_reconcile_puts_the_job_in_that_bots_own_schedule(tmp_path):
     s = store(tmp_path, hour=10)
-    s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    cro_home, other = tmp_path / "cro-home", tmp_path / "other-home"
+    s.create(bot_task(prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    cro_home, other = tmp_path / "otto-home", tmp_path / "other-home"
     with cron_jobs.use_cron_store(other):  # the process's active schedule belongs to another bot
-        tasks.reconcile_prep_job(s, "cro", cro_home)
+        tasks.reconcile_prep_job(s, "otto", cro_home)
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None
     with cron_jobs.use_cron_store(cro_home):
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None
@@ -555,7 +555,7 @@ def test_tasks_add_tool_nudges_the_bot_to_take_its_part_of_a_me_task_only_when_a
     assert "who='together'" in mine["next"]
     shared = json.loads(ctx.tools["tasks_add"]({"title": "Review applications", "who": "together", "steps": [
         {"title": "Rank them", "who": "bot"}, {"title": "Review the shortlist", "who": "me"}]}))
-    assert "next" not in shared and shared["bot"] == "cro"
+    assert "next" not in shared and shared["bot"] == "otto"
 
 
 def test_bot_takes_a_part_of_the_users_task(tmp_path):
@@ -566,7 +566,7 @@ def test_bot_takes_a_part_of_the_users_task(tmp_path):
     assert "error" in no_step and s.get(task["id"])["who"] == "me"
     took = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "who": "together", "prep": True, "add_steps": [
         {"title": "Rank the 167 and flag mismatches", "who": "bot"}, {"title": "Review the shortlist", "who": "me"}]}))
-    assert took["who"] == "together" and took["bot"] == "cro" and took["prep"] is True and took["took_part"] is True
+    assert took["who"] == "together" and took["bot"] == "otto" and took["prep"] is True and took["took_part"] is True
     assert [st["who"] for st in took["steps"]] == ["bot", "me"] and took["log"][-1]["text"] == "took a part"
     # With its own note (2026-11-04 live test) the log's last line is the note; took_part still tells the app.
     other = json.loads(ctx.tools["tasks_add"]({"title": "Pick a spot for Friday's lunch"}))
@@ -590,15 +590,15 @@ def test_bot_still_cannot_otherwise_change_a_users_task(tmp_path):
 
 def test_start_now_goes_first_even_in_quiet_hours_but_not_past_the_cap(tmp_path):
     s = store(tmp_path, hour=23)  # quiet hours
-    older = s.create(bot_task(title="Older", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    asked = s.create(bot_task(title="Asked", prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    assert "quiet hours" in s.next_prep("cro")["stop"]
-    s.ask_start_now(asked["id"], "cro")
-    assert s.next_prep("cro")["title"] == "Asked"
-    assert "quiet hours" in s.next_prep("cro")["stop"]  # the ask is used once; the rest wait for morning
+    older = s.create(bot_task(title="Older", prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    asked = s.create(bot_task(title="Asked", prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    assert "quiet hours" in s.next_prep("otto")["stop"]
+    s.ask_start_now(asked["id"], "otto")
+    assert s.next_prep("otto")["title"] == "Asked"
+    assert "quiet hours" in s.next_prep("otto")["stop"]  # the ask is used once; the rest wait for morning
     s.put_settings({"prep_per_day": 1})
-    s.ask_start_now(older["id"], "cro")
-    assert "limit" in s.next_prep("cro")["stop"]
+    s.ask_start_now(older["id"], "otto")
+    assert "limit" in s.next_prep("otto")["stop"]
     assert s.prep_runs_left() == 0
 
 
@@ -606,43 +606,43 @@ def test_a_stale_start_now_is_ignored(tmp_path):
     clock = [1_700_000_000.0]
     when = time.struct_time((2026, 11, 4, 23, 0, 0, 2, 308, 0))
     s = tasks.Store(tmp_path / "tasks.db", clock=lambda: clock[0], local_now=lambda: when)
-    task = s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    s.ask_start_now(task["id"], "cro")
+    task = s.create(bot_task(prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    s.ask_start_now(task["id"], "otto")
     clock[0] += tasks.START_NOW_TTL + 1
-    assert "quiet hours" in s.next_prep("cro")["stop"]
+    assert "quiet hours" in s.next_prep("otto")["stop"]
 
 
 def test_start_prep_now_refuses_what_cannot_start(tmp_path):
     s = store(tmp_path)
-    plain = s.create(bot_task(), created_by="cro", source={"kind": "chat", "profile": "cro"})
-    assert tasks.start_prep_now(s, plain, "cro").startswith("not started: only")
-    prepped = s.create(bot_task(prep=True), created_by="cro", source={"kind": "chat", "profile": "cro"})
+    plain = s.create(bot_task(), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    assert tasks.start_prep_now(s, plain, "otto").startswith("not started: only")
+    prepped = s.create(bot_task(prep=True), created_by="otto", source={"kind": "chat", "profile": "otto"})
     s.put_settings({"prep_per_day": 0})
-    assert "used up" in tasks.start_prep_now(s, prepped, "cro")
+    assert "used up" in tasks.start_prep_now(s, prepped, "otto")
 
 
 @needs_cron
 def test_start_prep_now_runs_that_bots_job_at_the_next_tick(tmp_path):
     s = store(tmp_path)
-    task = s.create(together(prep=True, steps=[{"title": "Rank", "who": "bot"}]), created_by="cro",
-                    source={"kind": "chat", "profile": "cro"})
-    home = tmp_path / "cro-home"
-    said = tasks.start_prep_now(s, task, "cro", home)
+    task = s.create(together(prep=True, steps=[{"title": "Rank", "who": "bot"}]), created_by="otto",
+                    source={"kind": "chat", "profile": "otto"})
+    home = tmp_path / "otto-home"
+    said = tasks.start_prep_now(s, task, "otto", home)
     assert said.startswith("started")
     with cron_jobs.use_cron_store(home):
         job = cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME)
         assert job is not None and job.get("manual_run_at")
-    assert s.next_prep("cro")["id"] == task["id"]
+    assert s.next_prep("otto")["id"] == task["id"]
 
 
 def test_context_note_says_the_date_and_how_the_bot_takes_its_part(tmp_path):
     s = store(tmp_path)
-    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="I need to do the taxes")
+    note = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="I need to do the taxes")
     moment = datetime.fromtimestamp(s.clock())
     assert f"Now: {moment.strftime('%A')}, {moment.strftime('%b')} {moment.day}, {moment.year}" in note
     assert "who='together'" in note and "start them" in note  # Ask First: what they picked
     s.put_settings({"capture": "auto"})
-    auto = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="I need to do the taxes")
+    auto = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="I need to do the taxes")
     assert "who='together'" in auto and "start_now=true" in auto
 
 
@@ -715,11 +715,11 @@ def test_settings_routes(client):
 @needs_cron
 def test_prep_job_route_reconciles_for_the_named_profile(client, tmp_path, monkeypatch):
     from hermes_cli import profiles as hermes_profiles
-    profile_home = tmp_path / "profiles" / "cro"
+    profile_home = tmp_path / "profiles" / "otto"
     profile_home.mkdir(parents=True)
     monkeypatch.setattr(hermes_profiles, "get_profile_dir", lambda name: str(profile_home))
-    client.post(f"{BASE}/tasks", json={"title": "Research flights", "who": "bot", "bot": "cro", "prep": True})
-    resp = client.post(f"{BASE}/tasks/prep-job/cro")
+    client.post(f"{BASE}/tasks", json={"title": "Research flights", "who": "bot", "bot": "otto", "prep": True})
+    resp = client.post(f"{BASE}/tasks/prep-job/otto")
     assert resp.status_code == 200 and resp.json() == {"ok": True}
     with cron_jobs.use_cron_store(profile_home):
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is not None
@@ -751,7 +751,7 @@ def test_handing_the_part_to_another_bot_counts_as_started(tmp_path):
     took = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "who": "together", "status": "working", "add_steps": [
         {"title": "Get Recruiting's prep sheet", "who": "bot"}, {"title": "Go through ADP", "who": "me"}]}))
     assert took["start"].startswith("started") and took["status"] == "working"
-    assert s.next_prep("cro").get("stop")  # nothing queued for the prep job
+    assert s.next_prep("otto").get("stop")  # nothing queued for the prep job
     again = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "note": "Recruiting is halfway"}))
     assert "start" not in again  # only the change to working says it
 
@@ -780,7 +780,7 @@ def test_a_bots_note_keeps_its_lines_and_long_words_end_at_a_word(tmp_path):
 
 def test_the_activity_says_a_status_change_in_words(tmp_path):
     s, ctx, notified = wired(tmp_path)
-    task = s.create({"title": "Lunch", "who": "together", "bot": "cro", "prep": True}, created_by="you",
+    task = s.create({"title": "Lunch", "who": "together", "bot": "otto", "prep": True}, created_by="you",
                     source={"kind": "app"})
     json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "working"}))
     json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "ready", "status_note": "3 spots ready"}))
@@ -898,13 +898,13 @@ def _at(text):
 def test_watch_and_chat_are_kept_and_watch_rides_the_compact_task(tmp_path):
     s = store(tmp_path)
     task = s.create(together(watch="a reply from Sam, by email", prep=True, due="2026-11-05T10:00"),
-                    created_by="cro", source={"kind": "chat", "profile": "cro"})
+                    created_by="otto", source={"kind": "chat", "profile": "otto"})
     assert task["watch"] == "a reply from Sam, by email" and task["chat"] == {}
     assert tasks.compact(task)["watch"] == "a reply from Sam, by email"
-    moved = s.update_route(task["id"], task["rev"], {"chat": {"profile": "cro", "session_id": "s_1"}})
-    assert moved["chat"] == {"profile": "cro", "session_id": "s_1"} and s.get(task["id"])["chat"] == moved["chat"]
+    moved = s.update_route(task["id"], task["rev"], {"chat": {"profile": "otto", "session_id": "s_1"}})
+    assert moved["chat"] == {"profile": "otto", "session_id": "s_1"} and s.get(task["id"])["chat"] == moved["chat"]
     assert s.task_for_chat("s_1")["id"] == task["id"] and s.task_for_chat("s_2") is None
-    half = s.update_route(task["id"], moved["rev"], {"chat": {"profile": "cro"}})
+    half = s.update_route(task["id"], moved["rev"], {"chat": {"profile": "otto"}})
     assert half["chat"] == {}   # a chat needs both its bot and its session
 
 
@@ -919,32 +919,32 @@ def test_a_watched_task_waits_for_its_run_then_goes_even_in_quiet_hours(tmp_path
     early = tasks.Store(tmp_path / "tasks.db", clock=lambda: _at("2026-11-04T20:00"),
                         local_now=lambda: time.struct_time((2026, 11, 4, 20, 0, 0, 2, 308, 0)))
     task = early.create(together(watch="her reply", prep=True, due="2026-11-05T08:30"),
-                        created_by="cro", source={})
-    assert early.next_prep("cro") == {"stop": "no prep task for cro is due for its run yet"}
-    assert early.prep_schedule("cro") == (0, _at("2026-11-05T07:30"))
+                        created_by="otto", source={})
+    assert early.next_prep("otto") == {"stop": "no prep task for otto is due for its run yet"}
+    assert early.prep_schedule("otto") == (0, _at("2026-11-05T07:30"))
     later = tasks.Store(tmp_path / "tasks.db", clock=lambda: _at("2026-11-05T07:35"),
                         local_now=lambda: time.struct_time((2026, 11, 5, 7, 35, 0, 3, 309, 0)))  # quiet till 8
-    handed = later.next_prep("cro")
+    handed = later.next_prep("otto")
     assert handed["id"] == task["id"] and handed["status"] == "working"
-    assert later.prep_schedule("cro") == (1, None)
+    assert later.prep_schedule("otto") == (1, None)
 
 
 def test_an_unwatched_prep_task_still_goes_at_once_and_waits_out_quiet_hours(tmp_path):
     s = tasks.Store(tmp_path / "tasks.db", clock=lambda: _at("2026-11-04T23:00"),
                     local_now=lambda: time.struct_time((2026, 11, 4, 23, 0, 0, 2, 308, 0)))
-    s.create(together(prep=True, due="2026-11-06T10:00"), created_by="cro", source={})
+    s.create(together(prep=True, due="2026-11-06T10:00"), created_by="otto", source={})
     s.create(together(title="Watch the inbox", watch="a reply", prep=True, due="2026-11-06T10:00"),
-             created_by="cro", source={})
-    assert s.prep_schedule("cro") == (1, _at("2026-11-06T09:00"))
-    assert "quiet hours" in s.next_prep("cro")["stop"]
+             created_by="otto", source={})
+    assert s.prep_schedule("otto") == (1, _at("2026-11-06T09:00"))
+    assert "quiet hours" in s.next_prep("otto")["stop"]
 
 
 def test_a_bot_watches_only_its_own_part_of_a_users_task(tmp_path):
     s = store(tmp_path)
     task = s.create(me(), created_by="you", source={})
     with pytest.raises(tasks.TaskError):
-        s.update_bot(task["id"], "cro", watch="a reply")
-    taken = s.update_bot(task["id"], "cro", who="together", watch="a reply", prep=True,
+        s.update_bot(task["id"], "otto", watch="a reply")
+    taken = s.update_bot(task["id"], "otto", who="together", watch="a reply", prep=True,
                          add_steps=[{"title": "Check for a reply, draft a nudge", "who": "bot"},
                                     {"title": "Follow up", "who": "me"}])
     assert taken["who"] == "together" and taken["watch"] == "a reply" and taken["prep"] is True
@@ -952,13 +952,13 @@ def test_a_bot_watches_only_its_own_part_of_a_users_task(tmp_path):
 
 def test_a_tasks_own_chat_names_its_task_on_every_turn(tmp_path):
     s = store(tmp_path)
-    task = s.create(together(due="2026-11-05T10:00", watch="her redlines"), created_by="cro", source={})
-    s.update_route(task["id"], task["rev"], {"chat": {"profile": "cro", "session_id": "s_task"}})
+    task = s.create(together(due="2026-11-05T10:00", watch="her redlines"), created_by="otto", source={})
+    s.update_route(task["id"], task["rev"], {"chat": {"profile": "otto", "session_id": "s_task"}})
     noted = [{"role": "user", "content": f"{tasks.MARK} earlier]"}]
-    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="any news?",
+    note = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="any news?",
                              conversation_history=noted, session_id="s_task")
     assert note and "Plan the trip" in note and task["id"] in note and "watching for her redlines" in note
-    elsewhere = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi",
+    elsewhere = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi",
                                   conversation_history=noted, session_id="s_other")
     assert elsewhere is None   # an ordinary chat keeps the usual once-in-a-while note
 
@@ -966,11 +966,11 @@ def test_a_tasks_own_chat_names_its_task_on_every_turn(tmp_path):
 # 0.9.43: answering a needs_you in the task's own chat, the bot only knew what it had asked if it called tasks_list.
 def test_a_tasks_own_chat_says_what_its_bot_asked_while_it_waits(tmp_path):
     s, ctx, _ = wired(tmp_path)
-    task = s.create(together(), created_by="cro", source={})
-    s.update_route(task["id"], task["rev"], {"chat": {"profile": "cro", "session_id": "s_task"}})
+    task = s.create(together(), created_by="otto", source={})
+    s.update_route(task["id"], task["rev"], {"chat": {"profile": "otto", "session_id": "s_task"}})
 
     def line():
-        return tasks.context_for(store=s, profile="cro", platform="desktop", user_message="The Loft",
+        return tasks.context_for(store=s, profile="otto", platform="desktop", user_message="The Loft",
                                  session_id="s_task")
     assert "status open)" in line()
     ctx.tools["tasks_update"]({"id": task["id"], "status": "needs_you", "status_note": "Elm & Oak or The Loft?"})
@@ -997,21 +997,21 @@ def test_a_watched_task_gets_one_task_check_run_and_no_interval_job(tmp_path):
     due = (datetime.now() + timedelta(days=2)).replace(hour=10, minute=0, second=0, microsecond=0)
     s = tasks.Store(tmp_path / "tasks.db")
     task = s.create(together(watch="her redlines", prep=True, due=due.strftime("%Y-%m-%dT%H:%M")),
-                    created_by="cro", source={})
+                    created_by="otto", source={})
     with cron_jobs.use_cron_store(tmp_path):
-        tasks.reconcile_prep_job(s, "cro")
+        tasks.reconcile_prep_job(s, "otto")
         assert cron_jobs.resolve_job_ref(tasks.PREP_JOB_NAME) is None   # nothing to work on before then
         check = cron_jobs.resolve_job_ref(tasks.CHECK_JOB_NAME)
         assert check is not None and check["schedule"]["kind"] == "once"
         assert check["schedule"]["display"] == f"once at {(due - timedelta(hours=1)):%Y-%m-%d %H:%M}"
         later = due + timedelta(days=1)
         moved = s.update_route(task["id"], task["rev"], {"due": later.strftime("%Y-%m-%dT%H:%M")})
-        tasks.reconcile_prep_job(s, "cro")
+        tasks.reconcile_prep_job(s, "otto")
         check = cron_jobs.resolve_job_ref(tasks.CHECK_JOB_NAME)
         assert check["schedule"]["display"] == f"once at {(later - timedelta(hours=1)):%Y-%m-%d %H:%M}"
         assert len(cron_jobs.list_jobs(include_disabled=True)) == 1
         s.update_route(task["id"], moved["rev"], {"status": "done"})
-        tasks.reconcile_prep_job(s, "cro")
+        tasks.reconcile_prep_job(s, "otto")
         assert cron_jobs.resolve_job_ref(tasks.CHECK_JOB_NAME) is None
 
 
@@ -1030,7 +1030,7 @@ else:
 
 def test_page_parts_replace_by_title_add_after_and_remove(tmp_path):
     s, ctx, _ = wired(tmp_path)
-    task = s.create(bot_task(), created_by="cro", source={})
+    task = s.create(bot_task(), created_by="otto", source={})
     first = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "page": {
         "summary": "Looking at venues.", "next": "I'll shortlist three.",
         "blocks": [{"title": "Options", "text": "- A\n- B"}, {"title": "Prices", "numbers": [{"label": "Best", "value": 1500}]}]}}))
@@ -1051,7 +1051,7 @@ def test_page_parts_replace_by_title_add_after_and_remove(tmp_path):
 
 def test_page_caps_parts_and_says_what_was_left_out(tmp_path):
     s, ctx, _ = wired(tmp_path)
-    task = s.create(bot_task(), created_by="cro", source={})
+    task = s.create(bot_task(), created_by="otto", source={})
     blocks = [{"title": f"Part {i}", "text": "x"} for i in range(tasks.PAGE_BLOCKS_CAP + 1)] + [{"title": "", "text": "y"}]
     out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "page": {"blocks": blocks}}))
     assert len(s.get_page(task["id"])["blocks"]) == tasks.PAGE_BLOCKS_CAP
@@ -1063,7 +1063,7 @@ def test_page_follows_the_task_rules_and_goes_with_the_task(tmp_path):
     mine = s.create(me(), created_by="you", source={})
     refused = json.loads(ctx.tools["tasks_update"]({"id": mine["id"], "page": {"summary": "hi"}}))
     assert "error" in refused and s.get_page(mine["id"]) == {}
-    task = s.create(bot_task(), created_by="cro", source={})
+    task = s.create(bot_task(), created_by="otto", source={})
     ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": "Started."}})
     assert s.get(task["id"])["rev"] == task["rev"] + 1   # the app sees the page changed
     s.delete(task["id"])
@@ -1072,7 +1072,7 @@ def test_page_follows_the_task_rules_and_goes_with_the_task(tmp_path):
 
 def test_tasks_list_carries_step_ids_and_the_page_outline(tmp_path):
     s, ctx, _ = wired(tmp_path)
-    task = s.create(bot_task(steps=[{"title": "Find three", "who": "bot"}]), created_by="cro", source={})
+    task = s.create(bot_task(steps=[{"title": "Find three", "who": "bot"}]), created_by="otto", source={})
     ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": "Two found.", "blocks": [{"title": "Options", "text": "A"}]}})
     listed = json.loads(ctx.tools["tasks_list"]({}))["tasks"][0]
     assert listed["steps"][0]["id"] == task["steps"][0]["id"]
@@ -1082,13 +1082,13 @@ def test_tasks_list_carries_step_ids_and_the_page_outline(tmp_path):
 def test_page_draws_the_task_and_escapes_what_the_bot_wrote(tmp_path):
     s, ctx, _ = wired(tmp_path)
     task = s.create(together(steps=[{"title": "Shortlist", "who": "bot"}, {"title": "Pick one", "who": "me"}]),
-                    created_by="cro", source={})
+                    created_by="otto", source={})
     ctx.tools["tasks_update"]({"id": task["id"], "done_steps": [task["steps"][0]["id"]], "status": "needs_you",
                                "status_note": "Which venue?", "made": [{"title": "Venue notes", "kind": "note", "ref": "- Elm"}],
                                "page": {"summary": "Shortlisted <b>3</b>.", "next": "You pick one.",
                                         "blocks": [{"title": "Options", "text": "**Elm** [menu](https://example.com) [x](javascript:alert(1))\n- [x] called\n- [ ] booked",
                                                     "table": {"columns": ["Venue"], "rows": [["<script>alert(1)</script>"]]}}]}})
-    page = task_page.render(s.get(task["id"]), s.get_page(task["id"]), {"cro": "Scout"})
+    page = task_page.render(s.get(task["id"]), s.get_page(task["id"]), {"otto": "Scout"})
     assert "<title>" in page and "{{" not in page
     assert "Needs You" in page and "Which venue?" in page and "1 of 2 steps done" in page and 'style="width:50%"' in page
     assert "Shortlisted &lt;b&gt;3&lt;/b&gt;." in page and "<script>alert(1)</script>" not in page
@@ -1099,9 +1099,9 @@ def test_page_draws_the_task_and_escapes_what_the_bot_wrote(tmp_path):
 
 def test_page_of_a_task_with_nothing_written_yet(tmp_path):
     s = store(tmp_path)
-    task = s.create(bot_task(), created_by="cro", source={})
+    task = s.create(bot_task(), created_by="otto", source={})
     page = task_page.render(s.get(task["id"]), {}, {})
-    assert "To Do" in page and "Not started yet." in page and "Cro" in page and "Steps" not in page
+    assert "To Do" in page and "Not started yet." in page and "Otto" in page and "Steps" not in page
 
 
 def test_markdown_lists_tables_and_headings():
@@ -1112,8 +1112,8 @@ def test_markdown_lists_tables_and_headings():
 
 
 def test_page_route_serves_html(client):
-    created = client.post(f"{BASE}/tasks", json={"title": "Plan the offsite", "who": "bot", "bot": "cro"}).json()
-    page = client.get(f"{BASE}/tasks/{created['id']}/page", params={"names": json.dumps({"cro": "Scout"})})
+    created = client.post(f"{BASE}/tasks", json={"title": "Plan the offsite", "who": "bot", "bot": "otto"}).json()
+    page = client.get(f"{BASE}/tasks/{created['id']}/page", params={"names": json.dumps({"otto": "Scout"})})
     assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
     assert "Plan the offsite" in page.text and "Scout" in page.text
     assert client.get(f"{BASE}/tasks/nope/page").status_code == 404
@@ -1148,10 +1148,10 @@ def test_the_reported_version_is_the_manifests():
 # route answers with, so the copy the app keeps never drops them.
 def test_the_list_carries_each_task_pages_summary_and_next(tmp_path):
     s, ctx, _ = wired(tmp_path)
-    plain = s.create(bot_task(title="Water the plants"), created_by="cro", source={})
-    task = s.create(bot_task(), created_by="cro", source={})
-    only_next = s.create(bot_task(title="Book the vet"), created_by="cro", source={})
-    parts_only = s.create(bot_task(title="Sort the photos"), created_by="cro", source={})
+    plain = s.create(bot_task(title="Water the plants"), created_by="otto", source={})
+    task = s.create(bot_task(), created_by="otto", source={})
+    only_next = s.create(bot_task(title="Book the vet"), created_by="otto", source={})
+    parts_only = s.create(bot_task(title="Sort the photos"), created_by="otto", source={})
     ctx.tools["tasks_update"]({"id": task["id"], "page": {
         "summary": "Elm & Oak fits best and holds the 14th until Friday. " * 10, "next": "You pick one; I'll book it."}})
     ctx.tools["tasks_update"]({"id": only_next["id"], "page": {"summary": "  ", "next": "Waiting on the vet's reply."}})
@@ -1169,7 +1169,7 @@ def test_the_list_carries_each_task_pages_summary_and_next(tmp_path):
 def test_the_list_reads_every_page_in_one_query(tmp_path):
     s, ctx, _ = wired(tmp_path)
     for n in range(5):
-        task = s.create(bot_task(title=f"Draft email {n}"), created_by="cro", source={})
+        task = s.create(bot_task(title=f"Draft email {n}"), created_by="otto", source={})
         ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": f"Draft {n} is ready."}})
     reads, opened = [], s._db
 
@@ -1184,7 +1184,7 @@ def test_the_list_reads_every_page_in_one_query(tmp_path):
 
 def test_a_page_write_reaches_the_app_on_its_next_since_read(tmp_path):
     s, ctx, _ = wired(tmp_path)
-    task = s.create(bot_task(), created_by="cro", source={})
+    task = s.create(bot_task(), created_by="otto", source={})
     rev = s.list_response(None)["rev"]
     assert s.list_response(rev) == {"rev": rev, "unchanged": True}
     ctx.tools["tasks_update"]({"id": task["id"], "page": {"next": "I'll shortlist three."}})
@@ -1194,7 +1194,7 @@ def test_a_page_write_reaches_the_app_on_its_next_since_read(tmp_path):
 
 def test_an_update_from_the_last_list_shape_reads_the_whole_list_again(tmp_path):
     s, ctx, _ = wired(tmp_path)
-    task = s.create(bot_task(), created_by="cro", source={})
+    task = s.create(bot_task(), created_by="otto", source={})
     ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": "Two found."}})
     rev = s.rev()
     import sqlite3
@@ -1205,9 +1205,9 @@ def test_an_update_from_the_last_list_shape_reads_the_whole_list_again(tmp_path)
 
 
 def test_the_patch_answer_and_a_409_keep_the_page(client, tmp_path):
-    created = client.post(f"{BASE}/tasks", json={"title": "Plan the offsite", "who": "bot", "bot": "cro"}).json()
+    created = client.post(f"{BASE}/tasks", json={"title": "Plan the offsite", "who": "bot", "bot": "otto"}).json()
     s = tasks.Store(tmp_path / "data" / "tasks.db")
-    s.update_bot(created["id"], "cro", page={"summary": "3 venues shortlisted.", "next": "You pick one."})
+    s.update_bot(created["id"], "otto", page={"summary": "3 venues shortlisted.", "next": "You pick one."})
     gist = {"summary": "3 venues shortlisted.", "next": "You pick one."}
     assert client.get(f"{BASE}/tasks").json()["tasks"][0]["page"] == gist
     rev = s.get(created["id"])["rev"]
@@ -1225,8 +1225,8 @@ def test_the_patch_answer_and_a_409_keep_the_page(client, tmp_path):
 # ---------------------------------------------------------------------------
 
 def _with_chat(s, fields, session="s_task"):
-    task = s.create(fields, created_by="cro", source={})
-    return s.update_route(task["id"], task["rev"], {"chat": {"profile": "cro", "session_id": session}})
+    task = s.create(fields, created_by="otto", source={})
+    return s.update_route(task["id"], task["rev"], {"chat": {"profile": "otto", "session_id": session}})
 
 
 def test_in_its_own_chat_the_bot_can_tick_their_steps_move_the_date_rename_and_finish(tmp_path):
@@ -1280,40 +1280,40 @@ def test_choices_go_with_the_question(tmp_path):
 
 def test_next_check_brings_a_run_even_while_it_waits_on_them(tmp_path):
     s, ctx, _ = wired(tmp_path)   # clock: 1_700_000_000 = Tue Nov 14 2023
-    task = s.create(together(), created_by="cro", source={})
-    s.update_bot(task["id"], "cro", status="needs_you", status_note="Send it?")
-    assert s.next_prep("cro") == {"stop": "no open prep tasks for cro"}
+    task = s.create(together(), created_by="otto", source={})
+    s.update_bot(task["id"], "otto", status="needs_you", status_note="Send it?")
+    assert s.next_prep("otto") == {"stop": "no open prep tasks for otto"}
     later = time.strftime("%Y-%m-%dT%H:%M", time.localtime(1_700_000_000 + 3 * 86400))
     out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "next_check": later}))
     assert out["next_check"].startswith(later) and out.get("next_check_said")
-    ready, at = s.prep_schedule("cro")
+    ready, at = s.prep_schedule("otto")
     assert ready == 0 and at == pytest.approx(1_700_000_000 + 3 * 86400, abs=60)
-    assert "stop" in s.next_prep("cro")
+    assert "stop" in s.next_prep("otto")
     earlier = time.strftime("%Y-%m-%dT%H:%M", time.localtime(1_700_000_000 - 60))
     ctx.tools["tasks_update"]({"id": task["id"], "next_check": earlier})
-    handed = s.next_prep("cro")
+    handed = s.next_prep("otto")
     assert handed["id"] == task["id"] and handed["status"] == "working" and handed["next_check"] == ""
-    assert "stop" in s.next_prep("cro")   # one check, one run
+    assert "stop" in s.next_prep("otto")   # one check, one run
 
 
 def test_an_answer_in_its_own_chat_starts_a_waiting_task_moving_again(tmp_path):
     s, ctx, _ = wired(tmp_path)
     task = _with_chat(s, together())
-    s.update_bot(task["id"], "cro", status="needs_you", status_note="Send it?", choices=["Send it"])
-    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="Send it", session_id="s_task")
+    s.update_bot(task["id"], "otto", status="needs_you", status_note="Send it?", choices=["Send it"])
+    note = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="Send it", session_id="s_task")
     assert 'needs_you ("Send it?")' in note
     tasks.answer_started(s, "s_task", platform="desktop", user_message="Send it")
     assert s.get(task["id"])["status"] == "working"
     tasks.answer_finished(s, "s_task")   # the bot changed nothing: back to open, so it isn't stuck
     assert s.get(task["id"])["status"] == "open"
     # the bot answered with a change: its status stands
-    s.update_bot(task["id"], "cro", status="needs_you", status_note="Which one?")
+    s.update_bot(task["id"], "otto", status="needs_you", status_note="Which one?")
     tasks.answer_started(s, "s_task", platform="desktop", user_message="The Loft")
     ctx.tools["tasks_update"]({"id": task["id"], "status": "ready", "status_note": "Booked"}, session_id="s_task")
     tasks.answer_finished(s, "s_task")
     assert s.get(task["id"])["status"] == "ready"
     # a cron hand-off or another chat changes nothing
-    s.update_bot(task["id"], "cro", status="needs_you", status_note="Again?")
+    s.update_bot(task["id"], "otto", status="needs_you", status_note="Again?")
     tasks.answer_started(s, "s_task", platform="desktop", user_message="[job hand-off]")
     tasks.answer_started(s, "s_other", platform="desktop", user_message="hi")
     assert s.get(task["id"])["status"] == "needs_you"
@@ -1323,6 +1323,6 @@ def test_its_own_chat_sees_the_whole_task_and_the_persons_word_rule(tmp_path):
     s, ctx, _ = wired(tmp_path)
     task = _with_chat(s, together(steps=[{"title": "Book it", "who": "me"}]))
     ctx.tools["tasks_update"]({"id": task["id"], "page": {"summary": "Two flights fit.", "next": "You pick one."}})
-    note = tasks.context_for(store=s, profile="cro", platform="desktop", user_message="hi", session_id="s_task")
+    note = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi", session_id="s_task")
     assert "Book it" in note and task["steps"][0]["id"] in note and "Two flights fit." in note
     assert "You pick one." in note and "their call" in note

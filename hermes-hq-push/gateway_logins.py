@@ -205,7 +205,7 @@ def unnamed_site(tool_name: str, args) -> str | None:
 # Hermes's vault (tools/browser_vault_tool.py) doesn't read ``origin``: save_login and enter_code focus the FIRST open
 # tab with a password or code field, on any site, and ask for that one. With an old login tab left open the card
 # named it, not the page the bot was on (owner, 2026-11-07: the bot was on Walmart's email-first sign-in, which has no
-# password field yet, and the card asked for bookings.omnihotels.com, a hotel tab from days before). Here the site the
+# password field yet, and the card asked for bookings.example-hotel.com, a hotel tab from days before). Here the site the
 # bot named (unnamed_site makes it name one) is the tab Hermes uses, or nothing is asked. A Hermes whose save_login
 # takes ``origin`` itself is left alone.
 NAMED_MARK = "_hermes_hq_named_site"

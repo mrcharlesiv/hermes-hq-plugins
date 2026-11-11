@@ -180,7 +180,7 @@ def test_describe_names_the_group_and_says_when_the_bot_cant_post(home):
     ok = reply_back.describe("default", "s-tg", read_session, lambda chat: None)
     assert ok == {"ok": True, "platform": "telegram", "label": "Telegram", "kind": "group", "group": True,
                   "name": "Garden club", "ready": True}
-    chat(home, "s-dm", chat_id="123", chat_type="dm", name="Charles")
+    chat(home, "s-dm", chat_id="123", chat_type="dm", name="Alex")
     not_ready = reply_back.describe("default", "s-dm", read_session, lambda chat: "Telegram isn't set up.")
     assert not_ready["group"] is False and not_ready["ready"] is False and not_ready["reason"] == "Telegram isn't set up."
 
@@ -196,7 +196,7 @@ def profile_home(name):
 @pytest.fixture
 def bots(monkeypatch):
     """Two bots on this Hermes, each with its own Telegram token; Hermes's send caught before the network."""
-    for name, token in (("default", "111:default-bot"), ("cro", "222:cro-bot")):
+    for name, token in (("default", "111:default-bot"), ("otto", "222:otto-bot")):
         home = profile_home(name)
         (home / ".env").write_text(f"TELEGRAM_BOT_TOKEN={token}\n")
         (home / "config.yaml").write_text("platforms:\n  telegram:\n    enabled: true\n")
@@ -211,21 +211,21 @@ def bots(monkeypatch):
 
 
 def test_through_hermes_posts_as_that_bot(bots, tmp_path):
-    chat(profile_home("cro"), "s-cro", chat_id="-100777", name="Ops room")
-    info = reply_back.hermes_describe("cro", "s-cro")
+    chat(profile_home("otto"), "s-otto", chat_id="-100777", name="Ops room")
+    info = reply_back.hermes_describe("otto", "s-otto")
     assert info["ready"] is True and info["name"] == "Ops room"
-    result = reply_back.hermes_answer("cro", "s-cro", tmp_path)
+    result = reply_back.hermes_answer("otto", "s-otto", tmp_path)
     assert result["sent"] is True
-    assert bots == [{"platform": "telegram", "token": "222:cro-bot", "chat": "-100777", "thread": None,
+    assert bots == [{"platform": "telegram", "token": "222:otto-bot", "chat": "-100777", "thread": None,
                      "text": "Water the beds at six.", "more": {}}]
-    assert reply_back.hermes_answer("cro", "s-cro", tmp_path)["already"] is True
+    assert reply_back.hermes_answer("otto", "s-otto", tmp_path)["already"] is True
     assert len(bots) == 1
 
 
 def test_through_hermes_a_chat_is_only_found_in_its_own_bot(bots, tmp_path):
-    chat(profile_home("cro"), "s-only-cro", chat_id="-100778")
+    chat(profile_home("otto"), "s-only-otto", chat_id="-100778")
     with pytest.raises(reply_back.ReplyError) as error:
-        reply_back.hermes_answer("default", "s-only-cro", tmp_path)
+        reply_back.hermes_answer("default", "s-only-otto", tmp_path)
     assert error.value.reason == "missing"
     assert bots == []
 
@@ -265,24 +265,24 @@ def client(bots, tmp_path, monkeypatch):
 
 
 def test_routes(client, bots):
-    chat(profile_home("cro"), "s-route", chat_id="-100900", name="Route club")
+    chat(profile_home("otto"), "s-route", chat_id="-100900", name="Route club")
     status = client.get("/api/plugins/hermes-hq-push/status").json()
     assert status["replyBack"] is True
     assert tuple(map(int, status["pluginVersion"].split("."))) >= (0, 9, 4)
-    info = client.get("/api/plugins/hermes-hq-push/outside/cro/s-route")
+    info = client.get("/api/plugins/hermes-hq-push/outside/otto/s-route")
     assert info.status_code == 200 and info.json()["name"] == "Route club"
-    sent = client.post("/api/plugins/hermes-hq-push/outside/cro/s-route/answer")
+    sent = client.post("/api/plugins/hermes-hq-push/outside/otto/s-route/answer")
     assert sent.status_code == 200 and sent.json()["sent"] is True
-    assert bots[0]["chat"] == "-100900" and bots[0]["token"] == "222:cro-bot"
-    assert client.post("/api/plugins/hermes-hq-push/outside/cro/s-route/answer").json()["already"] is True
-    assert client.get("/api/plugins/hermes-hq-push/outside/cro/s-none").status_code == 404
-    chat(profile_home("cro"), "s-route-tg", chat_id="-1", prompt_platform_id="5")
-    refused = client.post("/api/plugins/hermes-hq-push/outside/cro/s-route-tg/answer")
+    assert bots[0]["chat"] == "-100900" and bots[0]["token"] == "222:otto-bot"
+    assert client.post("/api/plugins/hermes-hq-push/outside/otto/s-route/answer").json()["already"] is True
+    assert client.get("/api/plugins/hermes-hq-push/outside/otto/s-none").status_code == 404
+    chat(profile_home("otto"), "s-route-tg", chat_id="-1", prompt_platform_id="5")
+    refused = client.post("/api/plugins/hermes-hq-push/outside/otto/s-route-tg/answer")
     assert refused.status_code == 409 and "from the app" in refused.json()["detail"]["message"]
     assert refused.json()["detail"]["reason"] == "not-from-app"
     # Nothing in the request can name another chat: the body and query are ignored.
-    chat(profile_home("cro"), "s-route2", chat_id="-100901")
-    other = client.post("/api/plugins/hermes-hq-push/outside/cro/s-route2/answer?chat_id=-1&text=hi",
+    chat(profile_home("otto"), "s-route2", chat_id="-100901")
+    other = client.post("/api/plugins/hermes-hq-push/outside/otto/s-route2/answer?chat_id=-1&text=hi",
                         json={"chat_id": "-1", "thread_id": "9", "text": "hello"})
     assert other.status_code == 200
     assert bots[-1]["chat"] == "-100901" and bots[-1]["text"] == "Water the beds at six." and bots[-1]["thread"] is None

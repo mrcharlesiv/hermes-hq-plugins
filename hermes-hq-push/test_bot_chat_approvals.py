@@ -15,12 +15,12 @@ push = importlib.util.module_from_spec(_spec)
 sys.modules["hermes_hq_push_core"] = push  # dataclasses resolve annotations through it
 _spec.loader.exec_module(push)
 
-BOT_CHAT = "agent:harry-revenue-operator:local:dm:20260926_131847_17f878"
+BOT_CHAT = "agent:maple-revenue-operator:local:dm:20260926_131847_0a1b2d"
 COMMAND = "curl -s https://api.example.com/decisions"
 
 
 def asked(session_key, **extra):
-    return {"surface": "gateway", "session_key": session_key, "session_id": "20260926_131847_17f878",
+    return {"surface": "gateway", "session_key": session_key, "session_id": "20260926_131847_0a1b2d",
             "command": COMMAND, "pattern_keys": ["network"], "description": "network request", **extra}
 
 
@@ -37,14 +37,14 @@ class BotChatApprovals(unittest.TestCase):
 
     def test_its_alert_names_the_command_and_has_no_buttons(self):
         with tempfile.TemporaryDirectory() as root:
-            item = push.approval_push(asked(BOT_CHAT), PENDING, Path(root), "harry-revenue-operator", "Harry",
+            item = push.approval_push(asked(BOT_CHAT), PENDING, Path(root), "maple-revenue-operator", "Maple",
                                       answerable=False)
         self.assertIsNotNone(item)
         self.assertEqual(item.token, "")
         self.assertEqual(item.outside, "")          # every device, not only those that turned on Outside Chats
-        self.assertEqual(item.session, "20260926_131847_17f878")
+        self.assertEqual(item.session, "20260926_131847_0a1b2d")
         aps = item.payload()["aps"]
-        self.assertEqual(aps["alert"]["title"], "Harry")
+        self.assertEqual(aps["alert"]["title"], "Maple")
         self.assertIn("curl", aps["alert"]["body"])
         self.assertNotIn("category", aps)
 

@@ -397,7 +397,7 @@ def phrase(name, args=None) -> str:
             return f"handing off {len(tasks)} tasks"
         return "handing off a task"
     if tool == MESSAGE_AGENT:
-        # LiveSteps names the bot as the roster does; without a roster, its handle ("messaging cro").
+        # LiveSteps names the bot as the roster does; without a roster, its handle ("messaging otto").
         target = _str(args.get("target"))
         target = target.strip("@ ") if target is not None else ""
         return "messaging " + short(target) if target else "messaging another bot"

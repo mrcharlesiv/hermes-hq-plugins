@@ -24,7 +24,7 @@ def test_stand_ins_are_silent(text):
     "Done. [no additional response]  Also, here is the summary.",
     "[no additional response]\n[second line]",
     "Here is what I found: nothing to report on the inbox.",
-    "I'll answer NO_REPLY to the CRO's next ping.", "[NO_REPLY", "NO_REPLY_TOKEN",
+    "I'll answer NO_REPLY to the Otto's next ping.", "[NO_REPLY", "NO_REPLY_TOKEN",
 ])
 def test_real_replies_alert(text):
     assert not silent_reply(text)

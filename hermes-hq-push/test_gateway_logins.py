@@ -304,7 +304,7 @@ def test_the_hook_blocks_it_before_hermes_asks(monkeypatch):
 
 
 # 0.9.44: Hermes's vault ignored the site the bot named and asked for the first open tab with a password field, on any
-# site (owner, 2026-11-07: on Walmart's email-first sign-in, the card asked for bookings.omnihotels.com).
+# site (owner, 2026-11-07: on Walmart's email-first sign-in, the card asked for bookings.example-hotel.com).
 
 class _Tabs:
     """Hermes's vault module as the add-on sees it (tools/browser_vault_tool.py before it took ``origin``): open tabs
@@ -335,7 +335,7 @@ class _Tabs:
         return object() if self._backend else None
 
 
-OMNI, WALMART = "https://bookings.omnihotels.com", "https://identity.walmart.com"
+OMNI, WALMART = "https://bookings.example-hotel.com", "https://identity.walmart.com"
 
 
 @pytest.fixture()

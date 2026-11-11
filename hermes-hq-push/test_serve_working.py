@@ -12,12 +12,12 @@ _spec.loader.exec_module(serve_working)
 
 def test_only_running_sessions_count():
     sessions = {
-        "rt-a": {"running": True, "session_key": "20261006_162543_89b56f", "profile_home": "/h/profiles/app"},
+        "rt-a": {"running": True, "session_key": "20261006_162543_0a1b2c", "profile_home": "/h/profiles/app"},
         "rt-b": {"running": False, "session_key": "idle"},
         "rt-c": {"session_key": "never-ran"},
     }
     rows = serve_working.working_in(sessions, lambda home: Path(home).name if home else "default")
-    assert rows == [{"id": "20261006_162543_89b56f", "runtime": "rt-a", "profile": "app"}]
+    assert rows == [{"id": "20261006_162543_0a1b2c", "runtime": "rt-a", "profile": "app"}]
 
 
 def test_a_failing_profile_lookup_still_reports_the_chat():

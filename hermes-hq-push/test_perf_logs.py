@@ -14,8 +14,8 @@ def test_lines_with_tags_and_slashes_stay_whole():
     line = "complete on #d484ac rt #bb3875: status complete, final row 5339, user row 5335, stream #f7aeec, scope end 62/63"
     assert short(line) == line[:perf_logs.MAX_STRING]
     assert short("GET /api/sessions/sidebar → 200, 412 ms #c1bfee") == "GET /api/sessions/sidebar → 200, 412 ms #c1bfee"
-    assert short("rename 4064 \"Profile 'dance-mania' does not exist\" on #ab12cd/#ef34ab") \
-        == "rename 4064 \"Profile 'dance-mania' does not exist\" on #ab12cd/#ef34ab"
+    assert short("rename 4064 \"Profile 'book-club' does not exist\" on #ab12cd/#ef34ab") \
+        == "rename 4064 \"Profile 'book-club' does not exist\" on #ab12cd/#ef34ab"
 
 
 def test_queries_and_value_fragments_go():
@@ -45,9 +45,9 @@ def test_a_looping_line_stops_after_the_repeat_limit(tmp_path, monkeypatch):
     now = 1793372000.0
     loop = [json.dumps({"t": int(now * 1000) + i, "k": "note.net", "s": "n", "m": "read held: gateway known down"}) for i in range(8)]
     other = json.dumps({"t": int(now * 1000), "k": "note.app", "s": "n", "m": "active"})
-    perf_logs.write(tmp_path, "iPhone19_2-5c530371", loop + [other], now=now)
-    perf_logs.write(tmp_path, "iPhone19_2-5c530371", loop[:3], now=now)
-    lines = _lines(tmp_path / "iPhone19_2-5c530371")
+    perf_logs.write(tmp_path, "iPhone19_2-0a1b2c3d", loop + [other], now=now)
+    perf_logs.write(tmp_path, "iPhone19_2-0a1b2c3d", loop[:3], now=now)
+    lines = _lines(tmp_path / "iPhone19_2-0a1b2c3d")
     assert sum(1 for line in lines if line["k"] == "note.net") == 5
     assert [line["left_out"] for line in lines if line["k"] == "log.repeat"] == [3, 3]
     assert any(line["k"] == "note.app" for line in lines)
@@ -57,14 +57,14 @@ def test_lines_that_differ_only_in_numbers_are_kept(tmp_path, monkeypatch):
     monkeypatch.setattr(perf_logs, "REPEAT_LIMIT", 2)
     now = 1793372000.0
     timings = [json.dumps({"t": int(now * 1000), "k": "note.http", "s": "n", "m": f"POST /api/auth/ws-ticket → 200, {i} ms"}) for i in range(5)]
-    perf_logs.write(tmp_path, "iPhone19_2-5c530371", timings, now=now)
-    assert sum(1 for line in _lines(tmp_path / "iPhone19_2-5c530371") if line["k"] == "note.http") == 5
+    perf_logs.write(tmp_path, "iPhone19_2-0a1b2c3d", timings, now=now)
+    assert sum(1 for line in _lines(tmp_path / "iPhone19_2-0a1b2c3d") if line["k"] == "note.http") == 5
 
 
 def test_repeat_counts_keep_only_recent_days(tmp_path):
     now = 1793372000.0
-    folder = tmp_path / "iPhone19_2-5c530371"
+    folder = tmp_path / "iPhone19_2-0a1b2c3d"
     folder.mkdir()
     (folder / perf_logs.REPEATS_FILE).write_text(json.dumps({"2026-01-01": {"note.net x": 9}}))
-    perf_logs.write(tmp_path, "iPhone19_2-5c530371", [json.dumps({"t": int(now * 1000), "k": "note.app", "s": "n", "m": "active"})], now=now)
+    perf_logs.write(tmp_path, "iPhone19_2-0a1b2c3d", [json.dumps({"t": int(now * 1000), "k": "note.app", "s": "n", "m": "active"})], now=now)
     assert list(json.loads((folder / perf_logs.REPEATS_FILE).read_text())) == ["2026-10-30"]

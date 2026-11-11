@@ -45,11 +45,11 @@ def test_best_status_wins_and_local_chat_ids_map_to_rows(tmp_path):
 
 def test_profiles_and_filters(tmp_path):
     make_db(tmp_path / "default", admissions=[("a", "started")])
-    make_db(tmp_path / "cmo", admissions=[("b", "started")])
+    make_db(tmp_path / "herald", admissions=[("b", "started")])
     (tmp_path / "empty").mkdir()
-    profiles = [("default", tmp_path / "default"), ("cmo", tmp_path / "cmo"), ("empty", tmp_path / "empty")]
-    assert [(r["profile"], r["id"]) for r in session_working.working(profiles)] == [("default", "a"), ("cmo", "b")]
-    assert session_working.working(profiles, only_profile="cmo") == [{"profile": "cmo", "id": "b", "status": "started",
+    profiles = [("default", tmp_path / "default"), ("herald", tmp_path / "herald"), ("empty", tmp_path / "empty")]
+    assert [(r["profile"], r["id"]) for r in session_working.working(profiles)] == [("default", "a"), ("herald", "b")]
+    assert session_working.working(profiles, only_profile="herald") == [{"profile": "herald", "id": "b", "status": "started",
                                                                       "kind": "admission"}]
     assert session_working.working(profiles, only_session="a")[0]["profile"] == "default"
     assert session_working.working(profiles, only_session="zzz") == []

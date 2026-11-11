@@ -1175,7 +1175,7 @@ i.addEventListener('keydown',spin);i.addEventListener('beforeinput',spin);i.addE
         asyncio.run(self._listed_address())
 
     async def _listed_address(self):
-        """Tester naroh 2026-11-07: the chat said "Browsing redcorp.com" (a scheduled job's last browser_navigate on
+        """A tester, 2026-11-07: the chat said "Browsing redcorp.com" (a scheduled job's last browser_navigate on
         the same Chrome) while Watch Browser showed maldita.es, where the bot had gone since."""
         import httpx
         port = int(self.endpoint.split(":")[2].split("/")[0])

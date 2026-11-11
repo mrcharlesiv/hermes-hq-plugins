@@ -67,7 +67,7 @@ PHRASES = [
     ("read_file", {"path": "/a/notes.md"}, "reading notes.md"),
     ("terminal", {"command": "git status"}, "running git status"),
     ("read_file", {"path": "/x/a.swift"}, "reading a.swift"),
-    ("message_agent", {"target": "@cro", "message": "hi"}, "messaging cro"),  # no roster here: the handle
+    ("message_agent", {"target": "@otto", "message": "hi"}, "messaging otto"),  # no roster here: the handle
     # The rest of ToolNow.phrase's branches, read off the Swift.
     ("message_agent", {"message": "hi"}, "messaging another bot"),
     ("delegate_task", {"tasks": [{"goal": "a"}, {"goal": "b"}]}, "handing off 2 tasks"),
@@ -179,7 +179,7 @@ def device(seal=SEAL, environment="production"):
     return push.Device(PHONE, TOKEN, environment, push.TOPIC, "*", {}, True, seal, "")
 
 
-def row(session="s-chat", profile="cro", trail=None, registered=1000.0):
+def row(session="s-chat", profile="otto", trail=None, registered=1000.0):
     return push.LiveRow(PHONE, ACTIVITY, LIVE_TOKEN, profile, session, STARTED, trail or steps.Trail(), registered)
 
 
@@ -221,7 +221,7 @@ def test_a_quick_replys_end_and_its_copy_both_go_a_minute_after_it_ended(feed):
     t = feed.test
     t.clock.now = STARTED + push.APPLE_EPOCH + 30
     t.store.put_live(row(registered=t.clock.now))
-    assert feed.on_end("s-chat", "cro") == 1
+    assert feed.on_end("s-chat", "otto") == 1
     ended = t.clock.now
     assert t.sender.sent[-1][2]["aps"]["dismissal-date"] == int(ended) + 60 and t.sender.expires[-1] == int(ended) + 60
     t.clock.now += push.LIVE_END_AGAIN_S
@@ -252,7 +252,7 @@ def test_store_rows(tmp_path):
     assert store.save_trail(PHONE, ACTIVITY, steps.Trail("x", [], 1))
     assert store.live_row(PHONE, ACTIVITY).trail.words() == {"step": "x", "recent": [], "steps": 1}
     # A new token for the same activity replaces it; the same token under another activity id moves.
-    store.put_live(push.LiveRow(PHONE, "third", LIVE_TOKEN, "cro", "s-chat", STARTED, steps.Trail(), 1000.0))
+    store.put_live(push.LiveRow(PHONE, "third", LIVE_TOKEN, "otto", "s-chat", STARTED, steps.Trail(), 1000.0))
     assert store.live_row(PHONE, ACTIVITY) is None and store.live_row(PHONE, "third") is not None
     assert store.prune_live(1000.0 + 8 * 3600 + 1, 8 * 3600) == 2
     store.put_live(row())
@@ -279,7 +279,7 @@ BASE = "/api/plugins/hermes-hq-push"
 
 
 def live_body(**extra):
-    return {"token": LIVE_TOKEN.upper(), "profile": "cro", "session": "20260928_102900_3af825", "startedAt": STARTED,
+    return {"token": LIVE_TOKEN.upper(), "profile": "otto", "session": "20260928_102900_3af825", "startedAt": STARTED,
             "trail": {"step": "reading package.json", "recent": [], "steps": 1}, **extra}
 
 
@@ -298,7 +298,7 @@ def test_routes(client, tmp_path, monkeypatch):
     assert saved.token == LIVE_TOKEN and saved.session == "20260928_102900_3af825" and saved.started_at == STARTED
     assert saved.trail.words() == {"step": "reading package.json", "recent": [], "steps": 1}
     # Optional trail and session; the same activity again replaces it.
-    assert client.put(f"{BASE}/live/{PHONE}/{ACTIVITY}", json={"token": LIVE_TOKEN, "profile": "cro", "startedAt": 1}).status_code == 200
+    assert client.put(f"{BASE}/live/{PHONE}/{ACTIVITY}", json={"token": LIVE_TOKEN, "profile": "otto", "startedAt": 1}).status_code == 200
     assert store.live_row(PHONE, ACTIVITY).session == "" and store.live_count() == 1
     for bad_path, body in [(f"{PHONE}/has_underscore", live_body()), (f"{PHONE}/{'a' * 65}", live_body()),
                            (f"short/{ACTIVITY}", live_body()), (f"{PHONE}/{ACTIVITY}", live_body(token="xyz")),
@@ -379,7 +379,7 @@ def opened(sent):
 def test_each_step_updates_the_card_then_the_end(feed):
     t = feed.test
     t.store.put_live(row(trail=steps.Trail("reading package.json", [], 1), registered=t.clock.now))
-    assert feed.on_step("terminal", {"command": "npm test"}, "s-chat", "cro") == 1
+    assert feed.on_step("terminal", {"command": "npm test"}, "s-chat", "otto") == 1
     device_id, token, payload, priority = t.sender.sent[0]
     assert (device_id, token, priority) == (PHONE, LIVE_TOKEN, 5)
     assert t.sender.expires[0] is None
@@ -387,10 +387,10 @@ def test_each_step_updates_the_card_then_the_end(feed):
     assert opened(t.sender.sent[0]) == {"step": "running npm test", "recent": ["reading package.json"], "steps": 2}
     # Within 3 s: stored, not sent; the trailing push carries the newest trail.
     t.clock.now += 1
-    assert feed.on_step("read_file", {"path": "/a/README.md"}, "s-chat", "cro") == 0
-    feed.on_step("todo", {"todos": []}, "s-chat", "cro")  # silent: the step before stays
+    assert feed.on_step("read_file", {"path": "/a/README.md"}, "s-chat", "otto") == 0
+    feed.on_step("todo", {"todos": []}, "s-chat", "otto")  # silent: the step before stays
     t.clock.now += 1
-    feed.on_step("web_search", {"query": "swift"}, "s-chat", "cro")
+    feed.on_step("web_search", {"query": "swift"}, "s-chat", "otto")
     assert feed.next_due() == pytest.approx(1_790_000_003.0)
     assert feed.flush() == 0
     t.clock.now += 1
@@ -399,18 +399,18 @@ def test_each_step_updates_the_card_then_the_end(feed):
     assert opened(t.sender.sent[-1]) == {"step": "searching the web for swift", "recent": ["reading README.md", "running npm test"], "steps": 4}
     # The same words again change nothing; another chat's turn is not this card's.
     t.clock.now += 10
-    assert feed.on_step("web_search", {"query": "swift"}, "s-chat", "cro") == 0
-    assert feed.on_step("terminal", {"command": "ls"}, "s-other", "cro") == 0
+    assert feed.on_step("web_search", {"query": "swift"}, "s-chat", "otto") == 0
+    assert feed.on_step("terminal", {"command": "ls"}, "s-other", "otto") == 0
     assert len(t.sender.sent) == 2
     # The end: Done, the last step a finished one, the row gone; a second end (the server heard it too) sends nothing.
-    assert feed.on_end("s-chat", "cro") == 1
+    assert feed.on_end("s-chat", "otto") == 1
     _, _, end, priority = t.sender.sent[-1]
     assert priority == 10 and end["aps"]["event"] == "end" and end["aps"]["content-state"]["phase"] == "done"
     assert t.sender.expires[-1] == int(t.clock.now) + push.LIVE_DISMISS_S, "Apple holds the end for a phone out of reach"
     assert opened(t.sender.sent[-1])["step"] is None
     assert t.store.live_count() == 0
-    assert feed.on_end("s-chat", "cro") == 0
-    assert feed.on_step("terminal", {"command": "ls"}, "s-chat", "cro") == 0
+    assert feed.on_end("s-chat", "otto") == 0
+    assert feed.on_step("terminal", {"command": "ls"}, "s-chat", "otto") == 0
     # The same end once more, at priority 5 (outside iOS's ration), in case the first was held back; then nothing.
     assert feed.next_due() == pytest.approx(t.clock.now + push.LIVE_END_AGAIN_S)
     t.clock.now += push.LIVE_END_AGAIN_S
@@ -425,26 +425,26 @@ def test_each_step_updates_the_card_then_the_end(feed):
 def test_a_chat_compressed_mid_turn_keeps_its_card(feed, tmp_path):
     t = feed.test
     t.store.put_live(row(session="s-old", registered=t.clock.now))
-    state_db(tmp_path / "hermes" / "profiles" / "cro" / "state.db",
+    state_db(tmp_path / "hermes" / "profiles" / "otto" / "state.db",
              [("s-old", "desktop", None, "compression"), ("s-new", "desktop", "s-old", None),
               ("s-helper", "subagent", "s-new", None)])
-    assert feed.on_step("terminal", {"command": "ls"}, "s-new", "cro") == 1
-    assert feed.on_step("terminal", {"command": "pwd"}, "s-helper", "cro") == 0  # a helper's steps aren't the bot's
+    assert feed.on_step("terminal", {"command": "ls"}, "s-new", "otto") == 1
+    assert feed.on_step("terminal", {"command": "pwd"}, "s-helper", "otto") == 0  # a helper's steps aren't the bot's
     assert feed.on_step("terminal", {"command": "ls"}, "s-new", "sam") == 0  # another bot
-    assert feed.on_end("s-new", "cro") == 1
+    assert feed.on_end("s-new", "otto") == 1
 
 
 @needs_crypto
 def test_a_card_without_a_chat_follows_its_bot_but_not_its_helpers(feed, tmp_path):
     t = feed.test
     t.store.put_live(row(session="", registered=t.clock.now))
-    state_db(tmp_path / "hermes" / "profiles" / "cro" / "state.db",
+    state_db(tmp_path / "hermes" / "profiles" / "otto" / "state.db",
              [("s-any", "desktop", None, None), ("s-helper", "subagent", "s-any", None)])
-    assert feed.on_step("terminal", {"command": "pwd"}, "s-helper", "cro") == 0
-    assert feed.on_step("terminal", {"command": "ls"}, "s-any", "cro") == 1
+    assert feed.on_step("terminal", {"command": "pwd"}, "s-helper", "otto") == 0
+    assert feed.on_step("terminal", {"command": "ls"}, "s-any", "otto") == 1
     assert feed.on_step("terminal", {"command": "ls"}, "s-any", "sam") == 0
-    assert feed.on_end("s-helper", "cro") == 0
-    assert feed.on_end("s-any", "cro") == 1
+    assert feed.on_end("s-helper", "otto") == 0
+    assert feed.on_end("s-any", "otto") == 1
 
 
 @needs_crypto
@@ -453,15 +453,15 @@ def test_dead_tokens_and_failures(feed):
     t.store.put_live(row(registered=t.clock.now))
     # Apple won't take this activity's token: the card's row goes, the phone stays registered.
     t.sender.fail = push.LiveGone("ExpiredToken")
-    assert feed.on_step("terminal", {"command": "ls"}, "s-chat", "cro") == 0
+    assert feed.on_step("terminal", {"command": "ls"}, "s-chat", "otto") == 0
     assert t.store.live_count() == 0 and t.store.get(PHONE) is not None
     # An update that fails for a moment is dropped; an end is tried once more.
     t.store.put_live(row(registered=t.clock.now))
     t.sender.fail = push.DeliveryError("503", "Relay 503", transient=True)
-    assert feed.on_step("terminal", {"command": "pwd"}, "s-chat", "cro") == 0
+    assert feed.on_step("terminal", {"command": "pwd"}, "s-chat", "otto") == 0
     assert feed.retries == [] and t.store.live_count() == 1
     t.sender.fail = push.DeliveryError("503", "Relay 503", transient=True)
-    assert feed.on_end("s-chat", "cro") == 0
+    assert feed.on_end("s-chat", "otto") == 0
     assert len(feed.retries) == 2  # the end tried again in 2 s, and its priority-5 copy in 30 s
     t.clock.now += 2
     assert feed.flush() == 1
@@ -471,7 +471,7 @@ def test_dead_tokens_and_failures(feed):
     # A card whose token Apple retired at the end gets no copy either.
     t.store.put_live(row(registered=t.clock.now))
     t.sender.fail = push.LiveGone("Unregistered")
-    assert feed.on_end("s-chat", "cro") == 0
+    assert feed.on_end("s-chat", "otto") == 0
     assert feed.retries == [] and feed.next_due() is None
     health = push.Health(t.store.path)
     with sqlite3.connect(t.store.path) as db:
@@ -484,16 +484,16 @@ def test_dead_tokens_and_failures(feed):
 def test_old_rows_go_and_an_idle_store_isnt_read(feed):
     t = feed.test
     t.store.put_live(row(registered=t.clock.now - 8 * 3600 - 5))
-    assert feed.on_step("terminal", {"command": "ls"}, "s-chat", "cro") == 0
+    assert feed.on_step("terminal", {"command": "ls"}, "s-chat", "otto") == 0
     assert t.store.live_count() == 0
     reads = []
     real = t.store.live_for
     t.store.live_for = lambda *a: reads.append(a) or real(*a)
-    feed.on_step("terminal", {"command": "ls"}, "s-chat", "cro")
-    feed.on_step("terminal", {"command": "pwd"}, "s-chat", "cro")
+    feed.on_step("terminal", {"command": "ls"}, "s-chat", "otto")
+    feed.on_step("terminal", {"command": "pwd"}, "s-chat", "otto")
     assert len(reads) <= 1
     t.store.put_live(row(registered=t.clock.now))  # a new card: read again
-    assert feed.on_step("terminal", {"command": "whoami"}, "s-chat", "cro") == 1
+    assert feed.on_step("terminal", {"command": "whoami"}, "s-chat", "otto") == 1
 
 
 def test_relay_mode_drops_a_card_it_cant_seal(tmp_path):
@@ -506,7 +506,7 @@ def test_relay_mode_drops_a_card_it_cant_seal(tmp_path):
             raise AssertionError("never sent")
 
     live = push.LiveFeed(lambda: store, sender_factory=lambda: Quiet("https://relay.example"), clock=Clock())
-    assert live.on_step("terminal", {"command": "ls"}, "s-chat", "cro") == 0
+    assert live.on_step("terminal", {"command": "ls"}, "s-chat", "otto") == 0
     assert store.live_count() == 0
 
 
@@ -515,10 +515,10 @@ def test_hooks_only_queue(tmp_path):
     live._put = lambda item: queued.append(item)
     queued = []
     args = {"command": "ls"}
-    live.step("terminal", args, "s1", "cro")
-    live.step("todo", {}, "s1", "cro")
+    live.step("terminal", args, "s1", "otto")
+    live.step("todo", {}, "s1", "otto")
     live.ended("s1", "")
-    assert queued == [("step", "terminal", {"command": "ls"}, "s1", "cro"), ("end", "s1", "default")]
+    assert queued == [("step", "terminal", {"command": "ls"}, "s1", "otto"), ("end", "s1", "default")]
     assert queued[0][2] is not args
 
 
@@ -562,7 +562,7 @@ def test_direct_live_push_headers_and_answers():
 
 def test_direct_alerts_unchanged():
     sender = direct("\n200")
-    sender.send(device(seal=""), push.Push("turnDone", session="s1", profile="cro", text="hi"))
+    sender.send(device(seal=""), push.Push("turnDone", session="s1", profile="otto", text="hi"))
     assert sender.run.calls[0]["headers"] == ["authorization: bearer jwt", "apns-topic: com.charlesmcdowell.dispatch",
                                               "apns-push-type: alert", "apns-priority: 10", "apns-collapse-id: turnDone:s1"]
     with pytest.raises(push.Gone):
@@ -620,16 +620,16 @@ def test_relay_live_push(monkeypatch):
 
 def test_reply_watcher_ends_the_turn_of_every_finished_reply(tmp_path):
     root = tmp_path / "hermes"
-    state_db(root / "profiles" / "cro" / "state.db", [("s1", "desktop", None, None), ("s2", "desktop", None, None)])
+    state_db(root / "profiles" / "otto" / "state.db", [("s1", "desktop", None, None), ("s2", "desktop", None, None)])
     ended, alerts = [], []
     watcher = push.ReplyWatcher(root, alerts.append, sender=lambda p: p, turn_ended=lambda p, s: ended.append((p, s)))
     watcher.poll()  # starts at the newest message
-    with sqlite3.connect(root / "profiles" / "cro" / "state.db") as db:
+    with sqlite3.connect(root / "profiles" / "otto" / "state.db") as db:
         db.executemany("insert into messages (session_id, role, content, finish_reason) values (?,?,?,?)",
                        [("s1", "assistant", "working on it", "tool_calls"), ("s1", "assistant", "Done.", "stop"),
                         ("s2", "assistant", "[SILENT]", "stop")])
     watcher.poll()
-    assert ended == [("cro", "s1"), ("cro", "s2")]  # a silent reply still ends its turn
+    assert ended == [("otto", "s1"), ("otto", "s2")]  # a silent reply still ends its turn
     assert [a.session for a in alerts] == ["s1"]
 
 
@@ -668,17 +668,17 @@ def test_plugin_hooks(monkeypatch):
     calls = []
     plugin._live = lambda: types.SimpleNamespace(step=lambda *a: calls.append(("step", *a)),
                                                  ended=lambda *a: calls.append(("end", *a)))
-    plugin._profile = lambda: "cro"
+    plugin._profile = lambda: "otto"
     # The vetoes come first and still block.
     blocked = plugin.pre_tool_call(tool_name="terminal", args={"command": "launchctl submit -l x -- /bin/sh"}, session_id="s1")
     assert blocked["action"] == "block" and calls == []  # and the card isn't told about a call that never ran
     assert plugin.pre_tool_call(tool_name="terminal", args={"command": "ls"}, session_id="s1", task_id="t") is None
     assert plugin.pre_tool_call(tool_name="todo", args={}, session_id="s1") is None
-    assert calls == [("step", "terminal", {"command": "ls"}, "s1", "cro")]
+    assert calls == [("step", "terminal", {"command": "ls"}, "s1", "otto")]
     plugin.on_session_end(session_id="s1", completed=True, interrupted=False, platform="desktop")
     plugin.on_session_end(session_id="s1", completed=False, interrupted=True)
     plugin.on_session_end(session_id="", completed=True)
-    assert calls[1:] == [("end", "s1", "cro")]
+    assert calls[1:] == [("end", "s1", "otto")]
     # Never into Hermes.
     plugin._live = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     assert plugin.pre_tool_call(tool_name="terminal", args={"command": "ls"}, session_id="s1") is None
@@ -708,8 +708,8 @@ def test_the_feed_thread_sends_and_ends(tmp_path):
 
     sender.send_live = send_live
     live = push.LiveFeed(lambda: store, sender_factory=lambda: sender)
-    live.step("terminal", {"command": "npm test"}, "s-chat", "cro")
-    live.ended("s-chat", "cro")
+    live.step("terminal", {"command": "npm test"}, "s-chat", "otto")
+    live.ended("s-chat", "otto")
     assert done.wait(5)
     assert [s[2]["aps"]["event"] for s in sender.sent] == ["update", "end"] and store.live_count() == 0
 

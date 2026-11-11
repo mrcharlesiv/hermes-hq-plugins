@@ -362,7 +362,7 @@ def _device_store():
 class ShareIn(BaseModel):
     access: dict = Field(default_factory=dict)  # {"contacts": {"phone": true, "email": true, ...}}
     account: str = Field(default="", max_length=64)
-    name: str = Field(default="", max_length=80)  # "Charles's iPhone": how a bot names the phone
+    name: str = Field(default="", max_length=80)  # "Alex's iPhone": how a bot names the phone
     platform: str = Field(default="", max_length=16)
 
 

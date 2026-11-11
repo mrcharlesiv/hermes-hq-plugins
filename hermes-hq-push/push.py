@@ -655,7 +655,7 @@ def outside_platform(session_key: str) -> str:
 def bot_chat(session_key: str) -> bool:
     """A message another bot sent this one (Bot Chat), run in the messaging gateway
     (``agent:<profile>:local:dm:<chat>``): nobody watches that chat, so an approval asked there waited unseen until it
-    timed out (owner, 2026-10-28: Harry's command sat 5 minutes while the voice kept saying "still checking")."""
+    timed out (owner, 2026-10-28: Maple's command sat 5 minutes while the voice kept saying "still checking")."""
     parts = str(session_key or "").split(":")
     return len(parts) >= 5 and parts[0] == "agent" and parts[2] == "local" and parts[3] == "dm"
 

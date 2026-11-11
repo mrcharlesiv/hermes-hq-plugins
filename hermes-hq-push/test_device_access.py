@@ -38,7 +38,7 @@ def store(tmp_path, clock=None):
 def test_share_keeps_known_kinds_and_details_only(tmp_path):
     s = store(tmp_path)
     kept = s.share(PHONE, {"contacts": {"phone": True, "email": "yes", "ssn": True}, "photos": {"all": True},
-                           "files": {"read": True}}, name="Charles’s iPhone")["access"]
+                           "files": {"read": True}}, name="Alex’s iPhone")["access"]
     assert kept == {"contacts": {"phone": True, "email": False, "birthday": False, "address": False},
                     "photos": {"find": False, "send": False}}
     assert device_access.shared(kept, "contacts") == ["phone"]
@@ -124,7 +124,7 @@ def test_contacts_tool_shows_only_while_a_phone_shares_contacts(tmp_path):
 def test_contacts_tool_asks_the_phone_and_returns_its_answer(tmp_path, monkeypatch):
     wakes = []
     s, registered = tools(tmp_path, wakes)
-    s.share(PHONE, {"contacts": {"phone": True, "email": True}}, name="Charles’s iPhone")
+    s.share(PHONE, {"contacts": {"phone": True, "email": True}}, name="Alex’s iPhone")
     handler, _ = registered["device_contacts_search"]
 
     async def run():
@@ -139,7 +139,7 @@ def test_contacts_tool_asks_the_phone_and_returns_its_answer(tmp_path, monkeypat
         return json.loads(await task)
 
     answer = asyncio.run(run())
-    assert answer == {"status": "done", "device": "Charles’s iPhone", "contacts": [{"name": "Ann Lee", "phones": ["+1 555"]}]}
+    assert answer == {"status": "done", "device": "Alex’s iPhone", "contacts": [{"name": "Ann Lee", "phones": ["+1 555"]}]}
     assert wakes and wakes[0][0] == PHONE and wakes[0][2] == "finance"
 
 

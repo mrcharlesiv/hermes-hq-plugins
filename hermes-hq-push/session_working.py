@@ -2,7 +2,7 @@
 
 A turn the messaging gateway runs (a message from another bot, a Telegram or Discord message, a scheduled job's hand-off)
 is not a turn of ``hermes serve``: the app's ``session.resume`` says ``running: false`` and no turn events come, so the
-chat looked idle while the bot worked (owner, 2026-10-27: "CMO messaged Hermes and I can't see that anything is
+chat looked idle while the bot worked (owner, 2026-10-27: "Herald messaged Hermes and I can't see that anything is
 happening"). Hermes knows: its durable ledger (``session_admissions`` and ``worker_executions`` in the profile's
 ``state.db``) holds that work until it ends, and ``hermes serve`` refuses a typed send with ``SESSION_OWNER_BUSY`` while
 it does (``tui_gateway/session_lifecycle._canonical_ledger_refusal``). Hermes's web API doesn't show it, so the app asks
