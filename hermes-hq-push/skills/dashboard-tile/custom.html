@@ -73,7 +73,7 @@
   .items > * { min-width: 0; }
   /* An item's detail line and the foot's source show where there is room to read them (Extra Large, opened). */
   .detail, .source { display: none; }
-  @container (min-height: 480px), (min-width: 560px) and (min-height: 300px) { .detail { display: block; } .source { display: inline; } }
+  @container (min-height: 480px) or ((min-width: 560px) and (min-height: 300px)) { .detail { display: block; } .source { display: inline; } }
   /* Big and wide: rows beside the chart share the column's height, up to a comfortable height each. */
   @container (min-width: 560px) and (min-height: 300px) { .tile .items.rows { grid-auto-rows: minmax(min-content, 3em); } }
   /* Rows with no chart above them share the room left, up to a comfortable height each. */
@@ -245,6 +245,11 @@
      every size: parts marked data-drop go in order until the rest fits, lists lose items from their end ("+3 more"),
      and the number shrinks to its width. Without it, whatever doesn't fit is cut off at the tile's edge. -->
 <script id="hq-tile-fit">
+// hq-tile-fit: makes a Hermes HQ Dashboard tile fit whatever window it is drawn in. Parts marked data-drop="N" go
+// in order (1 first) until the rest fits; a data-items list loses items from its end (data-more stands in for them,
+// data-keep is the fewest worth showing); data-least is the least height of a part that stretches, in px or as a
+// share of the tile's height ("44 14%": whichever is more); data-whole shows
+// whole or not at all; data-shrink is one line that shrinks to its width. Kept identical in custom.html.
 (function () {
   function fitTile() {
     var tile = document.querySelector(".tile"); if (!tile) return;
@@ -258,11 +263,15 @@
       var n = kids(c).filter(function (k) { return k.hasAttribute("data-off"); }).length, m = null, words = c.getAttribute("data-more");
       [].slice.call(c.children).forEach(function (k) { if (k.hasAttribute("data-more-cell")) m = k; });
       if (!n || !words) { if (m) m.remove(); return; }
-      if (!m) { m = document.createElement("div"); m.setAttribute("data-more-cell", ""); m.className = "more"; c.appendChild(m); }
+      if (!m) { m = document.createElement("div"); m.setAttribute("data-more-cell", ""); c.appendChild(m); }
+      // It wears the worst state among what it stands for, so a problem left out still shows.
+      var hidden = kids(c).filter(function (k) { return k.hasAttribute("data-off"); });
+      var worst = hidden.some(function (k) { return k.classList.contains("bad"); }) ? " bad" : hidden.some(function (k) { return k.classList.contains("warn"); }) ? " warn" : "";
+      m.className = "more" + worst;
       m.textContent = words.replace("{n}", n);
     }
-    // Too much for the tile: something reaches under the tile's padding, a list's items run out of its box, or a
-    // part that stretches has been squeezed under its data-least.
+    // Too much for the tile: something reaches under the tile's padding, a list's items (or a data-box's parts) run
+    // out of its box, or a part that stretches has been squeezed under its data-least.
     function misfit() {
       // A grid one item across is marked "single" (its look can then lay each item out as a row).
       q("[data-items]").forEach(function (c) {
@@ -274,14 +283,18 @@
         r = all[i].getBoundingClientRect();
         if (r.width > 0 && r.height > 0 && r.bottom > floor) return true;
       }
-      var lists = q("[data-items]"), least = q("[data-least]"), box, ks, k;
+      var lists = q("[data-items],[data-box]"), least = q("[data-least]"), box, ks, k;
       for (i = 0; i < lists.length; i++) {
         if (!shown(lists[i])) continue;
         box = lists[i].getBoundingClientRect().bottom + 1; ks = lists[i].children;
         for (k = 0; k < ks.length; k++) if (shown(ks[k]) && ks[k].getBoundingClientRect().bottom > box) return true;
       }
+      // data-least: px, or a share of the tile's height ("44 14%": whichever is more).
       for (i = 0; i < least.length; i++) {
-        if (shown(least[i]) && least[i].getBoundingClientRect().height < +least[i].getAttribute("data-least")) return true;
+        if (!shown(least[i])) continue;
+        var need = 0, high = tile.getBoundingClientRect().height;
+        least[i].getAttribute("data-least").split(/\s+/).forEach(function (v) { need = Math.max(need, /%$/.test(v) ? parseFloat(v) / 100 * high : parseFloat(v) || 0); });
+        if (least[i].getBoundingClientRect().height < need) return true;
       }
       return false;
     }
@@ -328,6 +341,15 @@
       if (!made) off(gone[p]);
     }
     q("[data-items]").forEach(function (c) { if (shown(c)) most(c, count(c)); });
+    // Tidy: "+1 more" takes the room of the one it stands for, and a "+3 more" alone on a row of its own looks
+    // left over: one more item goes, so the words close a full row.
+    q("[data-items]").forEach(function (c) {
+      var mark = null, seen = kids(c).filter(function (k) { return !k.hasAttribute("data-off"); }), last = seen[seen.length - 1];
+      [].slice.call(c.children).forEach(function (k) { if (k.hasAttribute("data-more-cell")) mark = k; });
+      if (!shown(c) || !mark || !last || seen.length <= Math.max(1, keep(c))) return;
+      var alone = !c.classList.contains("single") && mark.getBoundingClientRect().top > last.getBoundingClientRect().top + 1;
+      if (alone || kids(c).length - seen.length === 1) show(c, seen.length - 1);
+    });
     q("[data-shrink]").forEach(shrink);
     q("[data-whole]").forEach(function (e) { if (shown(e) && e.scrollWidth > e.clientWidth + 1) off(e); });
   }

@@ -1,0 +1,49 @@
+{
+ "name": "Homelab Go / No-Go",
+ "title": "Homelab",
+ "look": "app",
+ "badge": "4 of 6 go",
+ "badge_state": "bad",
+ "value": "NO-GO",
+ "state": "bad",
+ "caption": "1 node degraded, quorum OK",
+ "blocks": [
+  {
+   "type": "status",
+   "items": [
+    {
+     "name": "Servers",
+     "value": "1 degraded",
+     "state": "bad",
+     "detail": "4/4 nodes up"
+    },
+    {
+     "name": "Kubernetes",
+     "value": "15/15",
+     "state": "good"
+    },
+    {
+     "name": "Storage",
+     "value": "6/6 pools",
+     "state": "good"
+    },
+    {
+     "name": "Network",
+     "value": "Core OK",
+     "state": "good"
+    },
+    {
+     "name": "AI services",
+     "value": "Both online",
+     "state": "good"
+    },
+    {
+     "name": "Monitoring",
+     "value": "52/56",
+     "state": "bad"
+    }
+   ]
+  }
+ ],
+ "source": "Grafana"
+}

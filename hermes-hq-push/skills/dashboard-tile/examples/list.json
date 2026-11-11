@@ -1,0 +1,38 @@
+{
+ "name": "Needs A Reply",
+ "title": "Needs a reply",
+ "look": "app",
+ "value": "5",
+ "state": "warn",
+ "caption": "2 waiting over a day",
+ "blocks": [
+  {
+   "type": "rows",
+   "items": [
+    {
+     "name": "Dana, pricing",
+     "value": "2 days",
+     "state": "bad"
+    },
+    {
+     "name": "Lee, contract",
+     "value": "1 day",
+     "state": "warn"
+    },
+    {
+     "name": "Sam, invoice",
+     "value": "5 h"
+    },
+    {
+     "name": "Ravi, demo",
+     "value": "3 h"
+    },
+    {
+     "name": "Mia, intro",
+     "value": "1 h"
+    }
+   ]
+  }
+ ],
+ "source": "Mail"
+}

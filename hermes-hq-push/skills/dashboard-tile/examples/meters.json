@@ -1,0 +1,54 @@
+{
+ "name": "Server Load",
+ "title": "Server",
+ "look": "terminal",
+ "value": "72%",
+ "state": "warn",
+ "caption": "Disk is the one to watch",
+ "blocks": [
+  {
+   "type": "meters",
+   "items": [
+    {
+     "name": "Disk",
+     "value": 72,
+     "state": "warn",
+     "text": "720 GB"
+    },
+    {
+     "name": "Memory",
+     "value": 41,
+     "text": "13 GB"
+    },
+    {
+     "name": "CPU",
+     "value": 18
+    },
+    {
+     "name": "Swap",
+     "value": 3
+    }
+   ]
+  },
+  {
+   "type": "chart",
+   "kind": "bars",
+   "series": [
+    12,
+    18,
+    9,
+    22,
+    31,
+    27,
+    18,
+    14,
+    20,
+    25,
+    19,
+    18
+   ],
+   "label": "CPU, 12 h"
+  }
+ ],
+ "source": "node_exporter"
+}

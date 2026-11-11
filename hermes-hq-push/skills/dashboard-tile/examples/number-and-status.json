@@ -1,0 +1,73 @@
+{
+ "name": "RTX Inference",
+ "title": "RTX inference",
+ "look": "midnight",
+ "badge": "2/2 up",
+ "badge_state": "good",
+ "value": "64k",
+ "caption": "Tokens from the 3090, last 24 h",
+ "blocks": [
+  {
+   "type": "chart",
+   "series": [
+    3100,
+    2800,
+    900,
+    400,
+    300,
+    250,
+    300,
+    800,
+    1900,
+    2600,
+    3400,
+    4100,
+    5200,
+    4800,
+    3900,
+    3300,
+    2700,
+    2500,
+    3000,
+    3600,
+    4400,
+    5100,
+    3200,
+    450
+   ],
+   "label": "Hourly, 24 h",
+   "high": "5.2k"
+  },
+  {
+   "type": "status",
+   "items": [
+    {
+     "name": "3090 LLM",
+     "value": "39°C",
+     "state": "good",
+     "detail": "0% load · 0.0 tok/s"
+    },
+    {
+     "name": "2070 Voice",
+     "value": "28°C",
+     "state": "good",
+     "detail": "0% load · 1.6 ms"
+    }
+   ]
+  },
+  {
+   "type": "stats",
+   "items": [
+    {
+     "name": "7 days",
+     "value": "914.6k"
+    },
+    {
+     "name": "Per hour",
+     "value": "2.7k"
+    }
+   ]
+  }
+ ],
+ "source": "Grafana"
+}

@@ -1,0 +1,68 @@
+{
+ "name": "Homelab Health",
+ "title": "Homelab",
+ "look": "app",
+ "badge": "9/9 up",
+ "badge_state": "good",
+ "value": "ONLINE",
+ "state": "good",
+ "caption": "Core path and compute verified",
+ "blocks": [
+  {
+   "type": "status",
+   "items": [
+    {
+     "name": "Firewall",
+     "value": "UDM Pro",
+     "state": "good",
+     "detail": "10.10.10.1"
+    },
+    {
+     "name": "Core switch",
+     "value": "EX2300",
+     "state": "good",
+     "detail": "10.10.10.5"
+    },
+    {
+     "name": "pve05",
+     "value": "20 cores",
+     "state": "good"
+    },
+    {
+     "name": "pve02",
+     "value": "GPU host",
+     "state": "good"
+    },
+    {
+     "name": "pve01",
+     "value": "16 cores",
+     "state": "good"
+    },
+    {
+     "name": "pve-hp1",
+     "value": "6 cores",
+     "state": "good"
+    },
+    {
+     "name": "vLLM",
+     "value": "Running",
+     "state": "good",
+     "detail": "LXC 107 on pve02"
+    },
+    {
+     "name": "RTX 3090",
+     "value": "24 GB",
+     "state": "good",
+     "detail": "Qwen, healthy"
+    },
+    {
+     "name": "RTX 2070",
+     "value": "8 GB",
+     "state": "good",
+     "detail": "Voice, healthy"
+    }
+   ]
+  }
+ ],
+ "source": "Grafana"
+}

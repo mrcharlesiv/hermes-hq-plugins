@@ -5,11 +5,11 @@
 
 Two passes:
   1. Rules read from the file: one self-contained page, nothing loaded from the network, fills its window,
-     no fixed pixel widths wider than a small tile, light and dark, the template's fit script still there.
+     no fixed pixel widths wider than a small tile, light and dark, the kit's fit script still there.
   2. When Chrome or Chromium is on this computer: the page drawn in each window the app draws it in (a Grid tile at
      its own size, like a Home Screen widget; a card 390 wide), checked for scripts that fail, scrolling, parts cut
      off or drawn over each other, text too small or too faint, tiles left half empty or packed with words, with
-     every size side by side in one picture for you to look at (--shots, default: a folder beside the file).
+     every size side by side in one picture for you to look at (--shots, default: a folder in the temporary folder).
 
 Prints one line per problem and exits 1 if any; "OK" and exit 0 otherwise. Warnings don't fail the check.
 With no browser to draw the page (NOT DRAWN) only the file rules are checked: set HQ_TILE_CHROME to a Chrome or
@@ -37,7 +37,7 @@ SHAPES = [("small", 175, 175, "light"), ("small", 175, 175, "dark"), ("small on 
           ("extra-large on an iPad or Mac", 760, 570, "light"), ("opened full screen on a phone", 402, 780, "dark")]
 MAX_BYTES = 1_500_000
 SHEET_WIDTH = 800
-# The template's script that makes a tile fit itself (parts marked data-drop go, lists lose items, the number shrinks).
+# The kit's script that makes a tile fit itself (parts marked data-drop go, lists lose items, the number shrinks).
 FIT_MARK = "hq-tile-fit"
 
 
@@ -54,7 +54,7 @@ def static_problems(html):
         problems.append('no <title>: the app names the tile from it; give it a plain name such as "Revenue This Week"')
     elif title.lower() in ("tile title", "title", "untitled", "document", "tile"):
         problems.append(f'the <title> is still "{title}": name the tile in plain words, such as "Revenue This Week"')
-    elif re.search(r"\.html?\b|[/\\]|^[\w-]+_[\w_-]+$|^[a-z0-9]+(-[a-z0-9]+)+$", title, re.I):
+    elif re.search(r"\.html?\b|\S[/\\]\S|^[\w-]+_[\w_-]+$|^[a-z0-9]+(-[a-z0-9]+)+$", title, re.I):
         problems.append(f'the <title> "{title}" reads as a file name: the app shows it as the tile\'s name, so use plain words ("Revenue This Week")')
     elif len(title) > 40:
         problems.append(f'the <title> is {len(title)} characters: keep the tile\'s name to 40 or fewer (it sits under a small tile)')
@@ -118,7 +118,7 @@ def static_problems(html):
 
 
 def has_fit(html):
-    """The template's fit script is in the page (the script itself, not a comment that names it)."""
+    """The kit's fit script is in the page (the script itself, not a comment that names it)."""
     return bool(re.search(r'<script[^>]*\bid\s*=\s*["\']?' + FIT_MARK + r'\b', html, re.I)) and "data-off" in html
 
 
@@ -233,11 +233,12 @@ setTimeout(function(){
   say("tiny",tiny); say("small",small,smallFirst); say("clipped",clipped,clippedFirst);
   var words=document.body ? document.body.innerText.trim().split(/\s+/).filter(function(t){ return /[A-Za-z0-9À-￿]/.test(t); }).length : 0;
   if (!words && !document.querySelector("svg,canvas,img")) out.push({k:"nothing",n:1,first:""});
-  var glance=Math.round(w*h/1500);
+  var glance=Math.round(w*h/1300);
   if (words>glance && h<700) out.push({k:"crowded",n:words,first:"a glance here is about " + glance});
   // The largest blank block (on a 24-across grid): a tile with a third of it empty has its parts in the wrong places.
-  // (A tile that is one number and a few words is sparse by design; this is for a tile with things to place.)
-  if (w*h>40000 && ink.length && (words>=10 || document.querySelector("svg,canvas,img"))){
+  // (A tile that is one number and a few words is sparse by design, and so is a short list in a window as big
+  // as an iPad's: this is for a phone's tile with things to place.)
+  if (w*h>40000 && w*h<250000 && (ink.length>=12 || document.querySelector("svg,canvas,img"))){
     var N=24, M=Math.max(4,Math.round(N*h/w)), cw=w/N, ch=h/M, full=[], best=0, heights=[];
     for (var gy=0;gy<M;gy++){ full.push([]); for (var gx=0;gx<N;gx++) full[gy].push(false); }
     ink.forEach(function(r){ for (var gy=Math.max(0,Math.floor(r.top/ch)); gy<M && gy*ch<r.bottom; gy++)
@@ -262,7 +263,7 @@ FINDINGS = {
     "script": (True, "a script failed, so the tile is left half drawn or blank", None, "fix the script"),
     "scrolls": (True, "the page scrolls (only its top is pictured)", None, "make it fill the window: html, body { height: 100%; overflow: hidden }"),
     "sideways": (True, "the page scrolls sideways", None, "no fixed widths: %, fr, cqw"),
-    "past": (True, "parts run past the tile's edge and are cut off there", "part", "show less at these sizes (the template's fit script: "
+    "past": (True, "parts run past the tile's edge and are cut off there", "part", "show less at these sizes (the kit's fit script: "
              "data-drop on parts that can go, data-items on lists); don't shrink the text to squeeze it in"),
     "boxes": (True, "a box's contents are cut off at its foot", "box", "too much for these sizes: show fewer things there"),
     "under": (True, "text is drawn under something else", "piece", "give each part its own room (no fixed heights, no absolute positions)"),
@@ -270,7 +271,7 @@ FINDINGS = {
     "tiny": (True, "text is smaller than 9 pt, unreadable in a tile", "piece", "show fewer things, larger"),
     "nothing": (True, "the tile draws nothing (no text or picture)", None, "check the data block and the scripts"),
     "quirks": (True, "no <!doctype html> on the first line (the page is laid out in quirks mode)", None, "add it"),
-    "small": (False, "text is under 11 pt, hard to read on a phone", "piece", "show fewer things, larger (the template keeps to .85em of its base size)"),
+    "small": (False, "text is under 11 pt, hard to read on a phone", "piece", "show fewer things, larger (the kit keeps to .85em of its base size)"),
     "clipped": (False, "text is cut off with \u2026", "piece", "shorten the words (a long name may be a choice; a headline, a status or a note cut short is not)"),
     "crowded": (False, "too many words for a glance", "words", "show fewer things at these sizes: a tile is read in a second, the details are a tap away"),
     "empty": (False, "a blank block covers a third of the tile or more", "% blank", "let the chart or the items stretch into it, or lay that shape out differently"),
@@ -397,7 +398,7 @@ def render_with(path, chrome, shots):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("file")
-    ap.add_argument("--shots", help="folder for tiles.png, every tile size side by side (default: <file>-tiles/ beside it)")
+    ap.add_argument("--shots", help="folder for tiles.png, every tile size side by side (default: one in the temporary folder)")
     ap.add_argument("--no-render", action="store_true", help="only the file checks")
     args = ap.parse_args()
     path = os.path.abspath(os.path.expanduser(args.file))
@@ -414,30 +415,35 @@ def main():
     shots = None
     chromes = [] if args.no_render else find_chromes()
     if chromes:
-        shots = args.shots or os.path.splitext(path)[0] + "-tiles"
+        # Not beside the tile: a folder of pictures per tile piled up in ~/dashboards.
+        shots = args.shots or os.path.join(tempfile.gettempdir(), "hq-tile-pictures", os.path.splitext(os.path.basename(path))[0])
         found, looks, note = render_problems(path, chromes, shots)
         problems += found
         warnings += looks
     elif not args.no_render:
         note = ("NOT DRAWN: no Chrome or Chromium on this computer, so the page wasn't drawn at any size and nothing above "
                 "says how it looks. Draw it: set HQ_TILE_CHROME to a browser's binary, or install one (`npx playwright "
-                "install chromium`, or `apt install chromium`) and run this again. If you can't, keep the template's layout "
-                "and fit script as they are, and tell the person the tile wasn't checked by eye")
+                "install chromium`, or `apt install chromium`) and run this again. If you can't, make the tile with make_tile.py and leave its page "
+                "as it is, and tell the person the tile wasn't checked by eye")
     if note and not has_fit(html):
-        problems.append("the page wasn't drawn and it doesn't have the template's fit script (<script id=\"hq-tile-fit\">), so "
-                        "nothing keeps it from being cut off in a small tile: start from template.html and keep that script")
+        problems.append("the page wasn't drawn and it doesn't have the kit's fit script (<script id=\"hq-tile-fit\">), so nothing keeps "
+                        "it from being cut off in a small tile: make it with make_tile.py (or start from custom.html and keep that script)")
     for p in problems:
         print("PROBLEM:", p)
     for w in warnings:
         print("WARNING:", w)
+    if (problems or warnings) and 'name="hq-tile-kit"' in html:
+        print("This tile was made by make_tile.py: fix these in its data (fewer or shorter words, another block, another order: "
+              "`make_tile.py show`, then `set`), never in the page's HTML or CSS")
     if note:
         print(note)
     if shots and not note and os.path.isfile(os.path.join(shots, "tiles.png")):
         print(f"PICTURES: {os.path.join(shots, 'tiles.png')} has every tile size side by side: look at it before you hand "
-              "the tile over (the folder is yours to delete afterwards)")
+              "the tile over")
     if problems:
         return 1
-    print(("OK by the file rules, but not drawn" if note else "OK: ready to pin") + ". Show it with its own line:  MEDIA:" + path)
+    print(("OK by the file rules, but not drawn" if note else "OK, with the warnings above to fix where you can" if warnings
+           else "OK: ready to pin") + ". Show it with its own line:  MEDIA:" + path)
     return 0
 
 

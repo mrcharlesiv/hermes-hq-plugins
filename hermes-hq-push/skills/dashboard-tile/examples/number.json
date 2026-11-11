@@ -1,0 +1,43 @@
+{
+ "name": "Revenue This Week",
+ "title": "Revenue",
+ "look": "app",
+ "value": "$12,480",
+ "delta": "+8.2%",
+ "trend": "up",
+ "caption": "This week, to Sunday",
+ "blocks": [
+  {
+   "type": "chart",
+   "series": [
+    1.4,
+    1.9,
+    1.6,
+    1.8,
+    2.1,
+    1.7,
+    2.0
+   ],
+   "label": "Daily, last 7 days",
+   "high": "$2.1k"
+  },
+  {
+   "type": "rows",
+   "items": [
+    {
+     "name": "Stripe",
+     "value": "$9,120"
+    },
+    {
+     "name": "App Store",
+     "value": "$2,410"
+    },
+    {
+     "name": "Other",
+     "value": "$950"
+    }
+   ]
+  }
+ ],
+ "source": "Stripe"
+}
