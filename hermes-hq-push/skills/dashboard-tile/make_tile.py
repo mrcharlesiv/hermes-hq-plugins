@@ -64,7 +64,12 @@ BLOCKS = {
                    "kind: area (default), line or bars", 'label: what and how long ("Hourly, 24 h")',
                    "zero: true starts the chart at zero (a line otherwise runs from its lowest value, which shows the "
                    "change and overstates it)",
-                   'high: the top value as it should read ("5.2k")', 'labels: what it runs along (["Mon", ..., "Sun"]), shown under it'],
+                   "mark: the dot on the line sits on the last point (right for a series that runs up to now); give the number "
+                   "of another point to mark that one (the hour it is now, on a curve of the whole day), or false for no dot",
+                   'high: the top value as it should read ("5.2k")',
+                   'labels: what it runs along: one per point (["Mon", ..., "Sun"]), each under its point; or a few, spread evenly '
+                   'from the first point to the last (["12 AM", "6 AM", "12 PM", "6 PM", "12 AM"] over 25 hourly points). They '
+                   "are thinned out when there is no room for all"],
         "example": {"type": "chart", "series": [3, 5, 4, 7, 6, 9], "label": "Daily, 6 days", "high": "9"},
     },
     "status": {
@@ -166,7 +171,10 @@ BLOCKS = {
         "for": "an action from the tile: refresh now, mark done, snooze",
         "fields": ["items: label, send (what you are told when it is pressed), state (good, warn, bad: its colour)",
                    "the first button is the main one (filled)",
-                   "they work in the app's Grid and in the opened tile; answer by giving the tile new data with `set`"],
+                   "they work in the app's Grid and in the opened tile; answer by giving the tile new data with `set`",
+                   'say in "send" what to do and to which tile ("Log that the dog was fed, on my Dog tile"): it reaches you as a '
+                   "message with nothing else",
+                   "buttons are the last thing a small tile gives up, wherever they are in the list"],
         "items": (14, 400),
         "example": {"type": "buttons", "items": [{"label": "Refresh now", "send": "Update my Revenue tile now"}]},
     },
@@ -177,7 +185,8 @@ BLOCKS = {
                    "js: a script run once, given `block` (your element) and `data` (the tile's data)",
                    "stretch: false when it has a height of its own. By default it fills the room it is given: lay it out to "
                    "fill that (height: 100%), and never let another block squeeze it (it goes when it gets under least)",
-                   'least: the least height it needs, in px or a share of the tile ("60 30%"); under it, the block goes',
+                   'least: the least height it needs, in px, as a share of the tile\'s height, or both ("60 30%": whichever is '
+                   "more); under it, the block goes",
                    "{{file:/path/to/picture.png}} in html or css is replaced by the picture itself, put inside the tile",
                    "the tile is its own window: @media (max-width: 260px) and @container queries (cqw, cqh) work, and are how "
                    "a drawing changes with the tile's size and shape",
@@ -215,7 +224,8 @@ def checked(spec):
 
     def long(what, text, most):
         if isinstance(text, str) and len(text) > most:
-            warnings.append(f'{what} "{text[:60]}" is {len(text)} characters: keep it to about {most} (it is cut off in a small tile)')
+            warnings.append(f'{what} "{text[:60]}" is {len(text)} characters: more than about {most} may not fit a small tile '
+                            "(the check says where it is cut off)")
 
     for key in sorted(set(spec) - KEYS):
         warnings.append(f'"{key}" is not something a tile has, so it is not drawn (see: python3 make_tile.py --help)')
@@ -243,7 +253,7 @@ def checked(spec):
     long('"title"', spec.get("title"), 20)
     long('"badge"', spec.get("badge"), 12)
     long('"value"', spec.get("value"), 40)
-    long('"caption"', spec.get("caption"), 36)
+    long('"caption"', spec.get("caption"), 30)
     long('"error"', spec.get("error"), 30)
     if isinstance(spec.get("badge"), str) and re.search(r"\b(live|now|online now|real[- ]?time)\b", spec["badge"], re.I):
         warnings.append(f'the badge "{spec["badge"]}" won\'t stay true: a tile is a picture, redrawn now and then. Use a fact (a count)')
@@ -290,6 +300,8 @@ def checked(spec):
                 problems.append(f'{where}: "kind" is area, line or bars')
             if block.get("kind") == "bars" and len(lines) > 1:
                 problems.append(f"{where}: bars draw one series; use lines for several")
+            if block.get("mark") not in (None, False) and not number(block.get("mark")):
+                problems.append(f'{where}: "mark" is the number of the point to mark (0 is the first), or false')
             long(f"{where}: the label", block.get("label"), 18)
         elif kind == "heat":
             values = block.get("values")
@@ -376,7 +388,7 @@ def checked(spec):
                 most_name, most_value = BLOCKS[kind].get("items", (16, 12))
                 long(f"{where}: the {label}", called, most_name)
                 long(f"{where}: the value", item.get("text") if kind in ("meters", "rings", "split", "scale") else item.get("value"), most_value)
-                long(f"{where}: the lead", item.get("lead"), 6)
+                long(f"{where}: the lead", item.get("lead"), 8)
                 long(f"{where}: the glyph", item.get("glyph"), 3)
             if kind == "status":
                 said = {str(item.get("value", "")).strip().lower() for item in items if isinstance(item, dict)}
@@ -536,8 +548,12 @@ def about(kind=None):
     print(f"{kind}: {block['draws']}\nFor: {block['for']}\nFields:")
     for field in block["fields"]:
         print("  " + field)
-    if "items" in block:
-        print(f"  (in a Small tile about {block['items'][0]} characters of a name and {block['items'][1]} of a value show whole)")
+    if "items" in block and kind != "buttons":
+        print(f"  (in a Small tile about {block['items'][0]} characters of a name and {block['items'][1]} of a value show whole; "
+              "fewer when the item has a lead or a chart)")
+    if kind in ("strip", "stats", "rings"):
+        print("  it keeps to full rows of as many as fit, leaving out the rest from the end: put first what matters most "
+              "(the newest result, not the oldest)")
     if kind not in ("chart", "heat"):
         print('  label: a heading over the block ("Up next")')
     if "items" in block and kind not in ("stats", "strip", "rings", "buttons", "split"):

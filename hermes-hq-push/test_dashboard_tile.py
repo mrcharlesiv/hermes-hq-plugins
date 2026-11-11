@@ -389,7 +389,7 @@ def test_a_name_with_a_spaced_slash_is_plain_words():
 
 @pytest.mark.parametrize("changes, says", [
     ({"badge": "● LIVE"}, "won't stay true"),
-    ({"caption": "Core path and compute verified with live evidence from Grafana"}, "keep it to about 36"),
+    ({"caption": "Core path and compute verified with live evidence from Grafana"}, "more than about 30"),
     ({"colour": "red"}, "is not something a tile has"),
     ({"blocks": [{"type": "status", "items": [{"name": f"host-{n}", "value": "Up", "state": "good"} for n in range(9)]}]}, 'every box says "Up"'),
 ])
@@ -667,6 +667,9 @@ def test_the_check_says_what_a_size_leaves_out_and_when_that_is_the_main_block(t
     problems, warnings, note = _drawn(tmp_path, _spec(value="12", blocks=[drawing, rows]))
     assert note is None and any("the main block is not shown" in w for w in warnings), warnings
     assert "block 1 (custom)" in check_tile.render_problems.left_out
+    # A list that lost items is said too ("3 of 12"), not only a block that went whole.
+    _drawn(tmp_path, _spec(value="12", blocks=[{"type": "strip", "items": [{"name": f"{h} PM", "value": f"{60 + h}°"} for h in range(1, 13)]}]))
+    assert " of 12" in check_tile.render_problems.left_out, check_tile.render_problems.left_out
     _, warnings, _ = _drawn(tmp_path, _spec(value="12", blocks=[dict(drawing, drop=1), rows]))
     assert not any("the main block is not shown" in w for w in warnings), "its turn was chosen: going first is meant"
 
@@ -679,3 +682,29 @@ def test_words_that_run_out_of_their_box_are_a_problem(tmp_path):
              "css": ".x-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); color: var(--ink); white-space: nowrap; }"}
     problems, _, note = _drawn(tmp_path, _spec(value="$2.4M", blocks=[block]))
     assert note is None and any("run out of their box" in p for p in problems), problems
+
+
+@needs_chrome
+def test_a_charts_labels_sit_under_their_points_and_its_marks_wear_their_lines_colours(tmp_path):
+    """A trial bot's seven days came out as five, re-spaced: Monday's peak sat between "Sun" and "Tue"; the second
+    line's dot was the first line's blue."""
+    days = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"]
+    tile = _made(tmp_path, _spec(value="18.4k", blocks=[{"type": "chart", "labels": days, "series": [
+        {"name": "This week", "values": [2, 2.4, 2.1, 2.2, 4.1, 3, 2.6]}, {"name": "Last week", "values": [2, 2.1, 2, 2.1, 3.2, 2.7, 2.3]}]}]))
+    page = tile.read_text().replace("</body>", """<script>
+      var axis = document.querySelector(".axis").getBoundingClientRect(), out = [];
+      [].forEach.call(document.querySelectorAll(".axis > span"), function (t, k) {
+        var r = t.getBoundingClientRect(), mid = (r.left + r.right) / 2 - axis.left, edge = k === 0 ? r.left - axis.left : k === 6 ? r.right - axis.left : mid;
+        if (r.width) out.push(t.textContent + ":" + Math.round(edge / axis.width * 6 * 10) / 10);
+      });
+      document.title = out.join(",") + "|" + [].map.call(document.querySelectorAll(".plot .dot"), function (d) { return getComputedStyle(d).backgroundColor; }).join(";");
+    </script></body>""")
+    tile.write_text(page)
+    dom = subprocess.run([check_tile.find_chrome(), "--headless=new", "--disable-gpu", "--no-sandbox", "--window-size=800,600",
+                          f"--user-data-dir={tmp_path}/profile", "--virtual-time-budget=2000", "--dump-dom", "file://" + str(tile)],
+                         capture_output=True, text=True, timeout=60).stdout
+    labels, dots = dom[dom.index("<title>") + 7:dom.index("</title>")].split("|")
+    for label in labels.split(","):   # each label shown is at its own day's place: Thu at 0, Mon at 4, Wed at 6
+        name, place = label.split(":")
+        assert abs(float(place) - days.index(name)) < 0.15, labels
+    assert len(set(dots.split(";"))) == 2, dots

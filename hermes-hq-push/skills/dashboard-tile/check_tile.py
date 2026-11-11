@@ -230,6 +230,13 @@ setTimeout(function(){
     if (tr.right > br.right-(parseFloat(bs.paddingRight)||0)+0.75 || tr.left < br.left+(parseFloat(bs.paddingLeft)||0)-0.75){
       if (bs.overflowX!=="visible"){ clipped++; if(!clippedFirst) clippedFirst=label(e)+says(e); }
       else { spill++; if(!spillFirst) spillFirst=label(e)+says(e); } }
+    else {
+      // ... or by a box further out that hides what runs past it (no ellipsis to show for it).
+      for (var up=box.parentElement; up && up!==document.body; up=up.parentElement){
+        var us=getComputedStyle(up); if (us.overflowX==="visible" && us.overflowY==="visible") continue;
+        var ur=up.getBoundingClientRect();
+        if (tr.right > ur.right+1 || tr.left < ur.left-1 || (tr.top < ur.bottom-1 && tr.bottom > ur.bottom+2 && !/-webkit-box/.test(us.display))){
+          clipped++; if(!clippedFirst) clippedFirst=label(e)+says(e); break; } } }
     var t=rects[0], x=(Math.max(t.left,r.left)+Math.min(t.right,r.right))/2, y=(Math.max(t.top,r.top)+Math.min(t.bottom,r.bottom))/2;
     if (x<0||y<0||x>=w||y>=h) return;
     var top=document.elementFromPoint(x,y);
@@ -244,6 +251,10 @@ setTimeout(function(){
     var off=b.hasAttribute("data-off") || b.getClientRects().length===0, what="block "+(b.getAttribute("data-block")||"");
     if (off) { left.push(what); if (/^1 /.test(b.getAttribute("data-block")||"") && !b.hasAttribute("data-chosen")) out.push({k:"nomain",n:1,first:what}); }
     var cols=b.getAttribute("data-columns")||""; if (!off && cols && cols.split(" of ")[0]!==cols.split(" of ")[1]) left.push(what+": "+cols+" columns");
+    var list=b.hasAttribute("data-items") ? b : b.querySelector("[data-items]");
+    if (!off && list){ var kids=[].filter.call(list.children, function(k){ return !k.hasAttribute("data-more-cell"); }),
+      seen=kids.filter(function(k){ return k.getClientRects().length>0; }).length;
+      if (seen<kids.length) left.push(what+": "+seen+" of "+kids.length); }
   });
   [["caption","the caption"],["foot","the foot"],["badge","the badge"]].forEach(function(p){ var e=document.querySelector(".tile > ."+p[0]+", .head > ."+p[0]); if (e && e.getClientRects().length===0) left.push(p[1]); });
   if (left.length) out.push({k:"left",n:left.length,first:left.join(", ")});
@@ -473,7 +484,7 @@ def main():
         print("WARNING:", w)
     left_out = getattr(render_problems, "left_out", "")
     if left_out and not args.no_render:
-        print("LEFT OUT to fit (by design; say so if it matters):", left_out)
+        print("LEFT OUT to fit (by design; a list loses items from its end; say so if it matters):", left_out)
     if (problems or warnings) and 'name="hq-tile-kit"' in html:
         print("This tile was made by make_tile.py: fix these in its data (fewer or shorter words, another block, another order: "
               "`make_tile.py show`, then `set`), never in the page's HTML or CSS"

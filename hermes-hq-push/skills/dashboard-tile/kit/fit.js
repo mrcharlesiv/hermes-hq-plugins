@@ -120,7 +120,9 @@
     q("[data-whole]").forEach(function (e) { if (shown(e) && e.scrollWidth > e.clientWidth + 1) off(e); });
     // Room to spare: nothing had to go, so the tile is marked "roomy" (its look can then show more about each
     // thing), unless that is what makes it not fit.
-    if (!q("[data-off]").length) { tile.setAttribute("data-roomy", ""); if (misfit()) tile.removeAttribute("data-roomy"); }
+    if (!q("[data-off]").filter(function (e) { return !e.hasAttribute("data-whole"); }).length) {
+      tile.setAttribute("data-roomy", ""); if (misfit()) tile.removeAttribute("data-roomy");
+    }
     // data-clamp: words that take as many whole lines as their box has room for.
     q("[data-clamp]").forEach(function (e) {
       e.style.webkitLineClamp = "";

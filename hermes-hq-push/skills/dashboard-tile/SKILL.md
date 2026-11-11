@@ -24,9 +24,10 @@ kit's layout and colours. So whatever they dream up, the answer is a spec.
 2. **Write the spec** as `~/dashboards/<short-name>.json` (see *The spec*).
 3. **Make the tile:** `python3 ${HERMES_SKILL_DIR}/make_tile.py ~/dashboards/<short-name>.json`. It writes
    `<short-name>.html` beside the spec (keep that path for the life of the tile: the pin points at it). Fix every
-   `PROBLEM` it prints, and every `WARNING` you can. From here on **the tile holds its own data**: the `.json` was
-   only the way in (delete it, or keep it as a note). Every later change goes through `make_tile.py set`, never by
-   making the tile again from the old `.json`, which would put old numbers back.
+   `PROBLEM` it prints, and every `WARNING` you can. While you are still getting it right (steps 3 and 4), change
+   the `.json` and make it again as often as you like. Once you hand it over, **the tile holds its own data**: the
+   `.json` was only the way in (delete it, or keep it as a note), and every later change goes through
+   `make_tile.py set`, never by making the tile again from the old `.json`, which would put old numbers back.
 4. **Check it:** `python3 ${HERMES_SKILL_DIR}/check_tile.py ~/dashboards/<short-name>.html`. It draws the tile in
    every window the app uses and says what is wrong and where. `LEFT OUT` lists what each size leaves out so that
    it fits: that is by design, but make sure nothing the person asked for is missing from the sizes they will use.
@@ -136,14 +137,19 @@ A tile bigger than what it has to show stays partly empty, and that is fine: an 
 five rows. Don't pad it with things nobody asked for; a block that stretches (a chart, a picture, rings) is what
 fills a big tile, when there is one worth showing.
 
+A list that runs along a line (`strip`, `stats`, `rings`) keeps to full rows and leaves out the rest **from its
+end**, so put first what matters most: the newest result, not the oldest.
+
 **When no block draws it** (a month's calendar, a seating plan, a map of a cluster, a funnel): make that part a
 `custom` block and keep the rest of the tile (heading, headline, other blocks, foot) the kit's. Read
 `make_tile.py blocks custom` first: it says what your markup and styles can use. In short: the tile's colours
 (`var(--ink)`, `var(--tint)`, `var(--surface)` ...) and sizes in `em` (never under `1em`), so it matches every look
 and both light and dark; `height: 100%` to fill the room it is given; `@container` or `@media` queries to change
 with the tile's size, since one drawing must work from 160 pt to a whole screen. The check judges it like
-everything else, and you must look at the pictures: a drawing is where tiles go wrong. If it needs room, give it
-`"drop": 1` and follow it with a block a small tile can show instead.
+everything else, and you must look at the pictures: a drawing is where tiles go wrong. Make the drawing itself
+change with the size (fewer labels, a simpler shape in a small tile) so that it shows everywhere. Only when it
+can't be small at all, give it `"drop": 1` and follow it with a block a small tile can show instead; it then
+appears only in the big tiles.
 
 **Things that tick** (a clock, a timer): a tile is a picture except where it runs live, which is in the app's Grid
 when the tile has `"refresh"` or buttons, and when it is opened. So show what stays true (when a timer ends, not
@@ -214,8 +220,7 @@ when it next opens the Dashboard.
 words) and give it back with `set`; if a refresh script writes those keys, change the script too. `null` takes a
 key away. A picture is printed as `<a picture ... inside the tile>`: send that back as it is and the picture
 stays. Keep the path, the `name` and the `job`. `rebuild <tile>` draws it again with the newest kit after the
-add-on is updated. (While you are still making a tile, before you hand it over, making it again from its `.json`
-is fine.)
+add-on is updated.
 
 A tile that `show` refuses was written by hand before the kit. Leave it for a small change. When the person says it
 is cut off, cramped or plain, or asks for a new look, make it again as a spec at the same path (its data, its

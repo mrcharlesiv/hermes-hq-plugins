@@ -113,9 +113,11 @@
       var gap = parseFloat(getComputedStyle(box).columnGap) || 0, room = box.getBoundingClientRect().width;
       if (!room) return;
       var n = Math.max(1, Math.min(items.length, Math.floor((room + gap) / (least * em + gap))));
-      var rows = Math.max(1, Math.min(most, Math.floor(items.length / n)));
+      // Full rows, and a last row with two or more in it; never one item alone on a line.
+      var rows = Math.max(1, Math.min(most, Math.floor(items.length / n))), shown = n * rows;
+      if (rows < most && items.length - shown >= 2) shown = Math.min(items.length, shown + n);
       box.style.gridTemplateColumns = "repeat(" + n + ", minmax(0, 1fr))";
-      items.forEach(function (item, i) { item.hidden = i >= n * rows; });
+      items.forEach(function (item, i) { item.hidden = i >= shown; });
     });
   }
   var parts = {
@@ -152,20 +154,37 @@
           }
           svg += '<path d="' + p.d + '" fill="none" stroke="' + color + '" stroke-width="' + (i ? 1.8 : 2.2) + '" vector-effect="non-scaling-stroke"' +
                  ' stroke-linejoin="round" stroke-linecap="round"/>';
-          ends.push({ y: p.last / H * 100, c: i + 1 });
+          // The dot marks one point: the last (now, on a series that runs up to now), or the one the block names.
+          var at = b.mark === false ? -1 : typeof b.mark === "number" ? Math.max(0, Math.min(l.values.length - 1, Math.round(b.mark))) : l.values.length - 1;
+          if (at >= 0) ends.push({ x: at / (l.values.length - 1) * 100, y: (H - (b.zero ? 1 : 4) - (l.values[at] - lo) / ((hi - lo) || 1) * (H - 2 * (b.zero ? 1 : 4))) / H * 100, c: i + 1 });
         });
         plot.innerHTML = svg + "</svg>";
-        ends.forEach(function (e) { var dot = h("i", "dot c" + e.c); dot.style.left = "100%"; dot.style.top = e.y.toFixed(1) + "%"; plot.appendChild(dot); });
+        ends.forEach(function (e) { var dot = h("i", "dot c" + e.c); dot.style.left = e.x.toFixed(1) + "%"; dot.style.top = e.y.toFixed(1) + "%"; if (e.x > 99) dot.className += " end"; plot.appendChild(dot); });
       }
       plot.setAttribute("data-least", "34 18%");
       box.appendChild(plot);
       // What the chart runs along (days, hours): up to five of its labels, evenly spread.
-      var marks = (b.labels || []).filter(has);
-      if (marks.length > 1) {
-        var axis = h("div", "axis"), want = Math.min(b.kind === "bars" && marks.length <= 8 ? marks.length : 5, marks.length);
-        for (var k = 0; k < want; k++) axis.appendChild(h("span", null, marks[Math.round(k * (marks.length - 1) / (want - 1))]));
+      // What the chart runs along (days, hours): its labels, each under its own place (the first at the left edge,
+      // the last at the right, the rest spread between), as many as there is room for.
+      var marks = (b.labels || []).map(function (m) { return has(m) ? String(m) : ""; });
+      if (marks.filter(has).length > 1) {
+        var axis = h("div", "axis" + (b.kind === "bars" ? " under-bars" : ""));
+        marks.forEach(function (m, k) {
+          var tick = h("span", null, m), share = b.kind === "bars" ? (k + 0.5) / marks.length : k / (marks.length - 1);
+          tick.style.left = (share * 100).toFixed(2) + "%";
+          tick.className = b.kind === "bars" ? "mid" : k === 0 ? "first" : k === marks.length - 1 ? "last" : "mid";
+          axis.appendChild(tick);
+        });
         axis.setAttribute("data-drop", "8");
         box.appendChild(axis);
+        hooks.push(function () {   // thin them out evenly until they don't touch
+          var ticks = [].slice.call(axis.children), em = parseFloat(getComputedStyle(axis).fontSize) || 11, room = axis.getBoundingClientRect().width;
+          if (!room) return;
+          var widest = Math.max.apply(null, ticks.map(function (t) { t.hidden = false; return t.getBoundingClientRect().width; })) + em * 0.8;
+          var step = Math.max(1, Math.ceil(ticks.length / Math.max(2, Math.floor(room / widest))));
+          ticks.forEach(function (t, k) { t.hidden = !has(t.textContent) || (k % step !== 0 && !(b.kind !== "bars" && k === ticks.length - 1 && (ticks.length - 1) % step === 0)); });
+          if (b.kind !== "bars" && (ticks.length - 1) % step !== 0) ticks[ticks.length - 1].hidden = true;
+        });
       }
       return box;
     },
@@ -377,7 +396,8 @@
     p.e.classList.add("block");
     p.e.setAttribute("data-block", (i + 1) + " (" + p.b.type + ")");
     if (!/\b(chart|heat|picture)\b/.test(p.e.className)) p.e.setAttribute("data-fits", "");
-    p.e.setAttribute("data-drop", has(p.b.drop) ? p.b.drop : (i === 0 ? 40 : built.length - i));
+    // Buttons are what the tile is for: the last thing to go.
+    p.e.setAttribute("data-drop", has(p.b.drop) ? p.b.drop : (p.b.type === "buttons" ? 45 : i === 0 ? 40 : built.length - i));
     if (has(p.b.drop)) p.e.setAttribute("data-chosen", "");   // its turn was chosen: going early is meant
     if (items) rows.setAttribute("data-keep", has(p.b.keep) ? p.b.keep : Math.min(i === 0 && rows.hasAttribute("data-more") ? 1 : 2, items));
     // Beside or under the main block a part has the height the layout gives it: only the main one asks for a share.

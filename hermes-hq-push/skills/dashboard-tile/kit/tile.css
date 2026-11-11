@@ -76,8 +76,8 @@ body { background-image: var(--wash); }
   --gap: clamp(5px, 2.6cqmin, 11px);
   /* The page is drawn at the tile's real size: px are points on screen. 13 px in a Small tile, 16 in a Large one
      (a bigger tile shows more, as a Home Screen widget does, not the same few things larger), and up to 20 in the
-     tall ones, where there is more room than things to show. */
-  font-size: calc(clamp(13px, 2.2cqmin + 9px, 16px) + clamp(0px, (100cqh - 400px) * .02, 4px));
+     tall ones and 26 in an iPad's or a Mac's widest, where there is more room than things to show. */
+  font-size: calc(clamp(13px, 2.2cqmin + 9px, 16px) + clamp(0px, (100cqh - 400px) * .02, 4px) + clamp(0px, (100cqw - 500px) * .03, 6px));
   display: grid; grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
   grid-template-areas: "head" "headline" "caption" "main" "side" "foot";
@@ -98,8 +98,10 @@ body { background-image: var(--wash); }
 /* No main part: the side parts take the room. */
 .tile:not(:has(.main > :not([data-off]))) { grid-template-rows: auto auto auto 0 minmax(0, 1fr) auto; }
 /* Nothing but the headline: it sits in the middle with its caption, and grows to fill the tile. */
-.tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) { grid-template-rows: auto minmax(min-content, 1fr) auto minmax(0, 1fr) 0 auto; }
-.tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) .headline { align-self: end; }
+.tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) {
+  grid-template-rows: auto minmax(0, 1fr) auto auto minmax(0, 1fr) auto; grid-template-areas: "head" "." "headline" "caption" "." "foot"; }
+.tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) .headline { justify-content: center; margin-top: 0; }
+.tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) .caption { text-align: center; }
 .tile:not(:has(.main > :not([data-off]))):not(:has(.side > :not([data-off]))) .big:not(.empty):not(.wordy) { font-size: clamp(2.3em, min(36cqh, 30cqw), 14em); }
 /* Tall or square, with a main part that has a height of its own (rows, a strip, a table) and more under it: the
    main part takes what it needs, the rest follows it, and what room is left sits above the foot. */
@@ -142,9 +144,10 @@ body { background-image: var(--wash); }
     grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
     grid-template-areas: "head" "headline" "caption" "main" "side" "foot"; }
   .tile:has(.main > :not([data-off])):has(.side > :not([data-off])) {
-    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); column-gap: calc(var(--gap) * 2.5);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: calc(var(--gap) * 2.5);
     grid-template-rows: auto auto auto minmax(0, 1fr) auto;
     grid-template-areas: "head head" "headline headline" "caption caption" "main side" "foot foot"; }
+  .tile:has(.main > .stretch:not([data-off])):has(.side > :not([data-off])) { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
   .tile:not(:has(.main > :not([data-off]))):has(.side > :not([data-off])) {
     grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto 0 minmax(0, 1fr) auto;
     grid-template-areas: "head" "headline" "caption" "main" "side" "foot"; }
@@ -178,11 +181,11 @@ body { background-image: var(--wash); }
         display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .foot.failed { color: var(--bad); -webkit-line-clamp: 3; }
 @container (max-width: 10.6em) { .lead { display: none; } }   /* a narrow column: the time alone, on one line */
-@container (max-width: 20em) { .tile[data-roomy] .source { display: none; } }   /* ... and no room there for where it came from */
 /* More about each item, and where the data came from: shown when everything else already fits with room to spare
    (the fit script marks the tile "roomy"). */
 .detail, .source { display: none; }
 .tile[data-roomy] .detail { display: -webkit-box; } .tile[data-roomy] .source { display: inline; }
+@container (max-width: 20em) { .tile[data-roomy] .source { display: none; } }   /* a narrow column has no room for where it came from */
 
 /* ---- A chart: a line over its fill, several lines, or bars ---- */
 .chart { display: flex; flex-direction: column; min-height: 0; gap: .3em; }
@@ -193,12 +196,15 @@ body { background-image: var(--wash); }
 .key { display: inline-flex; align-items: center; min-width: 0; white-space: nowrap; }
 .swatch { flex: 0 0 auto; width: .6em; height: .6em; border-radius: .2em; margin-right: .4em; background: var(--c1); }
 .c2 > .swatch, .dot.c2 { background: var(--c2); } .c3 > .swatch, .dot.c3 { background: var(--c3); } .c4 > .swatch, .dot.c4 { background: var(--c4); }
-.axis { display: flex; justify-content: space-between; gap: .5em; font-size: .85em; color: var(--ink2); white-space: nowrap; }
-.plot.bars + .axis { justify-content: space-around; }
+.axis { position: relative; height: 1.25em; font-size: .85em; color: var(--ink2); white-space: nowrap; flex: 0 0 auto; }
+.axis > span { position: absolute; top: 0; transform: translateX(-50%); }
+.axis > span.first { transform: none; } .axis > span.last { transform: translateX(-100%); }
 .plot { position: relative; flex: 1 1 0; min-height: 0; border-bottom: 1px solid var(--line); }
 .plot svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
 .plot .dot { position: absolute; width: .5em; height: .5em; border-radius: 50%; background: var(--tint); transform: translate(-70%, -50%);
              box-shadow: 0 0 0 .22em color-mix(in srgb, var(--tint) 28%, transparent); }
+.plot .dot { transform: translate(-50%, -50%); } .plot .dot.end { transform: translate(-70%, -50%); }
+.plot .dot.c2 { background: var(--c2); } .plot .dot.c3 { background: var(--c3); } .plot .dot.c4 { background: var(--c4); }
 .plot .dot.c2, .plot .dot.c3, .plot .dot.c4 { width: .4em; height: .4em; box-shadow: none; }
 .plot.bars { display: flex; align-items: flex-end; gap: clamp(2px, .28em, 6px); }
 .bar { flex: 1 1 0; min-width: 0; border-radius: .3em .3em 0 0; background: color-mix(in srgb, var(--tint) 42%, transparent); }
@@ -222,11 +228,13 @@ body { background-image: var(--wash); }
                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto; }
 
 /* Status boxes: a light for the state, the name, the value under it. What is wrong is tinted. */
-.status { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5em), 1fr)); grid-auto-rows: minmax(min-content, 6.4em); gap: .4em;
-          align-content: start; }
+.status { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5em), 1fr)); grid-auto-rows: min-content; gap: .4em; align-content: start; }
+/* With the tile's room to itself (nothing after it), a list opens up a little; with more to show, it stays compact. */
+.tile:not(:has(.side > :not([data-off]))) .main > .status { grid-auto-rows: minmax(min-content, 6.4em); }
+.tile:not(:has(.side > :not([data-off]))) .main > .rows { grid-auto-rows: minmax(min-content, 4.4em); }
+.tile:not(:has(.side > :not([data-off]))) .main > .meters, .tile:not(:has(.side > :not([data-off]))) .main > .scale { grid-auto-rows: minmax(min-content, 4.6em); }
 /* A tall window (Extra Large, opened): wider boxes, with room for each one's detail. */
 @container (min-height: 480px) { .status { grid-template-columns: repeat(auto-fit, minmax(min(100%, 10.5em), 1fr)); } }
-.side .status { grid-auto-rows: min-content; }
 .status .item, .status .more { background: var(--surface); border-radius: var(--radius); padding: .4em .6em;
        display: flex; flex-direction: column; justify-content: center; }
 .status:has(.detail):not(.single) .item { justify-content: flex-start; }   /* boxes with and without a detail line up */
@@ -238,8 +246,7 @@ body { background-image: var(--wash); }
 .status .item.charted { justify-content: flex-start; padding-bottom: 0; overflow: hidden; }
 .status .item.charted > * { flex-shrink: 0; }
 .status .item.charted .spark { flex: 1 0 1.6em; max-height: 7em; width: calc(100% + 1.2em); margin: .25em -.6em 0; height: auto; }
-.status:has(.charted) { grid-auto-rows: minmax(min-content, 9em); }
-.main > .status:has(.charted) { grid-auto-rows: minmax(min-content, 1fr); align-content: stretch; }
+.tile:not(:has(.side > :not([data-off]))) .main > .status:has(.charted) { grid-auto-rows: minmax(min-content, 1fr); align-content: stretch; }
 .main > .status .item.charted .spark { max-height: none; }
 /* One box across (the fit script marks the grid "single"): a row, the value at the right. */
 .status.single .item:not(.charted) { flex-direction: row; flex-wrap: wrap; align-items: center; align-content: center; justify-content: space-between; column-gap: .6em; }
@@ -249,7 +256,6 @@ body { background-image: var(--wash); }
 /* Rows: a name and its number, ruled. One column, unless there are many and the tile is wide. */
 .rows { grid-template-columns: minmax(0, 1fr); column-gap: 2em; align-content: start; grid-auto-rows: min-content; container-type: inline-size; }
 .rows.many { grid-template-columns: repeat(auto-fit, minmax(min(100%, 14em), 1fr)); }
-.main > .rows { grid-auto-rows: minmax(min-content, 4.4em); }   /* with the room to itself, rows open up a little */
 .rows .item, .rows .more { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; column-gap: .8em;
         border-top: 1px solid var(--line); padding: .32em 0; }
 .lead-in { flex: 0 0 auto; min-width: var(--lead, 2.6em); color: var(--ink2); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -264,7 +270,6 @@ body { background-image: var(--wash); }
 /* Meters: how full, as a bar. Scale: where a value sits between good and bad. */
 .meters, .scale { grid-template-columns: minmax(0, 1fr); column-gap: 1.6em; row-gap: .6em; align-content: start; grid-auto-rows: min-content; }
 .meters.many { grid-template-columns: repeat(auto-fit, minmax(min(100%, 11em), 1fr)); }
-.main > .meters, .main > .scale { grid-auto-rows: minmax(min-content, 4.6em); }
 .meters .item, .scale .item { display: flex; flex-direction: column; justify-content: center; gap: .32em; }
 .words { display: flex; justify-content: space-between; gap: 1em; }
 .meters .name, .scale .name { color: var(--ink); }
@@ -292,7 +297,9 @@ body { background-image: var(--wash); }
 .strip .name, .strip .amount { max-width: 100%; }
 .strip .glyph { font-size: 1.45em; line-height: 1.15; white-space: nowrap; }
 .strip .amount { color: var(--ink); }
-.strip .item.good .amount { color: var(--good); } .strip .item.warn .amount { color: var(--warn); } .strip .item.bad .amount { color: var(--bad); }
+.strip .item.good .amount, .strip .item.good .glyph { color: var(--good); } .strip .item.warn .amount, .strip .item.warn .glyph { color: var(--warn); }
+.strip .item.bad .amount, .strip .item.bad .glyph { color: var(--bad); }
+.strip .glyph { font-weight: 700; }
 
 /* Rings: how far along, the number in the middle (one row). */
 .rings { grid-template-rows: minmax(0, 1fr); gap: .5em; min-height: 0; }
