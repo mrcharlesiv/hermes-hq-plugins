@@ -146,16 +146,153 @@ def test_the_command_fails_a_broken_tile(tmp_path):
     assert run.stdout.count("PROBLEM:") >= 3
 
 
-@pytest.mark.skipif(check_tile.find_chrome() is None, reason="no Chrome or Chromium here")
+def test_only_the_update_time_needs_a_zone_and_it_is_said_once():
+    """A forecast's hours ("time": "…T14:00") are the page's own business: twelve of them failed a weather tile."""
+    head = '<meta name="viewport" content="width=device-width"><style>html,body{height:100%;width:100%;overflow:hidden}</style>'
+    hours = "".join(f'{{"time": "2026-11-11T{h:02d}:00"}},' for h in range(12))
+    problems, _ = check_tile.static_problems(head + f'<script type="application/json">[{hours}{{"updated": "2026-11-11T14:00"}}]</script>')
+    assert len([p for p in problems if "time zone" in p]) == 1, problems
+    problems, _ = check_tile.static_problems(head + f'<script type="application/json">[{hours}{{"updated": "2026-11-11T14:00Z"}}]</script>')
+    assert not [p for p in problems if "time zone" in p], problems
+
+
+def test_an_update_time_that_has_not_happened_yet_is_a_problem():
+    """A bot typed the time by hand: "Updated 3:08 PM" at 3:05."""
+    head = '<meta name="viewport" content="width=device-width"><style>html,body{height:100%;width:100%;overflow:hidden}</style>'
+    problems, _ = check_tile.static_problems(head + '<script type="application/json">{"updated": "2999-01-01T00:00:00Z"}</script>')
+    assert any("hasn't happened yet" in p for p in problems), problems
+    problems, _ = check_tile.static_problems(head + '<script type="application/json">{"updated": "2026-11-03T15:30:00-05:00"}</script>')
+    assert not any("hasn't happened yet" in p for p in problems), problems
+
+
+def _tile(tmp_path, name, data=None, edit=None):
+    """The template with this data block (and an edit to the page), saved as a tile."""
+    page = (SKILL / "template.html").read_text()
+    if data is not None:
+        start = page.index('<script type="application/json" id="data">') + len('<script type="application/json" id="data">')
+        page = page[:start] + "\n" + json.dumps(data) + "\n" + page[page.index("</script>", start):]
+    if edit:
+        page = edit(page)
+    tile = tmp_path / name
+    tile.write_text(page)
+    return tile
+
+
+BOARD = {"title": "HomeLab", "badge": "● LIVE", "value": "ONLINE", "state": "good", "note": "Core path and compute verified",
+         "items_as": "cards", "updated": "2026-11-11T20:26:00Z", "error": None,
+         "items": [{"name": f"host-{n:02d}", "value": "20 cores", "state": "good"} for n in range(14)]}
+
+needs_chrome = pytest.mark.skipif(check_tile.find_chrome() is None, reason="no Chrome or Chromium here")
+
+
+def test_a_browser_named_in_the_environment_comes_first(tmp_path, monkeypatch):
+    mine = tmp_path / "my-chrome"
+    mine.write_text("#!/bin/sh\n")
+    mine.chmod(0o755)
+    monkeypatch.setenv("HQ_TILE_CHROME", str(mine))
+    assert check_tile.find_chromes()[0] == str(mine.resolve())
+    assert check_tile.find_chrome() == str(mine.resolve())
+
+
+def test_with_no_browser_the_template_is_ok_by_the_file_rules_and_says_it_was_not_drawn(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(check_tile, "find_chromes", lambda: [])
+    monkeypatch.setattr(sys, "argv", ["check_tile.py", str(_tile(tmp_path, "board.html", BOARD))])
+    assert check_tile.main() == 0
+    out = capsys.readouterr().out
+    assert "NOT DRAWN" in out and "OK by the file rules, but not drawn" in out and "PICTURES" not in out
+
+
+def test_with_no_browser_a_page_without_the_fit_script_fails(tmp_path, monkeypatch, capsys):
+    """Nothing drew it and nothing in it keeps it from being cut off: that is how a crowded board reached a phone."""
+    monkeypatch.setattr(check_tile, "find_chromes", lambda: [])
+    bare = _tile(tmp_path, "bare.html", BOARD, edit=lambda page: page[:page.index('<script id="hq-tile-fit">')] + "</body></html>")
+    monkeypatch.setattr(sys, "argv", ["check_tile.py", str(bare)])
+    assert check_tile.main() == 1
+    assert "fit script" in capsys.readouterr().out
+
+
+def test_a_browser_that_never_finishes_gives_way_to_the_next(tmp_path, monkeypatch):
+    tried = []
+
+    def one(path, chrome, shots):
+        tried.append(chrome)
+        return ([], [], "NOT DRAWN: hung") if chrome == "hung" else (["p"], ["w"], None)
+
+    monkeypatch.setattr(check_tile, "render_with", one)
+    assert check_tile.render_problems("tile.html", ["hung", "good", "spare"], None) == (["p"], ["w"], None)
+    assert tried == ["hung", "good"]
+    assert check_tile.render_problems("tile.html", ["hung"], None) == ([], [], "NOT DRAWN: hung")
+
+
+def test_findings_are_said_once_per_kind_with_their_sizes():
+    shapes = [("small", 175, 175, "light"), ("small", 175, 175, "dark"), ("medium", 362, 175, "light")]
+    found = {"0": [{"k": "past", "n": 10, "first": "div.nodes"}, {"k": "small", "n": 3, "first": "div.badge 9.1 px"}],
+             "1": [{"k": "past", "n": 10, "first": "div.nodes"}], "2": [{"k": "past", "n": 1, "first": "div.foot"}]}
+    problems, warnings = check_tile.worded(found, shapes)
+    assert len(problems) == 1 and len(warnings) == 1
+    assert "small 175×175 (10 parts, first: div.nodes); medium 362×175 (1 part)" in problems[0]
+    assert "show less" in problems[0] and "under 11 pt" in warnings[0]
+
+
+@needs_chrome
 def test_drawn_at_every_size_the_template_fits_and_a_phone_page_does_not(tmp_path):
     tile = tmp_path / "revenue.html"
     tile.write_text((SKILL / "template.html").read_text())
-    problems, note = check_tile.render_problems(str(tile), check_tile.find_chrome(), str(tmp_path / "shots"))
-    assert note is None and problems == []
+    problems, warnings, note = check_tile.render_problems(str(tile), check_tile.find_chromes(), str(tmp_path / "shots"))
+    assert note is None and problems == [] and warnings == []
     assert (tmp_path / "shots" / "tiles.png").stat().st_size > 10_000
     phone = tmp_path / "phone.html"
     phone.write_text('<meta name="viewport" content="width=device-width"><body style="margin:0">'
                      '<h1 style="font-size:40px">Revenue</h1><p>' + "Lots of words. " * 80 + "</p></body>")
-    problems, note = check_tile.render_problems(str(phone), check_tile.find_chrome(), None)
+    problems, _, note = check_tile.render_problems(str(phone), check_tile.find_chromes(), None)
     assert note is None
-    assert any(p.startswith("small (") and "scrolls" in p for p in problems), problems
+    assert any("scrolls" in p and "small 175×175" in p for p in problems), problems
+
+
+@needs_chrome
+@pytest.mark.parametrize("data", [
+    BOARD,
+    dict(BOARD, value="NO-GO", state="bad", items=[{"name": "Servers", "value": "4/4 nodes", "state": "bad"}] + BOARD["items"][:5]),
+    {"title": "Open Deals", "value": "12", "note": "Worth $84k", "updated": "2026-11-11T20:26:00Z", "error": None,
+     "items": [{"name": f"Deal number {n}", "value": f"${n * 3}k"} for n in range(1, 30)]},
+    {"title": "Calls Today", "value": "48", "updated": "2026-11-11T20:26:00Z", "error": None},
+    {"title": "Revenue", "value": None, "updated": None, "error": None},
+    {"title": "Tokens", "value": "64k", "note": "3090 tokens, 24 h", "series": [3, 1, 4, 1, 5, 9, 2, 6], "items_as": "cards",
+     "updated": "2026-11-11T20:26:00Z", "error": None,
+     "items": [{"name": "RTX 3090", "value": "Up 39°C", "state": "good"}, {"name": "RTX 2070", "value": "Up 28°C", "state": "good"}]},
+], ids=["status board", "no-go board", "long list", "one number", "no data yet", "number, chart and cards"])
+def test_the_template_fits_itself_whatever_it_is_given(tmp_path, data):
+    """Owner 2026-11-11, a tester's Tiles: status boards with their last row and their "Updated" line cut off, words
+    under the boxes, a third of the tile blank. Fourteen items in a Small tile must come out whole, as "+N more"."""
+    problems, warnings, note = check_tile.render_problems(str(_tile(tmp_path, "tile.html", data)), check_tile.find_chromes(), None)
+    assert note is None and problems == [], problems
+    assert not [w for w in warnings if "blank block" in w or "under 11 pt" in w or "too many words" in w], warnings
+
+
+@needs_chrome
+def test_a_board_squeezed_into_a_fixed_grid_is_caught(tmp_path):
+    """What the old template was bent into: nine boxes of small text in the chart's place, cut off at the tile's edge."""
+    def bend(page):
+        boxes = "".join(f'<div style="font-size:9.5px;border:1px solid gray;padding:4px"><b>node-{n}</b><br>10.10.10.{n} up</div>' for n in range(9))
+        grid = f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px">{boxes}</div>'
+        page = page.replace('<div class="chart" id="chart" data-drop="4" data-least="48"></div>', f'<div class="chart">{grid}</div>')
+        return page.replace('el("chart").innerHTML =', 'el("title").title =').replace('} else { el("chart").remove(); }', '}')
+    problems, warnings, note = check_tile.render_problems(str(_tile(tmp_path, "bent.html", edit=bend)), check_tile.find_chromes(), None)
+    assert note is None
+    assert any("cut off" in p and "small 175×175" in p for p in problems), problems
+    assert any("under 11 pt" in w for w in warnings), warnings
+
+
+@needs_chrome
+def test_a_script_that_fails_is_a_problem_not_a_blank_tile_that_passes(tmp_path):
+    broken = _tile(tmp_path, "broken.html", edit=lambda page: page.replace('text("title", d.title);', 'text("title", d.title); el("nope").textContent = 1;'))
+    problems, _, note = check_tile.render_problems(str(broken), check_tile.find_chromes(), None)
+    assert note is None and any("a script failed" in p for p in problems), problems
+
+
+@needs_chrome
+def test_words_under_a_box_are_caught(tmp_path):
+    def cover(page):
+        return page.replace('<div class="foot"', '<div style="position:absolute;left:0;top:0;width:100%;height:60%;background:#345"></div><div class="foot"')
+    problems, _, note = check_tile.render_problems(str(_tile(tmp_path, "covered.html", edit=cover)), check_tile.find_chromes(), None)
+    assert note is None and any("drawn under something else" in p for p in problems), problems

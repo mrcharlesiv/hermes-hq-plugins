@@ -256,6 +256,13 @@ made, its history) and what its bot writes with `tasks_update(page={summary, nex
 next, and parts such as options compared in a table, the numbers that matter, or what it found. The bot writes words,
 never HTML. The `task-page` skill (hermes-hq-push:task-page) tells bots what goes on it.
 
+Version 0.9.50 makes Dashboard tiles fit. A tile is a glance: the skill's template now fits itself to whatever window
+it is drawn in (parts leave in the order the bot gives, a list or a grid of status boxes shows what fits and says
+`+6 more`, the number shrinks to its width), and it has a place for a status board's boxes, not only a number and a
+chart. `check_tile.py` draws the page in the windows the app really uses (a card is 390 wide), finds scripts that fail,
+parts cut off or drawn over each other, small text, crowded and half-empty tiles, says each once with its sizes, tries
+the next browser when one won't start, and says `NOT DRAWN` plainly when there is none.
+
 Version 0.9.49 sends no alert for a reply that is only a silence marker: a bot answering another bot's message often
 ends its turn with a bare `NO_REPLY`, and the phone showed it as an alert. The add-on uses Hermes's own list (`NO_REPLY`,
 `SILENT`, `[SILENT]` and the rest), and a reply that closes with a `NO_REPLY` line alerts without that line. Version

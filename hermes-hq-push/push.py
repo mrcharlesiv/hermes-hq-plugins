@@ -482,11 +482,13 @@ def status_body(root: Path, sender) -> dict:
     (0.9.28): the names Hermes gives new chats are 2 to 4 words and at most 28 characters, one line of an iPhone
     screen (short_titles.py). `tasks` (0.9.32, added by dashboard/plugin_api.py from tasks.status): the shared
     Tasks list's routes (tasks.py); kind "task" (now in `kinds`) alerts when a bot sets a task `ready` or
-    `needs_you`, carrying only its title and never its notes, steps or made items."""
+    `needs_you`, carrying only its title and never its notes, steps or made items. `tileFit` (0.9.50): the
+    dashboard-tile skill's template fits itself to its tile and its check draws the app's real windows (a tester's
+    status boards came out cut off and crowded); the app can offer an update to a plugin without it."""
     store = Store(root / "devices.db")
     return {"ok": True, "version": 6, "plugin": NAME, "pluginVersion": PLUGIN_VERSION,
             "delivery": type(sender).__name__ if sender else None,
-            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "deviceAccessHealthTypes": True, "liveSteps": True, "liveEnds": True, "liveQuick": True, "shortTitles": True, "dashboardTile": True, "devices": len(store.devices()),
+            "kinds": list(KINDS), "seal": SEALS, "replies": "watcher", "desktopThemes": True, "tileFit": True, "restartGuard": True, "perfLogs": True, "moments": True, "outside": True, "ownChats": True, "cronWorking": True, "passwordChats": True, "replyBack": True, "input": True, "sessionWorking": True, "quietStandIns": True, "desktopOpens": True, "askCards": True, "pagePreviews": True, "warmup": True, "desktopForward": True, "gatewayLogins": True, "namedSites": True, "deviceAccess": True, "serveWorking": True, "deviceAccessKinds": True, "deviceAccessHealthTypes": True, "liveSteps": True, "liveEnds": True, "liveQuick": True, "shortTitles": True, "dashboardTile": True, "devices": len(store.devices()),
             "health": Health(store.path).summary(), "predecessor": quiet_predecessor()}
 
 
@@ -869,7 +871,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.49"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
+PLUGIN_VERSION = "0.9.50"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
 
 
 class Relay:

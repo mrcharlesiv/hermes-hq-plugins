@@ -1,6 +1,7 @@
 <!doctype html>
 <!-- Hermes HQ Dashboard tile starter (hermes-hq-push:dashboard-tile). Replace DATA and the look freely; keep the
-     sizing rules marked KEEP: they are what make the page fill any tile, from a wide strip to a tall card. -->
+     parts marked KEEP: they make the page fill any tile, from a wide strip to a tall card, and fit itself (what
+     doesn't fit goes, in the order you give, so nothing is ever cut off or drawn over something else). -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -16,93 +17,166 @@
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
   *, *::before, *::after { box-sizing: border-box; }
   body { container-type: size; }   /* cqw / cqh / cqmin below are the tile's own size */
+  [data-off] { display: none !important; }   /* a part that didn't fit (the script at the foot of the page) */
   .tile {
-    width: 100cqw; height: 100cqh;
+    width: 100cqw; height: 100cqh; overflow: hidden;
     padding: clamp(10px, 7cqmin, 28px);
-    display: grid; gap: clamp(4px, 3cqmin, 14px);
-    grid-template-rows: auto auto 1fr auto;
-    grid-template-areas: "head" "value" "chart" "foot";
+    --gap: clamp(4px, 3cqmin, 12px);
     /* The page is drawn at the tile's real size: px here are points on screen. 13 px in a Small tile (~175 pt),
-       growing to 20 px in a Large one. Every size below is in em, so it all follows. */
+       growing to 20 px in a Large one. Every size below is in em, so it all follows; nothing under .85em (11 px). */
     font-size: clamp(13px, 4.5cqmin + 5px, 20px);
+    /* One column: heading, number, note, chart (takes the room left), items, foot. */
+    display: grid; grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+    grid-template-areas: "head" "value" "note" "chart" "items" "foot";
   }
-  /* Wide tiles (Medium, wide screens): words on the left, chart on the right. */
+  .head { grid-area: head; } .value { grid-area: value; } .note { grid-area: note; }
+  .chart { grid-area: chart; } .items { grid-area: items; } .foot { grid-area: foot; }
+  .head, .value, .note, .chart, .items, .foot { min-width: 0; min-height: 0; }
+  .value, .chart, .items, .foot { margin-top: var(--gap); }
+  /* No chart: the items take the room left and stretch to fill it (never a blank half of a tile). */
+  .tile:not(:has(.chart:not([data-off]))) { grid-template-rows: auto auto auto 0 minmax(0, 1fr) auto; }
+  /* Wide (Medium, the card on Tiles): words on the left; the chart on the right, or the items when there is no chart. */
   @container (min-aspect-ratio: 8/5) {
-    .tile { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); grid-template-rows: auto auto 1fr auto;
-            grid-template-areas: "head chart" "value chart" ". chart" "foot chart"; }
+    .tile { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); column-gap: calc(var(--gap) * 2);
+            grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+            grid-template-areas: "head chart" "value chart" "note chart" "items chart" "foot chart"; }
+    .chart { margin-top: 0; }
+    .tile:not(:has(.chart:not([data-off]))) {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr); grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      grid-template-areas: "head items" "value items" "note items" ". items" "foot items"; }
+    .tile:not(:has(.chart:not([data-off]))) .items { margin-top: 0; }
   }
-  /* Tall tiles (Extra Large on a phone): room for the list. */
-  @container (max-aspect-ratio: 4/5) {
-    .tile { grid-template-rows: auto auto minmax(0, 1fr) auto auto; grid-template-areas: "head" "value" "chart" "list" "foot"; }
-    .list { display: grid !important; }
-  }
-  /* Big and wide (Extra Large on an iPad or Mac): the chart and the list side by side. */
+  /* Big and wide (Extra Large on an iPad or Mac): the chart and the items side by side under the number. */
   @container (min-width: 560px) and (min-height: 300px) {
-    .tile { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); grid-template-rows: auto auto 1fr auto;
-            grid-template-areas: "head head" "value value" "chart list" "foot foot"; }
-    .list { display: grid !important; align-content: start; }
+    .tile:has(.chart:not([data-off])):has(.items:not([data-off])) {
+      grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      column-gap: calc(var(--gap) * 2.5);
+      grid-template-areas: "head head" "value value" "note note" "chart items" "foot foot"; }
+    .tile:has(.chart:not([data-off])) .chart { margin-top: var(--gap); }
+    .tile:not(:has(.chart:not([data-off]))) {
+      grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto 0 minmax(0, 1fr) auto;
+      grid-template-areas: "head" "value" "note" "chart" "items" "foot"; }
+    .tile:not(:has(.chart:not([data-off]))) .items { margin-top: var(--gap); }
   }
-  /* Short (a card on Artifacts, ~140 pt): the number and the chart only. */
-  @container (max-height: 150px) {
-    .foot { display: none; }
-  }
-  .head, .value, .foot, .list { min-width: 0; }
-  .chart { grid-area: chart; min-height: 0; min-width: 0; }
+  /* Nothing but the number (no chart, no items, at any shape): it takes the room and grows to fill it. */
+  .tile:not(:has(.chart:not([data-off]))):not(:has(.items:not([data-off]))) {
+    grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto 0 0 auto;
+    grid-template-areas: "head" "value" "note" "chart" "items" "foot"; }
+  .tile:not(:has(.chart:not([data-off]))):not(:has(.items:not([data-off]))) .value { align-content: center; }
+  .tile:not(:has(.chart:not([data-off]))):not(:has(.items:not([data-off]))) .big:not(.empty) { font-size: clamp(2.2em, 30cqmin, 7em); }
   .chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  /* Items: rows (a name and its number) or cards (a grid of small boxes, as many across as fit). */
+  .items { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14em), 1fr)); column-gap: 2em; align-content: start; }
+  .items.cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5em), 1fr)); grid-auto-rows: minmax(min-content, 1fr);
+                 gap: .4em; align-content: stretch; }
+  .items > * { min-width: 0; }
+  /* An item's detail line and the foot's source show where there is room to read them (Extra Large, opened). */
+  .detail, .source { display: none; }
+  @container (min-height: 480px), (min-width: 560px) and (min-height: 300px) { .detail { display: block; } .source { display: inline; } }
+  /* Big and wide: rows beside the chart share the column's height, up to a comfortable height each. */
+  @container (min-width: 560px) and (min-height: 300px) { .tile .items.rows { grid-auto-rows: minmax(min-content, 3em); } }
+  /* Rows with no chart above them share the room left, up to a comfortable height each. */
+  .tile:not(:has(.chart:not([data-off]))) .items.rows { grid-auto-rows: minmax(min-content, 2.5em); }
   /* ---- end KEEP ---- */
 
   /* ---- The look: change anything below to suit the person. ---- */
   /* The app hands every page the person's theme (--card, --foreground, --muted-foreground, --accent, --border), so a
      tile matches their app; the second value is used anywhere else (the check, a browser). Pick your own colours
      only when the person asks for a look. */
-  :root { --bg: var(--card, #f6f6f3); --ink: var(--foreground, #17181a); --ink2: var(--muted-foreground, #6b6e75);
-          --tint: var(--accent, #2f6fed); --good: #1a9b55; --bad: #d64545; --line: var(--border, rgba(0,0,0,.08)); }
+  :root { --bg: var(--card, #f6f6f3); --ink: var(--foreground, #17181a); --ink2: var(--muted-foreground, #5f6269);
+          --tint: var(--accent, #2f6fed); --good: #14804a; --warn: #a15c00; --bad: #c93434; --line: var(--border, rgba(0,0,0,.1));
+          --box: rgba(0,0,0,.045); }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: var(--card, #121417); --ink: var(--foreground, #f2f3f5); --ink2: var(--muted-foreground, #9aa0a8);
-            --tint: var(--accent, #6ea0ff); --good: #3ccf7e; --bad: #ff6b6b; --line: var(--border, rgba(255,255,255,.1)); }
+    :root { --bg: var(--card, #121417); --ink: var(--foreground, #f2f3f5); --ink2: var(--muted-foreground, #a2a8b0);
+            --tint: var(--accent, #6ea0ff); --good: #3ccf7e; --warn: #f0b23e; --bad: #ff6b6b; --line: var(--border, rgba(255,255,255,.12));
+            --box: rgba(255,255,255,.07); }
   }
   body { background: var(--bg); color: var(--ink);
          font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-  .head { grid-area: head; display: flex; align-items: baseline; justify-content: space-between; gap: .5em; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: .6em; }
   .title { font-size: .85em; font-weight: 600; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .value { grid-area: value; display: flex; align-items: baseline; gap: .4em; flex-wrap: wrap; }
+  /* The badge gives way to the heading: it shows whole or not at all (data-whole). */
+  .badge { font-size: .85em; font-weight: 600; white-space: nowrap; overflow: hidden; flex: 0 9999 auto; min-width: 0; color: var(--ink2); }
+  .badge.good { color: var(--good); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); }
+  .value { display: flex; align-items: baseline; gap: .4em; flex-wrap: wrap; }
   .big { font-size: 2.2em; font-weight: 700; letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums;
-          white-space: nowrap; }
+         white-space: nowrap; }
   .big.empty { color: var(--ink2); font-size: 1.3em; font-weight: 600; }
+  .big.good, .delta.up { color: var(--good); } .big.bad, .delta.down { color: var(--bad); } .big.warn { color: var(--warn); }
   .delta { font-size: .85em; font-weight: 600; }
-  .delta.up { color: var(--good); } .delta.down { color: var(--bad); }
-  .list { grid-area: list; display: none; gap: .35em; font-size: .8em; }
-  .row { display: flex; justify-content: space-between; gap: 1em; border-top: 1px solid var(--line); padding-top: .35em; }
-  .row span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .foot { grid-area: foot; font-size: .72em; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .note { font-size: .85em; color: var(--ink2); margin-top: .25em; line-height: 1.25;
+          display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .items { font-size: .85em; }
+  .items.rows .item { display: flex; justify-content: space-between; align-items: center; gap: 1em; border-top: 1px solid var(--line); padding: .32em 0; }
+  .items.rows .name { flex: 1 1 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .items.rows .amount { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+  .items.rows .more { color: var(--ink2); border-top: 1px solid var(--line); padding: .32em 0; display: flex; align-items: center; }
+  /* A card: its value under its name. One card across (the fit script marks the grid "single"): a row, the value at the right. */
+  .items.cards .item, .items.cards .more { background: var(--box); border-radius: .55em; padding: .35em .55em;
+         display: flex; flex-direction: column; justify-content: center; border-left: 3px solid var(--line); }
+  .items.cards.single .item { flex-direction: row; flex-wrap: wrap; align-items: baseline; align-content: center;
+         justify-content: space-between; column-gap: .6em; }
+  .items.cards .name, .items.cards .amount { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .items.cards .name { color: var(--ink2); }
+  .items.cards .amount { font-size: 1.1em; font-weight: 600; }
+  .items.cards .more { color: var(--ink2); font-weight: 600; border-left-color: transparent; }
+  .item.good { border-left-color: var(--good); } .item.warn { border-left-color: var(--warn); } .item.bad { border-left-color: var(--bad); }
+  .item.bad .amount { color: var(--bad); } .item.warn .amount { color: var(--warn); }
+  .items.rows .item.good .amount { color: var(--good); }
+  .items.rows .detail, .items.cards.single .detail { flex-basis: 100%; }
+  .detail { font-size: .92em; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .items.rows .item { flex-wrap: wrap; }
+  /* Two lines at most: a narrow column still says when, and a reason why an update failed isn't cut short. */
+  .foot { font-size: .85em; color: var(--ink2); line-height: 1.25;
+          display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .foot.failed { color: var(--bad); }
-  /* Tall tiles have room for a whole reason why an update failed: two lines, not one cut short. */
-  @container (min-height: 300px) {
-    .foot { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-  }
 </style>
 </head>
 <body>
+<!-- KEEP the marks on the parts (change the numbers to suit the tile):
+     data-drop="N"   when the tile is too small for everything, parts go in this order (1 first) until the rest fits.
+                     A part with no data-drop always stays (the heading and the number).
+     data-items      a list or grid: at its turn it loses items from its end, down to data-keep, before it goes.
+                     Under data-keep items it goes altogether. (A part that went comes back when that costs a list
+                     no more than a third of its items: a foot is worth a row of boxes.)
+                     Put the items that matter most first. data-more is what stands in for the ones left out.
+     data-least="48" a part that stretches (the chart) counts as not fitting when it gets under this many px high.
+     data-whole      shown whole or not at all (a badge beside the heading).
+     data-shrink     one line that shrinks to fit its width (the number). -->
 <div class="tile">
-  <div class="head"><div class="title" id="title"></div></div>
-  <div class="value"><div class="big" id="big"></div><div class="delta" id="delta"></div></div>
-  <div class="chart" id="chart"></div>
-  <div class="list" id="list"></div>
-  <div class="foot" id="foot"></div>
+  <div class="head"><div class="title" id="title"></div><div class="badge" id="badge" data-whole></div></div>
+  <div class="value"><div class="big" id="big" data-shrink></div><div class="delta" id="delta"></div></div>
+  <div class="note" id="note" data-drop="2"></div>
+  <div class="chart" id="chart" data-drop="4" data-least="48"></div>
+  <div class="items" id="items" data-items data-drop="1" data-keep="2" data-more="+{n} more"></div>
+  <div class="foot" id="foot" data-drop="3"></div>
 </div>
 
 <!-- KEEP: the data lives in the file. Nothing is fetched: the page is pictured with no network. To keep the tile
      live, a scheduled job rewrites this block and saves the file at the same path. "updated" always carries its
      time zone ("…Z" or "+01:00"): the phone shows it in its own time. "error": a short reason when the last update
-     failed (the last good numbers stay); null when it worked. -->
+     failed (the last good numbers stay); null when it worked.
+     Leave out what the tile doesn't have: "badge", "delta", "note", "series" (the chart), "items" and "source" are
+     all optional. "state" (on the tile, the badge as "badge_state", or an item): "good", "warn", "bad" or null.
+     "items_as": "rows" or "cards". An item may carry "detail": one more short line, shown only in a big tile and
+     in the opened page. "source": a word or two after the update time, in the same big windows. -->
 <script type="application/json" id="data">
 {
-  "title": "Revenue this week",
+  "title": "Revenue",
+  "badge": null,
   "value": "$12,480",
+  "state": null,
   "delta": "+8.2%",
   "trend": "up",
+  "note": "This week, to Sunday",
   "series": [8.1, 9.4, 8.8, 10.2, 11.0, 10.6, 12.5],
-  "rows": [["Stripe", "$9,120"], ["App Store", "$2,410"], ["Other", "$950"]],
+  "items_as": "rows",
+  "items": [
+    {"name": "Stripe", "value": "$9,120"},
+    {"name": "App Store", "value": "$2,410"},
+    {"name": "Other", "value": "$950"}
+  ],
   "updated": "2026-11-03T15:30:00Z",
   "error": null
 }
@@ -110,49 +184,154 @@
 <script>
 (function () {
   var d = JSON.parse(document.getElementById("data").textContent);
-  function text(id, v) { document.getElementById(id).textContent = v == null ? "" : v; }
-  text("title", d.title); text("delta", d.delta);
+  function el(id) { return document.getElementById(id); }
+  // A part with nothing to say is taken out, so the layout closes up around the rest.
+  function text(id, v) { var e = el(id); if (v == null || v === "") { e.remove(); } else { e.textContent = v; } }
+  text("title", d.title); text("note", d.note);
+  if (d.badge) { el("badge").textContent = d.badge; el("badge").className = "badge " + (d.badge_state || ""); } else { el("badge").remove(); }
   // KEEP: never a blank tile: no number yet says so.
-  var big = document.getElementById("big");
-  if (d.value == null || d.value === "") { big.textContent = "No data yet"; big.className = "big empty"; } else { text("big", d.value); }
-  document.getElementById("delta").className = "delta " + (d.trend || "");
+  var big = el("big");
+  if (d.value == null || d.value === "") { big.textContent = "No data yet"; big.className = "big empty"; }
+  else { big.textContent = d.value; big.className = "big " + (d.state || ""); }
+  if (d.delta) { el("delta").textContent = d.delta; el("delta").className = "delta " + (d.trend || ""); } else { el("delta").remove(); }
   // A time, not "5 min ago": the tile is a picture, redrawn now and then, not every minute.
   var when = "";
   if (d.updated) {
     var t = new Date(d.updated);
     when = isNaN(t) ? d.updated : t.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
   }
-  var foot = document.getElementById("foot");
-  if (d.error) { foot.textContent = "Couldn’t update" + (when ? " · last " + when : "") + " · " + d.error; foot.className = "foot failed"; }
+  var foot = el("foot");
+  // KEEP: a failed update always says so (it has no data-drop then: the chart or the items go before it does).
+  if (d.error) { foot.textContent = "Couldn’t update" + (when ? " · last " + when : "") + " · " + d.error; foot.className = "foot failed";
+                 foot.removeAttribute("data-drop"); }
   else if (when) { foot.textContent = "Updated " + when; }
-  var list = document.getElementById("list");
-  (d.rows || []).forEach(function (r) {
-    var row = document.createElement("div"); row.className = "row";
-    row.innerHTML = "<span></span><span></span>";
-    row.firstChild.textContent = r[0]; row.lastChild.textContent = r[1];
-    list.appendChild(row);
+  else { foot.remove(); }
+  if (d.source && !d.error && when) { var from = document.createElement("span"); from.className = "source"; from.textContent = " · " + d.source; foot.appendChild(from); }
+  // Items: what's wrong comes first, so it is what stays when only a few fit.
+  var items = el("items"), rank = { bad: 0, warn: 1 };
+  var list = (d.items || []).map(function (it, i) { return { it: it, i: i }; }).sort(function (a, b) {
+    var x = rank[a.it.state], y = rank[b.it.state];
+    return (x == null ? 2 : x) - (y == null ? 2 : y) || a.i - b.i;
   });
+  if (!list.length) { items.remove(); }
+  else {
+    items.className = "items " + (d.items_as === "cards" ? "cards" : "rows");
+    list.forEach(function (entry) {
+      var row = document.createElement("div"); row.className = "item " + (entry.it.state || "");
+      row.innerHTML = '<span class="name"></span><span class="amount"></span>';
+      row.firstChild.textContent = entry.it.name; row.lastChild.textContent = entry.it.value;
+      if (entry.it.detail) { var more = document.createElement("span"); more.className = "detail"; more.textContent = entry.it.detail; row.appendChild(more); }
+      items.appendChild(row);
+    });
+  }
   // KEEP: a chart drawn in a viewBox stretches to whatever box the layout gives it (no fixed pixel size).
   var s = d.series || [];
   if (s.length > 1) {
     var lo = Math.min.apply(null, s), hi = Math.max.apply(null, s), span = hi - lo || 1, W = 100, H = 40;
     var pts = s.map(function (v, i) { return [i * W / (s.length - 1), H - 3 - (v - lo) / span * (H - 6)]; });
     var line = pts.map(function (p, i) { return (i ? "L" : "M") + p[0].toFixed(2) + " " + p[1].toFixed(2); }).join(" ");
-    document.getElementById("chart").innerHTML =
+    el("chart").innerHTML =
       '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true">' +
       '<path d="' + line + ' L' + W + ' ' + H + ' L0 ' + H + ' Z" fill="var(--tint)" opacity=".14"/>' +
       '<path d="' + line + '" fill="none" stroke="var(--tint)" stroke-width="2.2" vector-effect="non-scaling-stroke"' +
       ' stroke-linejoin="round" stroke-linecap="round"/></svg>';
-  }
-  // KEEP: a number too wide for its tile shrinks to fit ("$1,234,567" in a Small tile), never cut or wrapped.
-  function fit(el) {
-    el.style.fontSize = "";
-    for (var size = parseFloat(getComputedStyle(el).fontSize), i = 0; i < 30 && el.scrollWidth > el.parentNode.clientWidth && size > 12; i++) {
-      size -= 1; el.style.fontSize = size + "px";
+  } else { el("chart").remove(); }
+})();
+</script>
+<!-- KEEP this whole script, unchanged, as the last thing in the page (hq-tile-fit). It makes the tile fit itself at
+     every size: parts marked data-drop go in order until the rest fits, lists lose items from their end ("+3 more"),
+     and the number shrinks to its width. Without it, whatever doesn't fit is cut off at the tile's edge. -->
+<script id="hq-tile-fit">
+(function () {
+  function fitTile() {
+    var tile = document.querySelector(".tile"); if (!tile) return;
+    function q(sel) { return [].slice.call(tile.querySelectorAll(sel)); }
+    function off(e) { e.setAttribute("data-off", ""); }
+    function on(e) { e.removeAttribute("data-off"); }
+    function shown(e) { return e.getClientRects().length > 0; }
+    function kids(c) { return [].slice.call(c.children).filter(function (k) { return !k.hasAttribute("data-more-cell"); }); }
+    // "+3 more" at the end of a list that lost items (its data-more, with {n} the number left out).
+    function more(c) {
+      var n = kids(c).filter(function (k) { return k.hasAttribute("data-off"); }).length, m = null, words = c.getAttribute("data-more");
+      [].slice.call(c.children).forEach(function (k) { if (k.hasAttribute("data-more-cell")) m = k; });
+      if (!n || !words) { if (m) m.remove(); return; }
+      if (!m) { m = document.createElement("div"); m.setAttribute("data-more-cell", ""); m.className = "more"; c.appendChild(m); }
+      m.textContent = words.replace("{n}", n);
     }
+    // Too much for the tile: something reaches under the tile's padding, a list's items run out of its box, or a
+    // part that stretches has been squeezed under its data-least.
+    function misfit() {
+      // A grid one item across is marked "single" (its look can then lay each item out as a row).
+      q("[data-items]").forEach(function (c) {
+        var across = getComputedStyle(c).gridTemplateColumns.split(" ").filter(function (t) { return parseFloat(t) > 0.5; }).length;
+        c.classList.toggle("single", across === 1);
+      });
+      var floor = tile.getBoundingClientRect().bottom - parseFloat(getComputedStyle(tile).paddingBottom) + 1, all = q("*"), i, r;
+      for (i = 0; i < all.length; i++) {
+        r = all[i].getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && r.bottom > floor) return true;
+      }
+      var lists = q("[data-items]"), least = q("[data-least]"), box, ks, k;
+      for (i = 0; i < lists.length; i++) {
+        if (!shown(lists[i])) continue;
+        box = lists[i].getBoundingClientRect().bottom + 1; ks = lists[i].children;
+        for (k = 0; k < ks.length; k++) if (shown(ks[k]) && ks[k].getBoundingClientRect().bottom > box) return true;
+      }
+      for (i = 0; i < least.length; i++) {
+        if (shown(least[i]) && least[i].getBoundingClientRect().height < +least[i].getAttribute("data-least")) return true;
+      }
+      return false;
+    }
+    // A list showing its first `count` items.
+    function show(c, count) { kids(c).forEach(function (k, i) { if (i < count) on(k); else off(k); }); more(c); }
+    // The most of a list's items that fit, `from` at the least: false when even those don't (a long list is
+    // halved, not walked: the tile is pictured 0.7 s after it loads).
+    function most(c, from) {
+      var hi = kids(c).length, lo = Math.min(from, hi), mid;
+      show(c, hi); if (!misfit()) return true;
+      show(c, lo); if (misfit()) return false;
+      while (hi - lo > 1) { mid = (lo + hi) >> 1; show(c, mid); if (misfit()) hi = mid; else lo = mid; }
+      show(c, lo); return true;
+    }
+    function shrink(e) {
+      e.style.fontSize = "";
+      for (var size = parseFloat(getComputedStyle(e).fontSize); size > 12 && e.scrollWidth > e.parentNode.clientWidth; ) {
+        size -= 1; e.style.fontSize = size + "px";
+      }
+    }
+    // Start again from everything showing (the tile changed size).
+    q("[data-off]").forEach(on);
+    q("[data-items]").forEach(more);
+    q("[data-shrink]").forEach(shrink);
+    q("[data-whole]").forEach(function (e) { if (e.scrollWidth > e.clientWidth + 1) off(e); });
+    // Parts go in their order until the rest fits; a list loses items first, down to its data-keep.
+    var parts = q("[data-drop]").sort(function (a, b) { return a.getAttribute("data-drop") - b.getAttribute("data-drop"); });
+    var gone = [], p;
+    for (p = 0; p < parts.length && misfit(); p++) {
+      if (!shown(parts[p])) continue;
+      if (parts[p].hasAttribute("data-items") && most(parts[p], keep(parts[p]))) break;
+      off(parts[p]); gone.push(parts[p]);
+    }
+    // What went comes back, the most wanted first, when it fits after all: as it is, or with a list giving up
+    // items for it (a third of what it shows at the most, and never under its data-keep: a foot is worth a row of
+    // boxes, not most of them).
+    function keep(c) { return Math.max(0, +c.getAttribute("data-keep") || 0); }
+    function count(c) { return kids(c).filter(function (k) { return !k.hasAttribute("data-off"); }).length; }
+    var lists = q("[data-items]").filter(shown), least = lists.map(function (c) { return Math.max(keep(c), Math.ceil(count(c) * 2 / 3)); });
+    for (p = gone.length - 1; p >= 0; p--) {
+      on(gone[p]);
+      if (gone[p].hasAttribute("data-items") ? most(gone[p], keep(gone[p])) : !misfit()) continue;
+      var made = lists.some(function (c, i) { return c !== gone[p] && shown(c) && most(c, least[i]); });
+      if (!made) off(gone[p]);
+    }
+    q("[data-items]").forEach(function (c) { if (shown(c)) most(c, count(c)); });
+    q("[data-shrink]").forEach(shrink);
+    q("[data-whole]").forEach(function (e) { if (shown(e) && e.scrollWidth > e.clientWidth + 1) off(e); });
   }
-  fit(big);
-  addEventListener("resize", function () { fit(big); });
+  window.hqTileFit = fitTile;   // call it again after changing what the tile shows (tabs, a button)
+  fitTile();
+  addEventListener("resize", fitTile);
+  addEventListener("load", fitTile);
 })();
 </script>
 </body>
