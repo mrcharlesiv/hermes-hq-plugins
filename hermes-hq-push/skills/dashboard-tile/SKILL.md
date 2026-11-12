@@ -37,8 +37,13 @@ kit's layout and colours. So whatever they dream up, the answer is a spec.
    must be fixed; a `WARNING` is yours to fix where you can, and doesn't stop the hand-over. `NOT DRAWN` means there was no browser to draw it with: install one
    (`npx playwright install chromium`, or `apt install chromium`) or point `HQ_TILE_CHROME` at one; if you can't,
    say the tile wasn't checked by eye.
-5. **Keep it live** with a scheduled job (see *Keeping it live*), and give the tile the job's id:
-   `echo '{"job": "<job id>"}' | python3 ${HERMES_SKILL_DIR}/make_tile.py set <tile.html>`.
+5. **Keep it live** with a scheduled job (see *Keeping it live*), and give the tile the job's id (the job's id goes in as the tile's `job` setting; a heredoc keeps it off the command line):
+
+   ```
+   python3 ${HERMES_SKILL_DIR}/make_tile.py set <tile.html> <<'JSON'
+   {"job": "<job id>"}
+   JSON
+   ```
 6. **Hand it over** with the page alone on its own line, so the app shows it as a card the person can pin:
 
    ```
