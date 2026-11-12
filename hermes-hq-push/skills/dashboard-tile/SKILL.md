@@ -38,7 +38,7 @@ kit's layout and colours. So whatever they dream up, the answer is a spec.
    (`npx playwright install chromium`, or `apt install chromium`) or point `HQ_TILE_CHROME` at one; if you can't,
    say the tile wasn't checked by eye.
 5. **Keep it live** with a scheduled job (see *Keeping it live*), and give the tile the job's id:
-   `echo '{"job": "<job id>"}' | python3 ${HERMES_SKILL_DIR}/make_tile.py set <tile.html>`.
+   `python3 ${HERMES_SKILL_DIR}/make_tile.py set <tile.html> '{"job": "<job id>"}'`.
 6. **Hand it over** with the page alone on its own line, so the app shows it as a card the person can pin:
 
    ```

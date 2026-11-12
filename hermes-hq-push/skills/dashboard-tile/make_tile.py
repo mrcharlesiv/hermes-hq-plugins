@@ -5,8 +5,9 @@ You give the data (a small JSON file, the "spec"); the kit beside this script dr
 for every tile size, in the look the spec names. You never write the page.
 
     python3 make_tile.py spec.json [-o tile.html]     make the tile (default: the spec's name with .html, beside it)
-    python3 make_tile.py set tile.html [patch.json]   new data for a tile already made (the patch, or stdin): each key
-                                                      given replaces the tile's ("blocks" whole; null takes a key
+    python3 make_tile.py set tile.html [patch.json]   new data for a tile already made (a patch file, the patch itself
+                                                      as '{"key": ...}', or stdin): each key given replaces
+                                                      the tile's ("blocks" whole; null takes a key
                                                       away); "updated" becomes now and "error" clears. A patch that
                                                       is wrong changes nothing
     python3 make_tile.py fail tile.html "reason"      the update failed: the last good data stays, the tile says why
@@ -604,7 +605,10 @@ def main(argv):
         if command == "fail":
             spec["error"] = " ".join(args[1:]).strip() or "The update failed"
         elif command == "set":
-            raw = open(os.path.expanduser(args[1]), encoding="utf-8").read() if len(args) > 1 else sys.stdin.read()
+            if len(args) > 1 and args[1].lstrip().startswith("{"):   # the patch itself, for a small change
+                raw = args[1]
+            else:
+                raw = open(os.path.expanduser(args[1]), encoding="utf-8").read() if len(args) > 1 else sys.stdin.read()
             patch = json.loads(raw)
             if not isinstance(patch, dict):
                 print("PROBLEM: the patch is a JSON object of the keys to replace")

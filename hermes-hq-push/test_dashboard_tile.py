@@ -708,3 +708,18 @@ def test_a_charts_labels_sit_under_their_points_and_its_marks_wear_their_lines_c
         name, place = label.split(":")
         assert abs(float(place) - days.index(name)) < 0.15, labels
     assert len(set(dots.split(";"))) == 2, dots
+
+
+def test_a_small_change_is_given_on_the_command_line(tmp_path):
+    tile = _made(tmp_path, _spec())
+    assert make_tile.main(["set", str(tile), '{"job": "abc123"}']) == 0
+    assert make_tile.read_spec(str(tile))["job"] == "abc123"
+
+
+def test_hermes_lets_the_add_on_install():
+    """`hermes plugins install/update` scans the whole folder and refuses a "dangerous" one outright (--force does
+    not help). One example line in a skill is enough: 0.9.50 to 0.9.52 could not be installed for that reason."""
+    plugin_guard = pytest.importorskip("tools.plugin_guard")
+    result = plugin_guard.scan_plugin(HERE)
+    worst = [f"{f.pattern_id} {f.file}:{f.line} {f.match}" for f in result.findings if f.severity == "critical"]
+    assert not worst and result.verdict != "dangerous", worst
