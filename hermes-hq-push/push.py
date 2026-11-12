@@ -871,7 +871,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.50"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
+PLUGIN_VERSION = "0.9.51"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
 
 
 class Relay:
@@ -1140,6 +1140,140 @@ def silent_reply(content) -> bool:
     return bool(_SILENT_STAND_IN.search(text))
 
 
+# A reply written to another bot, not to the owner: Hermes hands it back to the bot that wrote, and the app folds it
+# into the "From Otto" line (UpdateGroups.Rows.writesToBot), so an alert for it opens a chat with nothing new in it
+# (owner, 2026-11-11: "a notification … from a message that a bot sent to my inbox bot. … there was no message there
+# for me"). The app's rule, from the same rows: the turn began with another bot's message ("Message from 🤖 otto
+# (@otto): …"), and either that bot wrote first (this bot hadn't messaged it since the owner's last message or a
+# scheduled job's report) or the reply opens by speaking to it by name ("Thanks, Otto. …"). A reply to a bot's answer
+# to what this bot asked it still alerts unless it names that bot: it is the news that bot brought the owner.
+_DELIVERY = re.compile(r"(?:Message from (?:🤖\s*)?([^:\n(]{1,64}?)(?:\s*\(@([a-z0-9][a-z0-9_-]{0,63})"
+                       r"(?:@[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?\))?:\s*|\[Message from agent '([^']{1,64})'\]\s*)")
+_PEER_TARGET = re.compile(r"\bpeer\s+dm\s+'?([^\s']+)")
+_PROFILE_FLAG = re.compile(r"/hermes\s+-p\s+'?([^\s']+)'?\s*$")
+_GREETINGS = ("hi|hey|hello|thanks|thank you|understood|got it|noted|ok|okay|confirmed|acknowledged|agreed|received|"
+              "copy that|roger")
+BOT_TALK_REACH = 80  # messages looked back for "this bot asked that bot first"
+
+
+def _bot_handle(name: str) -> str:
+    handle = str(name or "").rsplit("/", 1)[-1].strip("@ ").lower()
+    return "hermes" if handle == "default" else handle  # the default bot is written to as "hermes"
+
+
+def delivery_from(text) -> tuple[str, ...]:
+    """The names of the bot whose message this is (its name and its handle), or () when it isn't a bot's message."""
+    match = _DELIVERY.match(str(text or ""))
+    if not match:
+        return ()
+    name = (match.group(1) or match.group(3) or "").strip()
+    return tuple(dict.fromkeys(n for n in (name, match.group(2) or match.group(3) or name) if n))
+
+
+def runner_target(text) -> str:
+    """The bot a finished `message_agent` runner wrote to (the note that carries that bot's answer), or ""."""
+    text = str(text or "")
+    if not (text.startswith("[IMPORTANT:") and "bot_mode_dm.py" in text and "--run-delivery" in text):
+        return ""
+    command = next((line for line in text.split("\n") if line.startswith("Command:")), "")
+    found = _PEER_TARGET.search(command) or _PROFILE_FLAG.search(command)
+    return found.group(1) if found else ""
+
+
+def speaks_to(names: Iterable[str], text) -> bool:
+    """The app's BotDMs.speaksTo: the first sentence addresses one of these bots ("Thanks, Otto.", "@otto: done",
+    "Otto, your diagnosis…"); "Otto found the cause" is about the bot, not to it."""
+    opening = str(text or "").lstrip().lstrip("*_#>` \t\n")[:160].split("\n", 1)[0]
+    opening = re.split(r"[.!?](?:\s|$)", opening, maxsplit=1)[0]
+    opening = re.sub(r"[*_`]", "", opening)
+    for name in {str(n).strip("@ ").lower() for n in names}:
+        if len(name) < 2:
+            continue
+        bot = r"@?" + re.escape(name) + r"(?![\w-])"
+        closes = r"\s*(?:[,:—–]|-\s|$)"
+        patterns = (r"^" + bot + closes, r"^@" + re.escape(name) + r"(?![\w-])", r",\s*" + bot + closes,
+                    r"^(?:" + _GREETINGS + r")[,\s]+" + bot + closes)
+        if any(re.search(pattern, opening, re.IGNORECASE) for pattern in patterns):
+            return True
+    return False
+
+
+def _messaged(tool_calls, handles: set[str]) -> bool:
+    """One of these `message_agent` calls went to that bot."""
+    if not tool_calls or "message_agent" not in tool_calls:
+        return False
+    try:
+        calls = json.loads(tool_calls)
+    except ValueError:
+        return False
+    for call in calls if isinstance(calls, list) else []:
+        function = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(function, dict) or function.get("name") != "message_agent":
+            continue
+        try:
+            arguments = function.get("arguments")
+            arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+        except ValueError:
+            continue
+        if isinstance(arguments, dict) and _bot_handle(arguments.get("target", "")) in handles:
+            return True
+    return False
+
+
+def admitted_author(db: sqlite3.Connection, session: str, text) -> tuple[str, ...]:
+    """The bot Hermes recorded as the author of this queued turn, for a request that came without the "Message from"
+    label (a bot's scheduled job running the delivery itself): the app can't tell those from a background note, the
+    gateway's own record can. () on a Hermes without that table."""
+    try:
+        rows = db.execute("SELECT payload_json FROM session_admissions WHERE target_session_id = ?"
+                          " ORDER BY seq DESC LIMIT 12", (session,)).fetchall()
+    except sqlite3.Error:
+        return ()
+    for (payload,) in rows:
+        try:
+            body = json.loads(payload)
+            author = body["local_automation_v1"]["turn_author"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if body.get("text") == text and isinstance(author, dict) and author.get("is_bot"):
+            names = (str(author.get("name") or ""), str(author.get("id") or "").removeprefix("bot:"))
+            return tuple(dict.fromkeys(n for n in names if n))
+    return ()
+
+
+def written_to_bot(db: sqlite3.Connection, session: str, reply_id: int, content) -> bool:
+    """See the note above `_DELIVERY`. Any doubt (no prompt found, a database it can't read) alerts as before."""
+    try:
+        prompt = db.execute("SELECT id, content FROM messages WHERE session_id = ? AND id < ? AND role = 'user'"
+                            " ORDER BY id DESC LIMIT 1", (session, reply_id)).fetchone()
+        if not prompt:
+            return False
+        answered = runner_target(prompt[1])
+        if answered:  # that bot's answer to this bot's own question
+            return speaks_to((answered, _bot_handle(answered)), content)
+        names = delivery_from(prompt[1]) or admitted_author(db, session, prompt[1])
+        if not names:
+            return False
+        if speaks_to(names, content):
+            return True
+        handles = {_bot_handle(name) for name in names}
+        earlier = db.execute("SELECT role, content, tool_calls FROM messages WHERE session_id = ? AND id < ?"
+                             " AND role IN ('user', 'assistant') ORDER BY id DESC LIMIT ?",
+                             (session, prompt[0], BOT_TALK_REACH))
+        for role, text, tool_calls in earlier:
+            if role == "assistant":
+                if _messaged(tool_calls, handles):
+                    return False  # this bot asked first: the reply is the news it brought back
+                continue
+            text = str(text or "")
+            if text.startswith("[Cronjob ") or not (text.startswith("[") or delivery_from(text)
+                                                     or admitted_author(db, session, text)):
+                break  # a scheduled job's report, or the owner's own message: the talk before it was about something else
+        return True
+    except (sqlite3.Error, TypeError):
+        return False
+
+
 class ReplyWatcher:
     """Reply alerts for every bot from one place. A hook runs only in processes whose profile loaded this plugin, and
     Hermes loads plugins per profile, so a bot's scheduled job (a `hermes chat -Q` child in its own profile posting
@@ -1206,6 +1340,8 @@ class ReplyWatcher:
                                 (*passes, len(ROOM_TITLE_PREFIX), ROOM_TITLE_PREFIX))}
                         except sqlite3.Error:
                             rooms = set()
+                    to_bots = {row_id for row_id, session, content, _ in rows
+                               if not silent_reply(content) and written_to_bot(db, session, row_id, content)}
             except sqlite3.Error:
                 continue  # busy, or not a Hermes database yet: next pass
             for row_id, *_ in rows:
@@ -1227,9 +1363,11 @@ class ReplyWatcher:
                     except Exception:
                         log.debug(f"{NAME} live end skipped", exc_info=True)
             last: dict[str, tuple[str, str]] = {}
-            for _, session, content, source in sorted(rows):
+            for row_id, session, content, source in sorted(rows):
                 if silent_reply(content) or (session in rooms and room_pass(content)):
                     continue
+                if row_id in to_bots:
+                    continue  # for another bot: nothing new for the owner (a reply to them in the same burst alerts)
                 last[session] = (without_closing_marker(str(content)), source)  # a burst of turns: its last reply
             for session, (content, source) in last.items():
                 self.submit(Push("turnDone", session=session, profile=profile, sender=self.sender(profile),

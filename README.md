@@ -266,6 +266,11 @@ really uses (a card is 390 wide) and finds scripts that fail, parts cut off or d
 crowded and half-empty tiles; it tries the next browser when one won't start and says `NOT DRAWN` plainly when there
 is none. `custom.html` is the hand-written page for what the kit can't draw.
 
+Version 0.9.51 stops the alert for a reply a bot writes to another bot. When another bot's message starts the turn ("Message from 🤖 otto (@otto): …", or a queued turn Hermes recorded a bot as the author of) and that bot wrote
+first, the answer goes back to that bot and the app folds it into that bot's line, so the alert opened a chat with
+nothing new in it. A reply that opens by speaking to the other bot by name ("Thanks, Otto. …") is quiet too. A
+reply after a bot answers what this bot asked it still alerts: that is the news for you.
+
 Version 0.9.49 sends no alert for a reply that is only a silence marker: a bot answering another bot's message often
 ends its turn with a bare `NO_REPLY`, and the phone showed it as an alert. The add-on uses Hermes's own list (`NO_REPLY`,
 `SILENT`, `[SILENT]` and the rest), and a reply that closes with a `NO_REPLY` line alerts without that line. Version
