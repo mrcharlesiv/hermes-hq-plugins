@@ -61,6 +61,13 @@ else:
     sys.modules["hermes_hq_device_access"] = device_access
     _access_spec.loader.exec_module(device_access)
 
+if "hermes_hq_plugin_updates" in sys.modules:
+    plugin_updates = sys.modules["hermes_hq_plugin_updates"]
+else:
+    _updates_spec = importlib.util.spec_from_file_location("hermes_hq_plugin_updates", Path(__file__).parents[1] / "plugin_updates.py")
+    plugin_updates = importlib.util.module_from_spec(_updates_spec)
+    sys.modules["hermes_hq_plugin_updates"] = plugin_updates
+    _updates_spec.loader.exec_module(plugin_updates)
 if "hermes_hq_drafts" in sys.modules:
     drafts = sys.modules["hermes_hq_drafts"]
 else:
@@ -188,7 +195,33 @@ class ApprovalIn(BaseModel):
 def status():
     """The app probes this to offer push; a 404 means the plugin isn't installed or enabled."""
     return {**push.status_body(push.data_dir(), push.sender_from_env()), **terminal.status(push.data_dir()),
-            **tasks.status(), **drafts.status(push.data_dir())}
+            **tasks.status(), **drafts.status(push.data_dir()), **plugin_updates.status()}
+
+
+class PluginUpdateIn(BaseModel):
+    profile: str = Field(default="default", max_length=64)
+    name: str = Field(max_length=64)
+    accept_capabilities: bool = False
+    force: bool = False
+
+
+@router.post("/plugins/update")
+def start_plugin_update(body: PluginUpdateIn):
+    """0.9.52 (`pluginUpdates` in status): the owner approved, in the app, an update Hermes only applies from a terminal
+    (it adds Python packages). Hermes's own `hermes plugins update` runs on this computer and that one question is
+    answered yes (plugin_updates.py). Answers a job id at once; GET /plugins/update/<job> says how it went."""
+    try:
+        return plugin_updates.start(body.profile, body.name, accept_capabilities=body.accept_capabilities, force=body.force)
+    except plugin_updates.UpdateError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.get("/plugins/update/{job}")
+def plugin_update_job(job: str):
+    try:
+        return plugin_updates.job(job)
+    except plugin_updates.UpdateError as error:
+        raise HTTPException(error.status_code, error.detail) from None
 
 
 @router.put("/drafts/cards")

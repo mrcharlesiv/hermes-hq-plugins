@@ -266,6 +266,8 @@ really uses (a card is 390 wide) and finds scripts that fail, parts cut off or d
 crowded and half-empty tiles; it tries the next browser when one won't start and says `NOT DRAWN` plainly when there
 is none. `custom.html` is the hand-written page for what the kit can't draw.
 
+Version 0.9.52 lets the app finish a plugin update that adds Python packages. Hermes refuses such an update from an app ("run `hermes plugins update <name>` in a terminal to review them"). The app now shows you the packages and asks; when you say yes, `POST /plugins/update` runs Hermes's own `hermes [-p <profile>] plugins update <name>` on this computer, on a terminal of its own, and answers that one question yes. A plugin that got wider is accepted only if you accepted it in the app; any other question is answered no. `GET /plugins/update/<job>` says how it went. Mac and Linux only (`pluginUpdates` in the status says whether this computer can).
+
 Version 0.9.51 stops the alert for a reply a bot writes to another bot. When another bot's message starts the turn ("Message from 🤖 otto (@otto): …", or a queued turn Hermes recorded a bot as the author of) and that bot wrote
 first, the answer goes back to that bot and the app folds it into that bot's line, so the alert opened a chat with
 nothing new in it. A reply that opens by speaking to the other bot by name ("Thanks, Otto. …") is quiet too. A
