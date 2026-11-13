@@ -71,12 +71,26 @@ _UNSET = object()  # tasks_update left `due` out (None clears it)
 # The list answer's shape: raise it when the answer gains a field. An app polling `?since=<rev>` hears "unchanged" until
 # the rev moves, so it would keep an answer from before the field (0.9.40: after an update to 0.9.39 the app never saw
 # `ideas` and kept asking for the update). A new shape moves the rev once, and every app reads the whole list again.
-LIST_SHAPE = "4"   # 2: `ideas` (0.9.39). 3: each task's `page` (0.9.43). 4: `next_check`, `choices` (0.9.47)
+LIST_SHAPE = "5"   # 2: `ideas` (0.9.39). 3: each task's `page` (0.9.43). 4: `next_check`, `choices` (0.9.47).
+                   # 5: `priority`, `tags`, `alert`, `starts` (0.9.53)
 # 0.9.47, owner 2026-11-09 ("no friction, it just works"): the bot's own next look at a task (a real run, not a
 # promise in a sentence), and up to 3 one-tap answers when it asks the person something.
 CHOICES_CAP = 3
 CHOICE_MAX = 40
+# 0.9.53, owner 2026-11-12 ("every task is pure task management first, agent stuff second … complex enough to handle
+# any task or use case"): what a task manager's task has. A priority (0 none, 1 high, 2 medium, 3 low), tags, an alert
+# some minutes before it's due, a start day (it joins the person's day then), and their own files and links beside what
+# a bot made. A task they share with a bot can repeat now, as their own always could.
+PRIORITIES = (0, 1, 2, 3)
+PRIORITY_WORDS = {1: "high", 2: "medium", 3: "low"}
+TAGS_CAP = 10
+TAG_MAX = 30
+ALERT_MAX = 7 * 24 * 60      # minutes before it's due: at most a week
+FILE_MAX = 10 * 1024 * 1024  # one attached file
+FILE_NAME_MAX = 120
 IDEAS_FRESH_DAYS = 7   # 0.9.39: an idea nobody adds or dismisses fades from the Ideas page after a week
+OWN_FRESH_DAYS = 14   # 0.9.53: a bot's own task nobody touched for this long isn't started by itself
+OWN_AGAIN_HOURS = 20  # ...and one a run left "working" waits this long for its next run
 START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hours is stale (Hermes was down)
 
 # "enabled" (0.9.35, owner 2026-11-04: "a way for users to be able to turn off the tasks feature entirely"): False
@@ -93,13 +107,13 @@ DEFAULT_SETTINGS = {"enabled": True, "capture": "ask", "prep_per_day": 6, "quiet
 IDEAS_MAX = 5
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 GROUPS = ("smart", "sections")
-SORTS = ("smart", "due", "added")
+SORTS = ("smart", "due", "added", "priority")   # "priority": 0.9.53
 SECTIONS_CAP = 50
 SECTION_NAME_MAX = 60
 
 COLUMNS = ("id", "rev", "title", "notes", "who", "bot", "status", "status_note", "due", "repeat", "prep",
            "steps", "made", "source", "created_at", "updated_at", "done_at", "created_by", "log", "section", "position",
-           "watch", "chat", "page_at", "next_check", "choices")
+           "watch", "chat", "page_at", "next_check", "choices", "priority", "tags", "alert", "starts")
 
 
 class TaskError(ValueError):
@@ -192,8 +206,69 @@ def _clean_made(value) -> list[dict]:
         ref = _lines(item.get("ref"), 2000) if kind == "note" else _text(item.get("ref"), 2000)
         if not title and not ref:
             continue
-        out.append({"id": _text(item.get("id"), 64) or new_id(), "title": title, "kind": kind, "ref": ref})
+        entry = {"id": _text(item.get("id"), 64) or new_id(), "title": title, "kind": kind, "ref": ref}
+        if _text(item.get("by"), 64):   # 0.9.53: who attached it ("you", or a bot); none from an older entry: its bot
+            entry["by"] = _text(item.get("by"), 64)
+        out.append(entry)
     return out
+
+
+def _clean_priority(value) -> int:
+    """0 none, 1 high, 2 medium, 3 low; the words too ("high"), as a bot may say them."""
+    if isinstance(value, str):
+        value = {v: k for k, v in PRIORITY_WORDS.items()}.get(value.strip().lower(), value)
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if number in PRIORITIES else 0
+
+
+def _clean_tags(value) -> list[str]:
+    """Up to ``TAGS_CAP`` short tags, as written (a leading # dropped), each once whatever its capitals."""
+    if isinstance(value, str):
+        value = [part for part in re.split(r"[,\n]", value)]
+    if not isinstance(value, list):
+        return []
+    out, seen = [], set()
+    for item in value:
+        text = _text(item, TAG_MAX + 1).lstrip("#").strip()[:TAG_MAX]
+        if text and text.casefold() not in seen:
+            seen.add(text.casefold())
+            out.append(text)
+    return out[:TAGS_CAP]
+
+
+def _clean_alert(value) -> int | None:
+    """Minutes before it's due that the phone rings (0: at that time); ``None``: no alert of its own."""
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return None
+    return min(max(minutes, 0), ALERT_MAX)
+
+
+def _clean_start(value) -> str | None:
+    """A start day, "2026-11-20" (a time on it is dropped); ``None`` for anything else."""
+    text = _text(value, DUE_MAX)
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})", text or "")
+    if not match:
+        return None
+    try:
+        date.fromisoformat(match.group(1))
+    except ValueError:
+        return None
+    return match.group(1)
+
+
+def _safe_file_name(name) -> str:
+    """A file's own name, safe to keep in a folder: its last part only (no path), no control characters, never
+    empty or all dots."""
+    last = re.split(r"[/\\]", str(name or ""))[-1]
+    text = re.sub(r"[\x00-\x1f:]", "_", last).strip().strip(".")
+    return (text or "file")[-FILE_NAME_MAX:]
 
 
 def _clean_block(item) -> dict | None:
@@ -451,7 +526,14 @@ def compact(task: dict, sections: dict | None = None, page: dict | None = None) 
     if task.get("steps"):
         out["steps"] = [{"id": s["id"], "title": s["title"], "who": s["who"], "done": s["done"]} for s in task["steps"]]
     if task.get("made"):
-        out["made"] = [{"title": m["title"], "kind": m["kind"]} for m in task["made"]]
+        out["made"] = [{"title": m["title"], "kind": m["kind"]} | ({"by": "you", "ref": m["ref"]} if m.get("by") == "you" and m["kind"] != "note" else {})
+                       for m in task["made"]]
+    if task.get("priority"):
+        out["priority"] = PRIORITY_WORDS.get(task["priority"], "")
+    if task.get("tags"):
+        out["tags"] = task["tags"]
+    if task.get("starts"):
+        out["starts"] = task["starts"]
     if page and (page.get("summary") or page.get("blocks")):
         out["page"] = {"summary": _clip(page.get("summary") or "", 160), "parts": [b["title"] for b in page.get("blocks") or []]}
     return out
@@ -478,7 +560,10 @@ def _row_to_task(row) -> dict:
     task["watch"] = task.get("watch") or ""
     task["page_at"] = task.get("page_at") or ""
     task["next_check"] = task.get("next_check") or ""
-    for key in ("steps", "made", "source", "log", "chat", "choices"):
+    task["priority"] = _clean_priority(task.get("priority"))
+    task["alert"] = _clean_alert(task.get("alert"))
+    task["starts"] = task.get("starts") or None
+    for key in ("steps", "made", "source", "log", "chat", "choices", "tags"):
         task[key] = json.loads(task[key] or ("{}" if key in ("source", "chat") else "[]"))
     return task
 
@@ -573,6 +658,9 @@ class Store:
                     decided_at text);
                 create index if not exists task_ideas_state on task_ideas (state, created_at);
             """)
+            # 0.9.53: from this moment a bot's own task runs without the prep flag (``_open_prep``). Tasks nobody
+            # has touched since stay as they were: installing the update must not start a pile of old ones.
+            db.execute("insert or ignore into meta (key, value) values ('own_since', ?)", (str(self.clock()),))
             fresh = db.execute("select 1 from meta where key='rev'").fetchone() is None
             if fresh:
                 db.execute("insert into meta (key, value) values ('rev', '0')")
@@ -589,6 +677,14 @@ class Store:
                 db.execute("alter table tasks add column next_check text not null default ''")
             if "choices" not in have:
                 db.execute("alter table tasks add column choices text not null default '[]'")
+            if "priority" not in have:   # 0.9.53: a task manager's fields
+                db.execute("alter table tasks add column priority integer not null default 0")
+            if "tags" not in have:
+                db.execute("alter table tasks add column tags text not null default '[]'")
+            if "alert" not in have:
+                db.execute("alter table tasks add column alert integer")
+            if "starts" not in have:   # ("start" is the tools' word for "your part is under way")
+                db.execute("alter table tasks add column starts text")
             if "position" not in have:
                 db.execute("alter table tasks add column position real")
                 for task_id, made in db.execute("select id, created_at from tasks").fetchall():
@@ -703,8 +799,11 @@ class Store:
         listed = [dict(t, page=gists[t["id"]]) if t["id"] in gists else t for t in self.list_all()]
         # pages: this add-on draws a Task Page for every task (GET /tasks/{id}/page, 0.9.38).
         # ideas (0.9.39): how many new ideas the Ideas page has, for the count on its tab.
+        # fields, files (0.9.53): this add-on keeps a task's priority, tags, alert and start day, and the person's own
+        # files and links (POST /tasks/{id}/attach): the app shows those rows only then.
         return {"rev": current, "tasks": listed, "settings": self.get_settings(),
-                "sections": self.get_sections(), "pages": True, "ideas": self.new_ideas_count()}
+                "sections": self.get_sections(), "pages": True, "ideas": self.new_ideas_count(),
+                "fields": True, "files": True}
 
     def new_ideas_count(self) -> int:
         """New ideas still fresh (ideas.py: one nobody acts on fades after FRESH_DAYS); 0 while Ideas is off."""
@@ -736,14 +835,32 @@ class Store:
     def open_prep_count(self, bot: str) -> int:
         return len(self._open_prep(bot))
 
+    def _own_runs(self, task: dict, since: float, now: float) -> bool:
+        """0.9.53: a bot's own task (``who: "bot"``) with no prep flag is worked on too: assigning is starting. Only
+        one touched since the update that brought this (``own_since``) and in the last ``OWN_FRESH_DAYS`` days, and
+        one left ``working`` waits ``OWN_AGAIN_HOURS`` before it is handed out again, so a task a bot never closes
+        costs about one run a day, not one every few hours."""
+        touched = _seconds(task["updated_at"])
+        if touched < since or now - touched > OWN_FRESH_DAYS * 86400:
+            return False
+        return not (task["status"] == "working" and now - touched < OWN_AGAIN_HOURS * 3600)
+
     def _open_prep(self, bot: str, db=None) -> list[dict]:
-        """``bot``'s open prep tasks, in the order ``next_prep`` hands them out."""
+        """``bot``'s open prep tasks, in the order ``next_prep`` hands them out, and (0.9.53) its own tasks."""
         def read(db):
-            return [_row_to_task(row) for row in db.execute(
+            row = db.execute("select value from meta where key='own_since'").fetchone()
+            try:
+                since = float(row[0]) if row else float("inf")
+            except ValueError:
+                since = float("inf")
+            now = self.clock()
+            found = [_row_to_task(row) for row in db.execute(
                 f"""select {','.join(COLUMNS)} from tasks where bot=? and who in ('bot','together')
-                and ((prep=1 and status in ('open','working')) or (next_check != '' and status != 'done'))
+                and ((prep=1 and status in ('open','working')) or (next_check != '' and status != 'done')
+                     or (who='bot' and prep=0 and status in ('open','working')))
                 order by (status='working'), (due is null), due, created_at""",
                 (bot,))]
+            return [t for t in found if t["prep"] or t.get("next_check") or self._own_runs(t, since, now)]
         if db is not None:
             return read(db)
         with closing(self._db()) as fresh:
@@ -783,8 +900,8 @@ class Store:
         elif not bot:
             bot = _text(source.get("profile"), 64) or "default"
         repeat = fields.get("repeat") if fields.get("repeat") in REPEATS else None
-        if who != "me":
-            repeat = None  # docs/tasks.md #7: only a `me` task repeats; bot work that repeats stays a Job.
+        if who == "bot":
+            repeat = None  # docs/tasks.md #7: bot work that repeats stays a Job; yours and one you share can repeat.
         prep = bool(fields.get("prep")) and who in ("bot", "together")
         now = _iso(self.clock)
         row = {
@@ -796,6 +913,8 @@ class Store:
             "section": None, "position": self.clock(),
             "watch": _text(fields.get("watch"), WATCH_MAX), "chat": json.dumps(_clean_chat(fields.get("chat"))),
             "next_check": "", "choices": "[]",
+            "priority": _clean_priority(fields.get("priority")), "tags": json.dumps(_clean_tags(fields.get("tags"))),
+            "alert": _clean_alert(fields.get("alert")), "starts": _clean_start(fields.get("starts")),
         }
         with closing(self._write_db()) as db, db:
             row["section"] = self._section_id(db, fields.get("section"))
@@ -811,7 +930,91 @@ class Store:
             db.execute("delete from tasks where id=?", (task_id,))
             db.execute("delete from task_pages where id=?", (task_id,))
             self._bump_rev(db)
+        self._drop_files(task_id)
         return {"ok": True}
+
+    # ---- the person's own files and links (0.9.53) ---------------------------------------------------------------
+
+    @property
+    def files_dir(self) -> Path:
+        """Beside the list: ``task-files/<task id>/<name>``. A bot reads a file there by its path (``tasks_list``)."""
+        return self.path.parent / "task-files"
+
+    def _drop_files(self, task_id: str) -> None:
+        folder = self.files_dir / re.sub(r"[^A-Za-z0-9_-]", "", task_id)
+        if folder.is_dir() and folder.parent == self.files_dir:
+            for item in folder.iterdir():
+                try:
+                    item.unlink()
+                except OSError:
+                    pass
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+
+    def attach(self, task_id: str, *, kind: str, title: str = "", url: str = "", name: str = "",
+               data: bytes | None = None, by: str = "you") -> dict:
+        """The person puts a link or a file on a task: one more entry in ``made``, marked ``by``. A file's bytes are
+        kept under ``files_dir`` and the entry holds its path, so the app opens it as it opens what a bot made and
+        the task's bot can read it. Returns the task as the list shows it."""
+        if kind not in ("link", "file"):
+            raise TaskError(400, "Attach a link or a file.")
+        with closing(self._write_db()) as db, db:
+            row = db.execute(f"select {','.join(COLUMNS)} from tasks where id=?", (task_id,)).fetchone()
+            if row is None:
+                raise TaskError(404, "No such task.")
+            task = _row_to_task(row)
+            if len(task["made"]) >= MADE_CAP:
+                raise TaskError(400, f"A task holds at most {MADE_CAP} files and links.")
+            if kind == "link":
+                ref = _text(url, 2000)
+                if not ref:
+                    raise TaskError(400, "A link needs its address.")
+                entry = {"id": new_id(), "title": _text(title, TITLE_MAX) or ref, "kind": "link", "ref": ref, "by": by}
+            else:
+                if not data:
+                    raise TaskError(400, "The file is empty.")
+                if len(data) > FILE_MAX:
+                    raise TaskError(413, f"A file can be at most {FILE_MAX // (1024 * 1024)} MB.")
+                folder = self.files_dir / re.sub(r"[^A-Za-z0-9_-]", "", task_id)
+                folder.mkdir(parents=True, exist_ok=True)
+                safe = _safe_file_name(name)
+                stem, dot, ext = safe.rpartition(".")
+                target, n = folder / safe, 1
+                while target.exists():   # a second "photo.jpg" keeps both
+                    n += 1
+                    target = folder / (f"{stem} {n}.{ext}" if dot else f"{safe} {n}")
+                target.write_bytes(data)
+                entry = {"id": new_id(), "title": _text(title, TITLE_MAX) or safe, "kind": "file", "ref": str(target), "by": by}
+            updated = self._merge(task, {"made": task["made"] + [entry]}, by)
+            self._write(db, updated)
+            self._bump_rev(db)
+            return self._shown(db, updated)
+
+    def detach(self, task_id: str, made_id: str, by: str = "you") -> dict:
+        """Takes one file, link or note off a task. A file the person attached is deleted with it; one a bot made
+        stays where the bot put it."""
+        with closing(self._write_db()) as db, db:
+            row = db.execute(f"select {','.join(COLUMNS)} from tasks where id=?", (task_id,)).fetchone()
+            if row is None:
+                raise TaskError(404, "No such task.")
+            task = _row_to_task(row)
+            gone = next((m for m in task["made"] if m["id"] == made_id), None)
+            if gone is None:
+                return self._shown(db, task)
+            updated = self._merge(task, {"made": [m for m in task["made"] if m["id"] != made_id]}, by)
+            self._write(db, updated)
+            self._bump_rev(db)
+            shown = self._shown(db, updated)
+        if gone.get("by") == "you" and gone["kind"] == "file":
+            try:
+                path = Path(gone["ref"])
+                if self.files_dir in path.parents:
+                    path.unlink()
+            except OSError:
+                pass
+        return shown
 
     def _merge(self, task: dict, patch: dict, by: str, note: str | None = None) -> dict:
         """``patch`` holds only the keys actually being changed (so an explicit ``null`` — clearing ``due`` — is
@@ -842,6 +1045,16 @@ class Store:
             updated["next_check"] = _text(patch["next_check"], DUE_MAX)
         if "choices" in patch and patch["choices"] is not None:
             updated["choices"] = _clean_choices(patch["choices"])
+        if "priority" in patch and patch["priority"] is not None:
+            updated["priority"] = _clean_priority(patch["priority"])
+        if "tags" in patch and patch["tags"] is not None:
+            updated["tags"] = _clean_tags(patch["tags"])
+        if "alert" in patch:
+            updated["alert"] = _clean_alert(patch["alert"])
+        if "starts" in patch:
+            updated["starts"] = _clean_start(patch["starts"])
+        if updated.get("who") == "bot":
+            updated["repeat"] = None   # bot work that repeats stays a Job
         log_entries = list(updated.get("log") or [])
         status = patch.get("status")
         if status and status != task["status"]:
@@ -858,9 +1071,19 @@ class Store:
             log_entries.append({"at": now, "by": by, "text": _text(line, NOTE_MAX), "kind": "change"})
         if note:
             log_entries.append({"at": now, "by": by, "text": _text(note, NOTE_MAX)})
-        if updated["status"] == "done" and updated["who"] == "me" and updated.get("repeat"):
+        if updated["status"] == "done" and updated["who"] in ("me", "together") and updated.get("repeat"):
+            # 0.9.53: a task they share with a bot repeats too. It opens again with every step unticked (the bot's
+            # as well: its part is to do again), its status line cleared, and a start day moved on with its date.
             next_due = roll_forward(updated.get("due"), updated["repeat"], self.clock)
+            old_due, old_start = _parse_due(updated.get("due")), _parse_due(updated.get("starts"))
+            new_due = _parse_due(next_due)
+            if old_due and old_start and new_due:
+                gap = old_due[0].date() - old_start[0].date()
+                updated["starts"] = (new_due[0].date() - gap).isoformat() if gap.days >= 0 else None
+            else:
+                updated["starts"] = None
             updated["status"], updated["due"], updated["done_at"] = "open", next_due, None
+            updated["status_note"], updated["choices"], updated["next_check"] = "", [], ""
             updated["steps"] = [dict(s, done=False) for s in updated.get("steps") or []]
             log_entries.append({"at": now, "by": by, "text": f"repeats: due {next_due or 'soon'}"})
         updated["log"] = log_entries[-LOG_CAP:]
@@ -871,13 +1094,14 @@ class Store:
     def _write(self, db, task: dict) -> None:
         db.execute("""update tasks set rev=?, title=?, notes=?, who=?, bot=?, status=?, status_note=?, due=?,
             repeat=?, prep=?, steps=?, made=?, updated_at=?, done_at=?, log=?, section=?, position=?, watch=?,
-            chat=?, page_at=?, next_check=?, choices=? where id=?""",
+            chat=?, page_at=?, next_check=?, choices=?, priority=?, tags=?, alert=?, starts=? where id=?""",
             (task["rev"], task["title"], task["notes"], task["who"], task["bot"], task["status"],
              task["status_note"], task["due"], task["repeat"], int(task["prep"]), json.dumps(task["steps"]),
              json.dumps(task["made"]), task["updated_at"], task["done_at"], json.dumps(task["log"]),
              task.get("section"), float(task.get("position") or 0), task.get("watch") or "",
              json.dumps(task.get("chat") or {}), task.get("page_at") or "", task.get("next_check") or "",
-             json.dumps(task.get("choices") or []), task["id"]))
+             json.dumps(task.get("choices") or []), _clean_priority(task.get("priority")),
+             json.dumps(task.get("tags") or []), task.get("alert"), task.get("starts"), task["id"]))
 
     def update_route(self, task_id: str, rev: int, patch: dict, by: str = "you") -> dict:
         """``PATCH /tasks/{id}``: a stale ``rev`` raises ``TaskError(409, {"task": current})``. Both carry the task's
@@ -900,7 +1124,7 @@ class Store:
     def update_bot(self, task_id: str, profile: str, *, status=None, status_note=None, done_steps=None,
                   add_steps=None, made=None, note=None, who=None, prep=None, due=_UNSET,
                   section=_UNSET, watch=None, page=None, title=None, undone_steps=None, next_check=_UNSET,
-                  choices=None, owner_said=False) -> dict:
+                  choices=None, owner_said=False, priority=None, tags=None) -> dict:
         """``tasks_update``: no ``rev`` (the tool contract has none — the bot always applies to the current
         task). Enforces docs/tasks.md's rules in code: a bot may only mark ``done`` a task it owns alone
         (``who == "bot"``), and may not change a ``who == "me"`` task except to add ``note`` — or to take a part
@@ -916,7 +1140,7 @@ class Store:
         its date and mark it done, on any kind of task. Background runs keep the rules above."""
         changing = (status is not None or status_note is not None or done_steps or add_steps or made
                     or prep is not None or watch is not None or page is not None or title is not None
-                    or undone_steps or next_check is not _UNSET or choices is not None)
+                    or undone_steps or next_check is not _UNSET or choices is not None or priority is not None)
         with closing(self._write_db()) as db, db:
             row = db.execute(f"select {','.join(COLUMNS)} from tasks where id=?", (task_id,)).fetchone()
             if row is None:
@@ -990,6 +1214,10 @@ class Store:
                 patch["watch"] = watch
             if section is not _UNSET:   # filing a task is never "changing" it: fine on the user's own too
                 patch["section"] = self._section_id(db, section)
+            if tags is not None:        # nor is tagging it (0.9.53)
+                patch["tags"] = _clean_tags(tags)
+            if priority is not None:
+                patch["priority"] = _clean_priority(priority)
             page_notes: list[str] = []
             if page is not None:
                 row = db.execute("select body from task_pages where id=?", (task_id,)).fetchone()
@@ -1189,12 +1417,16 @@ class Store:
                 task = self._merge(task, patch, profile)
                 self._write(db, task)
                 self._bump_rev(db)
+        if task["who"] == "bot":
+            task = {**task, "how": OWN_RULE}
         return task
 
 
 def status() -> dict:
     """``/status`` gains ``tasks: true`` (docs/tasks.md), so the app knows this add-on serves Tasks."""
-    return {"tasks": True, "task_pages": True, "task_ideas": True}
+    return {"tasks": True, "task_pages": True, "task_ideas": True,
+            "task_fields": True,   # 0.9.53: priority, tags, alert, starts; a shared task repeats
+            "task_files": True}    # 0.9.53: the person's own files and links (POST /tasks/{id}/attach)
 
 
 # ---------------------------------------------------------------------------
@@ -1203,10 +1435,17 @@ def status() -> dict:
 # module importable, and testable, with no Hermes checkout at all.
 # ---------------------------------------------------------------------------
 
+# 0.9.53: a task that is the bot's alone (``who: "bot"``) comes with this as ``how``: it finishes what it safely can.
+OWN_RULE = ("This task is yours alone, start to finish: do the work and finish it if you can, not only research and "
+            "drafts. Still never send, book, buy, pay, post or delete anything for the user without asking: when it "
+            "comes to that, or you need a decision, set status needs_you with one question and up to 3 choices. End "
+            "this run by saying where it stands: status done (what you did goes in made or on its page), needs_you, "
+            "ready, or next_check for when you'll look again. Don't leave it working.")
 PREP_JOB_NAME = "Task prep"
 PREP_JOB_PROMPT = (
     "Work through Tasks prep. Call tasks_next_prep. If it returns {\"stop\": ...}, stop here for this run — don't "
-    "retry or explain, just end the turn. Otherwise it gives you one task: do research and prepare drafts for it "
+    "retry or explain, just end the turn. Otherwise it gives you one task. If the task has how, follow that. "
+    "Otherwise do research and prepare drafts for it "
     "only. Never send, book, buy, pay, post or delete anything, and never act on or finish the user's own steps in "
     "a together task. When you have something (or need the user), call tasks_update: list anything you made with "
     "made (a note in Markdown, one line per item), tick off your own finished steps with done_steps, write where it "
@@ -1248,6 +1487,8 @@ def ensure_prep_job(hours) -> None:
             log.info("hermes-hq-push: tasks prep job created (%s)", schedule)
             return
         updates = {}
+        if (job.get("prompt") or "") != PREP_JOB_PROMPT:
+            updates["prompt"] = PREP_JOB_PROMPT   # 0.9.53: an older job's instruction learns ``how``
         if (job.get("schedule") or {}).get("minutes") != minutes:
             updates["schedule"] = schedule
         if not job.get("enabled", True):
@@ -1637,6 +1878,10 @@ PAGE = {"type": "object", "description": "Write on the task's Task Page: the one
                                "items": {"type": "object"}},
                    "remove": {"type": "boolean"}},
                    "required": ["title"]}}}}
+PRIORITY = {"type": "string", "enum": ["high", "medium", "low", "none"], "description": "Only when they said how "
+            "much it matters (\"urgent\", \"whenever\"); leave it out otherwise."}
+TAGS = {"type": "array", "items": {"type": "string"}, "description": "Short tags, only ones they use or asked for "
+        "(\"hiring\", \"q4\"); never invent a filing system for them."}
 START_NOW = {"type": "boolean", "description": "Start your step now as a background Task prep run (needs prep=true "
              "and your own step): for work too long to do in this reply. It alerts the user when it's ready."}
 
@@ -1649,10 +1894,15 @@ ADD_SCHEMA = _schema(
     "if it's long. who: 'me' (their own to-do; you don't touch it except to add a note, or to take a part of it "
     "with tasks_update), 'bot' (you'll do all of it), 'together' (steps split between you). If it's already on "
     "the list you get that task back as 'already' and nothing is added: update it instead. " + WORKSPACE_RULE + " "
-    + PREP_RULE + " Returns the task, the due date in words (say it the same way to the user), and how to undo it.",
+    + PREP_RULE + " In a scheduled job nobody reads your reply as it runs: when the job needs the user to decide, "
+    "approve or do something, add it here without asking first (who 'me', or 'together' with your part done), the "
+    "question in notes, instead of only writing it in the job's report. "
+    "Returns the task, the due date in words (say it the same way to the user), and how to undo it.",
     {"title": {"type": "string", "description": "Required."},
      "who": {"type": "string", "enum": list(WHO), "description": "Default 'me'."},
-     "notes": {"type": "string"},
+     "notes": {"type": "string", "description": "What the user would jot on the task themselves: a sentence or two "
+               "they can read at a glance (the task's page shows three lines of it). Not your working instructions, "
+               "rules or evidence: those go on the Task Page (page) or in a file you list with made."},
      "due": {"type": "string", "description": "Best as words with a time: \"today 17:00\", \"tomorrow 10am\", "
              "\"friday 9am\"; or YYYY-MM-DD / YYYY-MM-DDTHH:MM in the user's local time. The app's reminder rings "
              "then (a day alone: 9:00)."},
@@ -1665,7 +1915,11 @@ ADD_SCHEMA = _schema(
      "prep": {"type": "boolean", "description": "Get your part ready ahead of time (who 'bot' or 'together' only)."},
      "start_now": START_NOW,
      "bot": {"type": "string", "description": "Which bot (profile) it's for; default: you."},
-     "section": SECTION},
+     "section": SECTION,
+     "priority": PRIORITY,
+     "tags": TAGS,
+     "starts": {"type": "string", "description": "Only if they said when it can start: the day (YYYY-MM-DD) it joins "
+               "their day. Before then it waits under Upcoming."}},
     ("title",))
 
 UPDATE_SCHEMA = _schema(
@@ -1694,6 +1948,8 @@ UPDATE_SCHEMA = _schema(
      "next_check": {"type": "string", "description": "When you'll look at it again by yourself (a reply you're "
                     "waiting for, a date): words with a time, like \"wed 9am\", or YYYY-MM-DDTHH:MM. A run comes "
                     "then, even if it waits on them. Empty clears it."},
+     "priority": PRIORITY,
+     "tags": TAGS,
      "choices": {"type": "array", "items": {"type": "string"}, "description": "With needs_you or ready: up to 3 "
                  "short answers they can tap, a few words each, best first (\"Send it\", \"Let me edit it\", "
                  "\"Not yet\"). Each comes back to you as their message in the task's chat."},
@@ -1715,7 +1971,8 @@ UPDATE_SCHEMA = _schema(
 
 NEXT_PREP_SCHEMA = _schema(
     "tasks_next_prep",
-    "Only for your Task prep job: hands you the next open prep task to work on, or {stop: reason} once there's "
+    "Only for your Task prep job: hands you the next open prep task to work on (or a task that is yours alone, "
+    "which comes with how: what you may finish yourself), or {stop: reason} once there's "
     "nothing left for you, today's prep runs (across every bot) are used up, or it's quiet hours. Call it again "
     "after each tasks_update to get the next one, until it says stop. " + PREP_RULE, {})
 
@@ -1756,6 +2013,8 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
                                "added. Update it with tasks_update if something changed."}, ensure_ascii=False)
         try:
             fields = {**args, "due": resolve_due(args.get("due"), store.clock())}
+            if fields.get("priority") == "none":
+                fields["priority"] = 0
             task = store.create(fields, created_by=bot, source=source)
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
@@ -1794,7 +2053,9 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
                                     section=args["section"] if "section" in args else _UNSET,
                                     watch=args.get("watch"), page=args.get("page"), title=args.get("title"),
                                     undone_steps=args.get("undone_steps"), next_check=next_check,
-                                    choices=args.get("choices"), owner_said=owner_said)
+                                    choices=args.get("choices"), owner_said=owner_said,
+                                    priority=(0 if args.get("priority") == "none" else args.get("priority")) if "priority" in args else None,
+                                    tags=args.get("tags") if "tags" in args else None)
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
         out = dict(task)

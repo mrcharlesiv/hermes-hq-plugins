@@ -1,5 +1,7 @@
 """Routes under /api/plugins/hermes-hq-push, behind the dashboard's normal login (the Hermes HQ app's
 session cookie). Mounted in ``hermes serve``, the process that owns app sessions' approval queues."""
+import base64
+import binascii
 import importlib.util
 import json
 import sys
@@ -505,6 +507,20 @@ class TaskIn(BaseModel):
     position: float | None = None
     watch: str = Field(default="", max_length=160)
     chat: ChatIn | None = None
+    # 0.9.53: a task manager's fields.
+    priority: int = Field(default=0, ge=0, le=3)
+    tags: list[str] = Field(default_factory=list, max_length=10)
+    alert: int | None = Field(default=None, ge=0, le=10080)
+    starts: str | None = Field(default=None, max_length=40)
+
+
+class AttachIn(BaseModel):
+    """A link (``url``) or a file (``name`` and its bytes as base64 in ``data``) the person puts on a task."""
+    kind: str = Field(pattern="^(link|file)$")
+    title: str = Field(default="", max_length=200)
+    url: str = Field(default="", max_length=2000)
+    name: str = Field(default="", max_length=255)
+    data: str = Field(default="", max_length=14_500_000)   # 10 MB as base64, with room
 
 
 class TaskPatchIn(BaseModel):
@@ -524,6 +540,10 @@ class TaskPatchIn(BaseModel):
     position: float | None = None
     watch: str | None = Field(default=None, max_length=160)
     chat: ChatIn | None = None
+    priority: int | None = Field(default=None, ge=0, le=3)
+    tags: list[str] | None = Field(default=None, max_length=10)
+    alert: int | None = Field(default=None, ge=0, le=10080)
+    starts: str | None = Field(default=None, max_length=40)
 
 
 class SettingsIn(BaseModel):
@@ -534,7 +554,7 @@ class SettingsIn(BaseModel):
     quiet_end: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     prep_every_hours: int | None = Field(default=None, ge=1, le=24)
     group: str | None = Field(default=None, pattern="^(smart|sections)$")
-    sort: str | None = Field(default=None, pattern="^(smart|due|added)$")
+    sort: str | None = Field(default=None, pattern="^(smart|due|added|priority)$")
     ideas: bool | None = None
     ideas_bot: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
     ideas_at: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -592,6 +612,31 @@ def tasks_patch(task_id: str, body: TaskPatchIn):
 def tasks_delete(task_id: str):
     """Also how the app undoes a chat capture (the card's Undo, or saying "undo")."""
     return _tasks_store().delete(task_id)
+
+
+@router.post("/tasks/{task_id}/attach")
+def tasks_attach(task_id: str, body: AttachIn):
+    """0.9.53: the person's own link or file on a task (it joins ``made``, marked ``by: "you"``). The answer is the
+    task as the list shows it."""
+    data = None
+    if body.kind == "file":
+        try:
+            data = base64.b64decode(body.data, validate=True)
+        except (ValueError, binascii.Error):
+            raise HTTPException(400, "The file didn't arrive whole.") from None
+    try:
+        return _tasks_store().attach(task_id, kind=body.kind, title=body.title, url=body.url, name=body.name, data=data)
+    except tasks.TaskError as error:
+        raise HTTPException(error.status_code, error.detail) from None
+
+
+@router.delete("/tasks/{task_id}/made/{made_id}")
+def tasks_detach(task_id: str, made_id: str):
+    """0.9.53: takes one file, link or note off a task (a file the person attached is deleted with it)."""
+    try:
+        return _tasks_store().detach(task_id, made_id)
+    except tasks.TaskError as error:
+        raise HTTPException(error.status_code, error.detail) from None
 
 
 @router.get("/tasks/{task_id}/page")

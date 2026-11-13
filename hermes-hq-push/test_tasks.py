@@ -1326,3 +1326,175 @@ def test_its_own_chat_sees_the_whole_task_and_the_persons_word_rule(tmp_path):
     note = tasks.context_for(store=s, profile="otto", platform="desktop", user_message="hi", session_id="s_task")
     assert "Book it" in note and task["steps"][0]["id"] in note and "Two flights fit." in note
     assert "You pick one." in note and "their call" in note
+
+
+# ---------------------------------------------------------------------------
+# 0.9.53, owner 2026-11-12 ("every task is pure task management first, agent stuff second … complex enough to handle
+# any task or use case"): a priority, tags, an alert before it's due, a start day, the person's own files and links,
+# and a task they share with a bot can repeat.
+# ---------------------------------------------------------------------------
+
+def test_a_task_carries_priority_tags_alert_and_a_start_day(tmp_path):
+    s = store(tmp_path)
+    task = s.create(me(priority=1, tags=["#hiring", "Q4", "hiring", "  "], alert=30, starts="2026-11-10T09:00",
+                       due="2026-11-12T17:00:00-06:00"), created_by="you", source={"kind": "app"})
+    assert task["priority"] == 1 and task["tags"] == ["hiring", "Q4"], "a # is dropped and a tag is kept once"
+    assert task["alert"] == 30 and task["starts"] == "2026-11-10", "a start is a day"
+    plain = s.create(me(title="Buy stamps"), created_by="you", source={"kind": "app"})
+    assert plain["priority"] == 0 and plain["tags"] == [] and plain["alert"] is None and plain["starts"] is None
+
+    changed = s.update_route(task["id"], task["rev"], {"priority": 3, "tags": ["errands"], "alert": None, "starts": None})
+    assert changed["priority"] == 3 and changed["tags"] == ["errands"] and changed["alert"] is None and changed["starts"] is None
+    assert s.get(task["id"]) == {k: v for k, v in changed.items() if k != "page"}
+    odd = s.update_route(task["id"], changed["rev"], {"priority": 9, "alert": 999_999, "starts": "next week"})
+    assert odd["priority"] == 0 and odd["alert"] == tasks.ALERT_MAX and odd["starts"] is None
+
+
+def test_a_bot_sees_the_new_fields_in_its_list_and_can_set_them_on_what_it_adds(tmp_path):
+    s = store(tmp_path)
+    task = s.create(together(priority="high", tags=["trip"], starts="2026-11-10"), created_by="otto",
+                    source={"kind": "chat", "profile": "otto"})
+    assert task["priority"] == 1
+    short = tasks.compact(task)
+    assert short["priority"] == "high" and short["tags"] == ["trip"] and short["starts"] == "2026-11-10"
+    assert "priority" not in tasks.compact(s.create(me(title="Plain"), created_by="you", source={"kind": "app"}))
+    # Tagging is filing, never "changing": fine on the person's own task. Its priority is theirs to set.
+    mine = s.create(me(title="Mine"), created_by="you", source={"kind": "app"})
+    assert s.update_bot(mine["id"], "otto", tags=["home"])["tags"] == ["home"]
+    with pytest.raises(tasks.TaskError):
+        s.update_bot(mine["id"], "otto", priority=1)
+    assert s.update_bot(task["id"], "otto", priority=2)["priority"] == 2
+
+
+def test_a_task_shared_with_a_bot_repeats_and_its_bot_starts_over(tmp_path):
+    s = store(tmp_path)
+    task = s.create(together(repeat="weekly", due="2026-11-06", starts="2026-11-04",
+                             steps=[{"title": "draft it", "who": "bot", "done": True}, {"title": "send it", "who": "me", "done": True}]),
+                    created_by="you", source={"kind": "app"})
+    assert task["repeat"] == "weekly", "a task they share can repeat"
+    ready = s.update_bot(task["id"], "otto", status="ready", status_note="Draft ready", choices=["Send it"])
+    done = s.update_route(task["id"], ready["rev"], {"status": "done"})
+    assert done["status"] == "open" and done["due"] == "2026-11-13" and done["starts"] == "2026-11-11"
+    assert all(not step["done"] for step in done["steps"]), "the bot's part is to do again"
+    assert done["status_note"] == "" and done["choices"] == []
+    # A bot's own task never repeats: that stays a Job.
+    theirs = s.create(bot_task(repeat="daily"), created_by="you", source={"kind": "app"})
+    assert theirs["repeat"] is None
+    given = s.update_route(task["id"], done["rev"], {"who": "bot"})
+    assert given["repeat"] is None, "handing it to the bot alone ends the repeat"
+
+
+def test_the_person_attaches_a_link_and_a_file_and_takes_them_off(tmp_path):
+    s = store(tmp_path)
+    task = s.create(me(), created_by="you", source={"kind": "app"})
+    linked = s.attach(task["id"], kind="link", url="https://example.com/form", title="The form")
+    assert linked["made"] == [{"id": linked["made"][0]["id"], "title": "The form", "kind": "link",
+                               "ref": "https://example.com/form", "by": "you"}]
+    filed = s.attach(task["id"], kind="file", name="../../photo.jpg", data=b"\xff\xd8jpeg")
+    entry = filed["made"][1]
+    path = Path(entry["ref"])
+    assert entry["kind"] == "file" and entry["by"] == "you" and entry["title"] == "photo.jpg"
+    assert path.parent == s.files_dir / task["id"] and path.read_bytes() == b"\xff\xd8jpeg", "kept beside the list, never outside it"
+    again = s.attach(task["id"], kind="file", name="../../photo.jpg", data=b"second")
+    assert Path(again["made"][2]["ref"]).name != path.name and path.read_bytes() == b"\xff\xd8jpeg", "a second keeps both"
+    # The task's bot can read what they attached: its list carries the path.
+    short = tasks.compact(s.get(task["id"]))
+    assert short["made"][1] == {"title": entry["title"], "kind": "file", "by": "you", "ref": entry["ref"]}
+
+    with pytest.raises(tasks.TaskError):
+        s.attach(task["id"], kind="file", name="big.bin", data=b"x" * (tasks.FILE_MAX + 1))
+    with pytest.raises(tasks.TaskError):
+        s.attach(task["id"], kind="link", url="")
+    after = s.detach(task["id"], entry["id"])
+    assert [m["id"] for m in after["made"]] == [linked["made"][0]["id"], again["made"][2]["id"]] and not path.exists()
+    # What a bot made is taken off the task, and its file is left where the bot put it.
+    bots = tmp_path / "report.md"
+    bots.write_text("hi")
+    made = s.update_route(task["id"], after["rev"], {"made": after["made"] + [{"title": "Report", "kind": "file", "ref": str(bots)}]})
+    s.detach(task["id"], made["made"][-1]["id"])
+    assert bots.exists()
+    s.delete(task["id"])
+    assert not (s.files_dir / task["id"]).exists(), "deleting the task deletes what was attached to it"
+
+
+def test_the_new_fields_and_attachments_over_the_routes(client):
+    import base64
+    status = client.get(f"{BASE}/status").json()
+    assert status["task_fields"] is True and status["task_files"] is True
+    made = client.post(f"{BASE}/tasks", json={"title": "Renew passport", "priority": 2, "tags": ["travel"], "alert": 60,
+                                              "starts": "2026-11-10"}).json()
+    assert made["priority"] == 2 and made["tags"] == ["travel"] and made["alert"] == 60 and made["starts"] == "2026-11-10"
+    patched = client.patch(f"{BASE}/tasks/{made['id']}", json={"rev": made["rev"], "priority": 1, "alert": None}).json()
+    assert patched["priority"] == 1 and patched["alert"] is None and patched["tags"] == ["travel"]
+    assert client.patch(f"{BASE}/tasks/{made['id']}", json={"rev": patched["rev"], "priority": 7}).status_code == 422
+
+    link = client.post(f"{BASE}/tasks/{made['id']}/attach", json={"kind": "link", "url": "https://example.com"}).json()
+    assert link["made"][0]["kind"] == "link" and link["made"][0]["by"] == "you" and link["made"][0]["title"] == "https://example.com"
+    data = base64.b64encode(b"%PDF-1.7 form").decode()
+    filed = client.post(f"{BASE}/tasks/{made['id']}/attach", json={"kind": "file", "name": "ds-82.pdf", "data": data}).json()
+    assert filed["made"][1]["title"] == "ds-82.pdf" and Path(filed["made"][1]["ref"]).read_bytes() == b"%PDF-1.7 form"
+    assert client.post(f"{BASE}/tasks/{made['id']}/attach", json={"kind": "file", "name": "x", "data": "not base64!"}).status_code == 400
+    assert client.post(f"{BASE}/tasks/nope/attach", json={"kind": "link", "url": "https://example.com"}).status_code == 404
+    gone = client.delete(f"{BASE}/tasks/{made['id']}/made/{filed['made'][1]['id']}").json()
+    assert [m["kind"] for m in gone["made"]] == ["link"]
+    assert client.put(f"{BASE}/tasks/settings", json={"sort": "priority"}).json()["sort"] == "priority"
+
+
+# ---- 0.9.53: a bot's own task runs without the prep flag (assigning is starting) -----------------------------------
+
+from contextlib import closing
+
+
+def _clocked(tmp_path, at):
+    """A store whose clock the test moves: ``at`` is a one-item list holding "now"."""
+    when = time.struct_time((2026, 11, 4, 10, 0, 0, 2, 308, 0))
+    return tasks.Store(tmp_path / "tasks.db", clock=lambda: at[0], local_now=lambda: when)
+
+
+def test_a_bots_own_task_is_handed_out_without_prep_and_says_how(tmp_path):
+    at = [1_700_000_000.0]
+    s = _clocked(tmp_path, at)
+    own = s.create(bot_task(title="Summarize the invoices"), created_by="you", source={"kind": "app"})
+    handed = s.next_prep("otto")
+    assert handed["id"] == own["id"] and handed["status"] == "working"
+    assert "yours alone" in handed["how"] and "never send, book, buy, pay, post or delete" in handed["how"]
+    # Left "working", it is not handed out again for most of a day: a task a bot never closes costs one run a day.
+    at[0] += 3 * 3600
+    assert "stop" in s.next_prep("otto")
+    at[0] += 18 * 3600
+    assert s.next_prep("otto")["id"] == own["id"]
+
+
+def test_a_shared_task_still_needs_prep_and_gets_no_how(tmp_path):
+    at = [1_700_000_000.0]
+    s = _clocked(tmp_path, at)
+    s.create({"title": "Plan the offsite", "who": "together", "bot": "otto"}, created_by="you", source={"kind": "app"})
+    assert "stop" in s.next_prep("otto")
+    shared = s.create({"title": "Book the venue", "who": "together", "bot": "otto", "prep": True}, created_by="otto", source={"kind": "chat", "profile": "otto"})
+    handed = s.next_prep("otto")
+    assert handed["id"] == shared["id"] and "how" not in handed
+
+
+def test_own_tasks_from_before_the_update_or_gone_stale_do_not_start(tmp_path):
+    at = [1_700_000_000.0]
+    s = _clocked(tmp_path, at)
+    old = s.create(bot_task(title="An old one"), created_by="otto", source={"kind": "chat", "profile": "otto"})
+    # The update arrives later: what nobody has touched since stays put.
+    at[0] += 3 * 86400
+    with closing(s._write_db()) as db, db:
+        db.execute("update meta set value=? where key='own_since'", (str(at[0]),))
+    assert "stop" in s.next_prep("otto")
+    # Touched after the update (the person changed its date): it runs.
+    s.update_route(old["id"], old["rev"], {"due": "2026-11-20"})
+    assert s.next_prep("otto")["id"] == old["id"]
+    # One nobody touches for two weeks stops being started by itself.
+    fresh = s.create(bot_task(title="A fresh one"), created_by="you", source={"kind": "app"})
+    at[0] += 15 * 86400
+    assert "stop" in s.next_prep("otto")
+    assert fresh["status"] == "open"
+
+
+def test_the_runner_job_prompt_still_opens_the_way_the_app_knows(tmp_path):
+    assert tasks.PREP_JOB_PROMPT.startswith("Work through Tasks prep.")
+    assert "If the task has how, follow that." in tasks.PREP_JOB_PROMPT
+    assert "scheduled job" in tasks.ADD_SCHEMA["description"]
