@@ -1600,6 +1600,8 @@ def reconcile_prep_job(store: Store, profile: str, home=None) -> None:
 def start_prep_now(store: Store, task: dict, profile: str, home=None) -> str:
     """``start_now``: run ``profile``'s Task prep job at the scheduler's next tick, with this task first. Returns
     the line the bot reads back (started, or why not and what to do instead). Best-effort, never raises."""
+    if not store.enabled():   # a page left open on another device while Tasks was turned off must not bring the job back
+        return "not started: Tasks is turned off."
     if not task.get("prep") or task.get("who") not in ("bot", "together") or task.get("status") not in OPEN_STATUSES:
         return "not started: only an open bot or together task with prep=true can start now."
     if store.prep_runs_left() <= 0:

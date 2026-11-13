@@ -622,6 +622,25 @@ def test_start_prep_now_refuses_what_cannot_start(tmp_path):
 
 
 @needs_cron
+# 2026-11-13: Start pressed on a page left open on another device after Tasks was turned off made the Task prep job
+# again, and nothing removed it until the next change.
+def test_tasks_off_starts_nothing_and_hands_out_no_task_of_a_bots_own(tmp_path, monkeypatch):
+    s = store(tmp_path)
+    prepped = s.create(bot_task(prep=True), created_by="you", source={"kind": "app"})
+    s.create(bot_task(title="File the forms", who="bot"), created_by="you", source={"kind": "app"})
+    s.put_settings({"enabled": False})
+    ensured, removed = [], []
+    monkeypatch.setattr(tasks, "ensure_prep_job", lambda hours: ensured.append(hours))
+    monkeypatch.setattr(tasks, "remove_prep_job", lambda: removed.append(1))
+    assert tasks.start_prep_now(s, prepped, "otto") == "not started: Tasks is turned off."
+    assert not ensured
+    ctx = FakeCtx()
+    tasks.register_tools(ctx, lambda: s, lambda: "otto", lambda task, prof: None)
+    assert json.loads(ctx.tools["tasks_next_prep"]({}))["task"] is None
+    tasks.reconcile_prep_job(s, "otto")
+    assert removed and not ensured
+
+
 def test_start_prep_now_runs_that_bots_job_at_the_next_tick(tmp_path):
     s = store(tmp_path)
     task = s.create(together(prep=True, steps=[{"title": "Rank", "who": "bot"}]), created_by="otto",
