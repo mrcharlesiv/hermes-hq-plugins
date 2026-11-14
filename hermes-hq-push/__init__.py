@@ -149,6 +149,20 @@ def _serves_app_sessions() -> bool:
     return "tui_gateway.server" in sys.modules and os.environ.get("HERMES_INTERACTIVE") == "1"
 
 
+_lineage = push.Lineage()
+
+
+def _in_its_chat(kwargs: dict, profile: str) -> dict:
+    """A helper's approval or question names the chat that started the helper (where its card is), not the helper's
+    own working session. The settle hooks reuse the alert that was sent, so they follow."""
+    session = str(kwargs.get("session_id") or "")
+    try:
+        chat = _lineage.chat(profile, session) if session else session
+    except Exception:
+        chat = session
+    return kwargs if chat == session else {**kwargs, "session_id": chat}
+
+
 def pre_approval_request(**kwargs):
     try:
         # The messaging gateway's approvals are answered in their own app; they alert (without buttons) only a
@@ -162,6 +176,7 @@ def pre_approval_request(**kwargs):
             return
         from tools.approval import list_gateway_approvals
         profile = _profile()
+        kwargs = _in_its_chat(kwargs, profile)
         item = push.approval_push(kwargs, list_gateway_approvals(key), push.data_dir(), profile, _sender(profile),
                                   outside, answerable=serves)
         if item is not None:
@@ -189,7 +204,7 @@ def on_human_input_request(**kwargs):
                 return
             kwargs = {**kwargs, "platform": "desktop"}
         profile = _profile()
-        item = push.input_push(kwargs, profile, _sender(profile))
+        item = push.input_push(_in_its_chat(kwargs, profile), profile, _sender(profile))
         if item is not None:
             push.remember_input(_sent_inputs, item)
             _dispatcher_for().submit(item)

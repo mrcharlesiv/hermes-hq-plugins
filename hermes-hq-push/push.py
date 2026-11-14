@@ -871,7 +871,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.53"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
+PLUGIN_VERSION = "0.9.54"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
 
 
 class Relay:
@@ -1603,6 +1603,35 @@ class Lineage:
             if len(self.known) >= self.LIMIT:
                 self.known.pop(next(iter(self.known)))
             self.known[key] = found
+        return found
+
+
+    def chat(self, profile: str, session: str) -> str:
+        """The chat a person has open for ``session``: a helper's own working session (``delegate_task``: marked
+        ``_delegate_from``, or source ``subagent``) answers with the chat that started it, a helper of a helper with
+        the first one. An alert that names the helper's session opens a page with only the helper's errand on it and
+        no card to answer (tester, 2026-11-14: "redirected me to an empty session"); the approval waits in the chat
+        above. Anything else, or a row that can't be read, is ``session`` itself."""
+        if not session or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", profile or "default"):
+            return session
+        path = self.path(profile)
+        if not path.is_file():
+            return session
+        found = session
+        try:
+            with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)) as db:
+                for _ in range(self.HOPS):
+                    row = db.execute("SELECT source, parent_session_id, json_extract(model_config, '$._delegate_from')"
+                                     " FROM sessions WHERE id = ?", (found,)).fetchone()
+                    if row is None:
+                        break
+                    source, parent, started_by = row
+                    above = str(started_by or (parent if source == "subagent" else "") or "")
+                    if not above or above == found:
+                        break
+                    found = above
+        except sqlite3.Error:
+            return session
         return found
 
 
