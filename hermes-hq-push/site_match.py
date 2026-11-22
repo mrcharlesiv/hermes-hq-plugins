@@ -8,7 +8,7 @@ and hosts under a known shared-hosting suffix (``*.github.io``, ``*.vercel.app``
 match. Everything else in Hermes's fill stays: the in-page re-check that the page didn't move, the redaction, and what
 the result reports.
 
-[0.9.80, issue #11] Which other hosts count no longer rests on guessing a "registrable domain" from a list: a list is
+[0.9.81, issue #11] Which other hosts count no longer rests on guessing a "registrable domain" from a list: a list is
 never complete, and every unlisted shared host (``alice.duckdns.org`` and ``mallory.duckdns.org``) then read as one
 site. The rule now follows who controls the name, which needs no list. With a leading ``www.`` dropped from each:
   - the page's host is the saved host, or one of its parents (``account.example.com`` -> ``example.com``): whoever
