@@ -228,14 +228,24 @@ def test_config_public_repos(tmp_path):
     assert status.load_config(tmp_path)['public_repos'] == frozenset()
 
 
+def test_the_store_rules_come_from_the_running_hermes():
+    """0.9.80: Hermes v0.23.3 moved the store's ownership rules (owner 2026-11-21: the update turned the status off).
+    Whichever Hermes runs, the route gets all five, and the row rules answer for a plain local row."""
+    prefix, lineage, legacy_row, binding_prefix, names = status.store_rules()
+    assert isinstance(prefix, str) and isinstance(binding_prefix, str) and callable(lineage)
+    assert legacy_row({'source': 'cli', 'user_id': None}) is True
+    assert legacy_row({'source': 'telegram', 'user_id': '123'}) is False
+    assert isinstance(names('{}', 'nobody'), bool)
+
+
 def test_capability_only_on_supported_runtime(monkeypatch):
     monkeypatch.setattr(status, '_supported', None)
     real = status.importlib.import_module
 
-    def missing(name, *args):
-        if name == 'hermes_state_local_lineage':
+    def missing(name, *args, **kwargs):
+        if name == 'gateway.session_history_mount':
             raise ImportError(name)
-        return real(name, *args)
+        return real(name, *args, **kwargs)
     monkeypatch.setattr(status.importlib, 'import_module', missing)
     assert status.supported() is False
     monkeypatch.setattr(status, '_supported', None)

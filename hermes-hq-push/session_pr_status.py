@@ -61,13 +61,37 @@ _RUNTIME = (
     ('gateway.owner_identity', 'same_owner'),
     ('gateway.session_authorities', 'require_serving'),
     ('gateway.session_history_mount', 'is_history_mount'),
-    ('hermes_state_local', 'POLICY_PREFIX'),
-    ('hermes_state_local_lineage', 'validate_local_lineage'),
-    ('hermes_state_local_migration', 'legacy_history_row'),
-    ('hermes_state_mutation_binding', 'BINDING_PREFIX'),
-    ('hermes_state_mutation_binding', 'binding_names'),
 )
 _supported = None
+
+
+def store_rules():
+    """The session store's ownership rules the route judges a stored chat by, from whichever Hermes runs:
+    ``(POLICY_PREFIX, validate_local_lineage(conn, receipt), legacy_history_row(row), BINDING_PREFIX,
+    binding_names(saved, subject))``. Hermes v0.23.3 moved them out of the old ``hermes_state_*`` modules into
+    ``persistence/`` and ``session_rules/`` and gave the row rules the host's owner rule as an argument; before
+    this, that update turned the whole pull request status off (owner 2026-11-21). Raises when neither is there."""
+    try:
+        from hermes_state_local import POLICY_PREFIX
+        from hermes_state_local_lineage import validate_local_lineage
+        from hermes_state_local_migration import legacy_history_row
+        from hermes_state_mutation_binding import BINDING_PREFIX, binding_names
+        return POLICY_PREFIX, validate_local_lineage, legacy_history_row, BINDING_PREFIX, binding_names
+    except ImportError:
+        pass
+    from persistence.sqlite.conversation._store.local import POLICY_PREFIX
+    from persistence.sqlite.conversation._store.local_lineage import validate_local_lineage
+    from persistence.sqlite.authority._binding_history import BINDING_PREFIX
+    from session_rules import legacy_local
+    from gateway.session_persistence import owner_rule
+
+    def legacy_history_row(row):
+        return legacy_local.legacy_history_row(row, owner_rule())
+
+    def binding_names(saved, subject):
+        return legacy_local.binding_names(saved, subject, owner_rule())
+
+    return POLICY_PREFIX, validate_local_lineage, legacy_history_row, BINDING_PREFIX, binding_names
 
 
 def supported():
@@ -77,6 +101,7 @@ def supported():
         try:
             ok = all(hasattr(importlib.import_module(module), name) for module, name in _RUNTIME)
             ok = ok and hasattr(importlib.import_module('gateway.config').Platform, 'LOCAL')
+            ok = ok and all(callable(rule) or isinstance(rule, str) for rule in store_rules())
         except Exception:
             ok = False
         _supported = bool(ok)
