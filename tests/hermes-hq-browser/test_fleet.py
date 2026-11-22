@@ -362,9 +362,8 @@ class SupervisorTests(Base):
             first.__exit__()
 
 
-class OnDemandTests(Base):
-    """``HERMES_HQ_BROWSER_ON_DEMAND=1``: a bot's Chrome runs only while it is used. Chrome is faked here (launch, the
-    port probe, the process list and ``end_politely``), so these run anywhere."""
+class FakeChromeBase(Base):
+    """Chrome is faked here (launch, the port probe, the process list and ``end_politely``), so these run anywhere."""
 
     def setUp(self):
         super().setUp()
@@ -422,6 +421,10 @@ class OnDemandTests(Base):
 
     def folder(self):
         return str(self.jim / "chrome-debug")
+
+
+class OnDemandTests(FakeChromeBase):
+    """``HERMES_HQ_BROWSER_ON_DEMAND=1``: a bot's Chrome runs only while it is used."""
 
     def test_an_agent_without_the_dashboard_flag_can_wake_and_claim_its_chrome(self):
         self.on(minutes=1)
@@ -650,6 +653,85 @@ class OnDemandTests(Base):
         clock.sleep.assert_called_once()
         self.assertEqual((result["blocked"], result["status"]), (None, "sleeping"))
         self.assertEqual(self.launches, [])
+
+
+class StopTests(FakeChromeBase):
+    """How the supervisor stops a bot's Chrome. A signalled Chrome leaves its code-signing clone (a copy of the app
+    bundle on macOS) behind, so every stop of a Chrome that still answers asks it to close first; only a frozen one is
+    signalled straight away."""
+
+    def setUp(self):
+        super().setUp()
+        self.stops: list[tuple[str, int | None]] = []
+        fleet = self.fleet
+
+        def signal_only(pid, folder):
+            self.stops.append(("signal", None))
+            self.running.pop(folder, None)
+
+        def politely(port, pid, folder):
+            self.stops.append(("polite", port))
+            self.running.pop(folder, None)
+        fleet.end, fleet.end_politely = signal_only, politely
+
+    def started(self) -> int:
+        self.supervisor.pass_once()
+        port = self.fleet.port_of(self.url())
+        self.assertIn(port, self.launches)
+        return port
+
+    def test_a_deleted_bot_s_chrome_is_asked_to_close(self):
+        port = self.started()
+        (self.jim / "config.yaml").unlink()
+        self.supervisor.pass_once()
+        self.assertEqual(self.stops, [("polite", port)])
+        self.assertNotIn(self.folder(), self.running)
+
+    def test_a_bot_whose_cdp_url_is_removed_has_its_chrome_asked_to_close(self):
+        port = self.started()
+        value = config(self.jim)
+        value["browser"].pop("cdp_url")
+        write(self.jim, value)
+        self.assertEqual(self.status(), "released")
+        self.assertEqual(self.stops, [("polite", port)])
+
+    def test_a_frozen_chrome_is_signalled(self):
+        port = self.started()
+        self.fleet.START_GRACE, self.fleet.MISSES = 0.0, 2
+        self.frozen.add(port)
+        self.assertEqual(self.status(), "not_responding")
+        self.status()
+        self.assertEqual(self.stops[0], ("signal", None))
+
+
+class PoliteStopTests(unittest.TestCase):
+    """``end_politely`` sends ``Browser.close`` only to the Chrome it is stopping: whatever answers on a port gets it."""
+
+    def setUp(self):
+        self.fleet = tb.load("fleet")
+        self.closed: list[int] = []
+        self.fleet.close_politely = lambda port: self.closed.append(port) or False
+
+    def test_a_process_that_does_not_serve_the_port_gets_no_close(self):
+        self.fleet.end_politely(PORTS + 30, os.getpid(), "/nowhere/chrome-debug")
+        self.assertEqual(self.closed, [])
+        self.fleet.end_politely(None, os.getpid(), "/nowhere/chrome-debug")
+        self.assertEqual(self.closed, [])
+
+    def test_the_chrome_serving_the_port_is_asked_first(self):
+        import subprocess
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)",  # stands in for Chrome's arguments
+                                  f"--remote-debugging-port={PORTS + 31}", f"--user-data-dir={folder}"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        deadline = time.time() + 5
+        while time.time() < deadline and f"--user-data-dir={folder}" not in __import__("psutil").Process(child.pid).cmdline():
+            time.sleep(0.05)
+        self.fleet.end_politely(PORTS + 31, child.pid, folder)
+        self.assertEqual(self.closed, [PORTS + 31])
+        self.assertIsNotNone(child.wait(5))  # close failed here, so it was signalled after
 
 
 def chrome_for_test() -> str | None:

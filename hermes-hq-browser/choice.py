@@ -332,9 +332,9 @@ STOP_WAIT = 10.0  # seconds a bot's Chrome gets to stop before a change is refus
 def stop_chrome(fleet, folder: Path, port, name: str, wait: float | None = None) -> None:
     """Ends the bot's Chrome and waits until nothing runs on its folder and its port is quiet. Without a way to see
     processes (no psutil) a Chrome still answering can't be stopped: raises rather than swap folders under it."""
-    for pid, data, _ in fleet.chrome_processes():
+    for pid, data, chrome_port in fleet.chrome_processes():
         if data == str(folder):
-            fleet.end(pid, str(folder))
+            fleet.end_politely(chrome_port, pid, str(folder))
     deadline = time.time() + (STOP_WAIT if wait is None else wait)
     while True:
         running = [pid for pid, data, _ in fleet.chrome_processes() if data == str(folder)]

@@ -758,9 +758,25 @@ def close_politely(port: int) -> bool:
         return False
 
 
-def end_politely(port: int, pid: int, folder: str) -> None:
-    """Ask Chrome to write its profile and exit, then signal it if it is still running."""
-    if close_politely(port):
+def _serves(pid: int, folder: str, port: int) -> bool:
+    """Is ``pid`` the Chrome this plugin started on ``folder`` and ``port``? ``Browser.close`` goes to whatever answers
+    on the port, so it is only sent once the port is known to be this Chrome's."""
+    try:
+        import psutil
+        arguments = psutil.Process(pid).cmdline()
+    except Exception:  # noqa: BLE001
+        return False
+    return f"--user-data-dir={folder}" in arguments and f"--remote-debugging-port={port}" in arguments
+
+
+def end_politely(port: int | None, pid: int, folder: str) -> None:
+    """Ask Chrome to write its profile and exit, then signal it if it is still running.
+
+    A signalled Chrome also leaves its code-signing clone behind: on macOS each launch copies the app bundle into
+    ``$TMPDIR/../X/com.google.Chrome.code_sign_clone/`` and only a Chrome that exits by itself removes it (measured on
+    Chrome 158: SIGTERM and SIGKILL each left the clone, ``Browser.close`` removed it). Every stop of a Chrome that still
+    answers comes through here for that reason; only a frozen one is signalled straight away."""
+    if isinstance(port, int) and _serves(pid, folder, port) and close_politely(port):
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline and _still_running(pid):
             time.sleep(0.05)
@@ -947,7 +963,7 @@ class Supervisor:
             if profile not in statuses:
                 state = read_state(self.root, profile)
                 if state.get("pid") and state.get("folder") and state.get("status") != "external":
-                    end(int(state["pid"]), state["folder"])
+                    end_politely(state.get("port"), int(state["pid"]), state["folder"])
                 path.unlink(missing_ok=True)
                 path.with_suffix(".lock").unlink(missing_ok=True)
                 log.info("hermes-hq-browser: %s is gone; ended its Chrome", profile)
@@ -961,7 +977,7 @@ class Supervisor:
                 return self.leave_hosted(profile, home, state)
             if reason in ("released", "cloud") and state.get("status") != reason:
                 if state.get("pid") and state.get("folder"):
-                    end(int(state["pid"]), state["folder"])
+                    end_politely(state.get("port"), int(state["pid"]), state["folder"])
                 state = update_state(self.root, profile, {"status": reason, "pid": None})
                 log.info("hermes-hq-browser: %s's own Chrome is off (%s)", profile,
                          "it browses in Browser Use Cloud" if reason == "cloud" else "its cdp_url was removed")
@@ -984,7 +1000,7 @@ class Supervisor:
         mine = [pid for pid, data, p in processes if data == folder and p == port]
         for pid, data, other in processes:
             if data == folder and other != port and state.get("status") != "external":
-                end(pid, folder)  # the bot moved to another port: its Chrome follows
+                end_politely(other, pid, folder)  # the bot moved to another port: its Chrome follows
         if answers(port):
             self.misses[profile], self.failures[profile], self.answered[profile] = 0, 0, True
             owner = next((data for _, data, p in processes if p == port), None)
@@ -1088,7 +1104,7 @@ class Supervisor:
         is taken back, once."""
         if state.get("status") != "hosted":
             if state.get("pid") and state.get("folder") and state.get("status") != "external":
-                end(int(state["pid"]), state["folder"])
+                end_politely(state.get("port"), int(state["pid"]), state["folder"])
             if port_of(state.get("url")) and release(home, state["url"]):
                 log.info("hermes-hq-browser: %s is back on Hermes' own browser (a hosted Hermes)", profile)
             write_state(self.root, profile, {"profile": profile, "status": "hosted"})
