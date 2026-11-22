@@ -566,8 +566,8 @@ def _pr_owned(request, rows, visit):
     from hermes_cli.profiles import get_profile_dir
     from gateway.config import Platform
     from gateway.owner_identity import same_owner
-    from hermes_state_local_migration import legacy_history_row
-    from hermes_state_mutation_binding import BINDING_PREFIX, binding_names
+    POLICY_PREFIX, validate_local_lineage, legacy_history_row, BINDING_PREFIX, binding_names = \
+        session_pr_status.store_rules()
 
     profiles = {}
     for index, row in enumerate(rows):
@@ -599,8 +599,6 @@ def _pr_owned(request, rows, visit):
         if any(stored.get(k) for k in ('session_key', 'chat_id', 'origin_json')):
             # The closed local session may no longer be in memory. Only a validated
             # local creation receipt for this exact physical transcript authorizes it.
-            from hermes_state_local import POLICY_PREFIX
-            from hermes_state_local_lineage import validate_local_lineage
             raw = conn.execute('SELECT value FROM state_meta WHERE key=?',
                                (POLICY_PREFIX + (stored.get('chat_id') or ''),)).fetchone()
             receipt = json.loads(raw[0]) if raw else {}
