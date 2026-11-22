@@ -498,7 +498,8 @@ _frames_lock = threading.Lock()
 
 
 def _covers(named: str, origin: str) -> bool:
-    """``origin`` is another host of the named site (site_match.covers: same scheme and port, never shared hosting)."""
+    """``origin`` is another host of the named site (site_match.covers: same scheme and port, the named host, a parent
+    of it or a host under it, www. aside; never a sibling, never shared hosting [issue #11])."""
     try:
         return bool(_site_match().covers(named, origin))
     except Exception:
