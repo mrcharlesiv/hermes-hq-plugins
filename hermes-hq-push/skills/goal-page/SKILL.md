@@ -55,6 +55,24 @@ goals_offer({
 })
 ```
 
+### Put what a task needs on the task
+
+A task that says "use your course notes" and leaves them to find the notes is half a task. When a task names
+something to use (their notes, a lesson, a page, a site, a template, a draft), **find it first and attach it** with
+the task's `made`: `file` (its full path), `link` (the URL) or `note` (the lines themselves, in Markdown), up to 6.
+If you looked and couldn't find it, the task's `notes` say so plainly ("I couldn't find your Personal Brand notes:
+where are they?"). Never "see the notes" with nothing attached.
+
+```json
+{"title": "Work through the brand blueprint (40 min)", "who": "me",
+ "notes": "One founder you want to reach, one problem you solve, one example you can share.",
+ "made": [{"title": "Brand blueprint worksheet", "kind": "file", "ref": "/Users/.../course/brand-blueprint.pdf"},
+          {"title": "Lesson 2: Personal Brand", "kind": "link", "ref": "https://course.example.com/lesson-2"}]}
+```
+
+Tasks already under a goal that point at something with nothing attached: attach it with `tasks_update` (`made`)
+on any task you added that they haven't changed yet.
+
 A goal that has a plan already but no number, or a sentence for a name, can be offered **just the set-up fields**
 (a plan with only `name`, `measure` or `due`), when they ask.
 

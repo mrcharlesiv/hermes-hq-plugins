@@ -1193,7 +1193,9 @@ class Store:
 
     # -- writing -----------------------------------------------------------------------------------------------
 
-    def create(self, fields: dict, created_by: str, source: dict, db=None) -> dict:
+    def create(self, fields: dict, created_by: str, source: dict, db=None, made=None) -> dict:
+        """``made`` (keyword only, never from ``fields``, so an app's add can't set it): what a bot attached to a task
+        it offered (a goal offer's task, goals.py), the same files, links and notes tasks_update's ``made`` takes."""
         title = _text(fields.get("title"), TITLE_MAX)
         if not title:
             raise TaskError(400, "A task needs a title.")
@@ -1212,7 +1214,8 @@ class Store:
             "id": new_id(), "rev": 1, "title": title, "notes": _lines(fields.get("notes"), NOTES_MAX),
             "who": who, "bot": bot, "status": "open", "status_note": "",
             "due": _text(fields.get("due"), DUE_MAX) or None, "repeat": repeat, "prep": int(prep),
-            "steps": json.dumps(_clean_steps(fields.get("steps"))), "made": "[]", "source": json.dumps(source),
+            "steps": json.dumps(_clean_steps(fields.get("steps"))), "made": json.dumps(_clean_made(made)),
+            "source": json.dumps(source),
             "created_at": now, "updated_at": now, "done_at": None, "created_by": created_by, "log": "[]",
             "section": None, "position": self.clock(),
             "watch": _text(fields.get("watch"), WATCH_MAX), "chat": json.dumps(_clean_chat(fields.get("chat"))),

@@ -70,6 +70,7 @@ PERSON_TTL = 6 * 3600         # how long a typed turn says "the person is in thi
 SETUP_KEYS = ("name", "why", "due", "measure")   # a plan offer's set-up fields: what it may set on the goal
 BUILT_ON_CAP = 3              # a plan offer's built_on: what the plan rests on, a line each
 BUILT_ON_MAX = 90
+OFFER_TASK_MADE_CAP = 6       # what an offered task carries (owner 2026-11-23: "it would be great if it was just there")
 
 CHECKIN_JOB_NAME = "Goal check-in"
 CHECKIN_JOB_MARK = "goals_next_review"   # in every version's instruction: how an older, unrecorded one is told
@@ -322,6 +323,9 @@ def _clean_offer_tasks(items, goal: dict | None, bot: str, offer_milestones: lis
         notes = tasks._lines(item.get("notes"), tasks.NOTES_MAX)
         if notes:
             one["notes"] = notes
+        attached = tasks._clean_made(item.get("made"))[:OFFER_TASK_MADE_CAP]
+        if attached:   # what the task points at (their notes, a page, a site), there on the task once they accept
+            one["made"] = attached
         wanted = tasks._text(item.get("milestone"), tasks.MILESTONE_TITLE_MAX)
         if wanted and goal:
             found = next((m["id"] for m in goal["milestones"] if m["id"] == wanted), None) or next(
@@ -629,7 +633,8 @@ def answer_offer(store, offer_id: str, action: str, plan: bool = True, in_goal: 
                     fields = {"title": item["title"], "who": item.get("who", "me"), "bot": item.get("bot"),
                               "due": item.get("due"), "notes": item.get("notes"), "position": at + index / 1000,
                               "goal": goal["id"] if in_it else None, "milestone": milestone if in_it else None}
-                    made["added"].append(store.create(fields, created_by=offer["bot"], source=source, db=db)["id"])
+                    made["added"].append(store.create(fields, created_by=offer["bot"], source=source, db=db,
+                                                      made=item.get("made"))["id"])
             offer["made"], offer["state"], offer["answered_at"] = made, "accepted", stamp
             checkin_state("accepted")
         else:   # undo
@@ -1192,6 +1197,16 @@ OFFER_TASK = {"type": "object", "properties": {
     "bot": {"type": "string", "description": "With who 'bot': the goal's lead or a helper (default you)."},
     "due": {"type": "string", "description": "Only if it has a date: " + tasks.DUE_HELP},
     "notes": {"type": "string", "description": "A sentence they can read at a glance."},
+    "made": {"type": "array", "description": "What they need to do it, right on the task, up to "
+             f"{OFFER_TASK_MADE_CAP}: when the task names something (\"use your course notes\", a page, a site, a "
+             "template), attach that thing, not a pointer to it. file: its full path; link: the URL; note: the "
+             "lines themselves in Markdown. If you couldn't find it, say so in notes (\"I couldn't find your Personal "
+             "Brand notes: where are they?\") instead of sending them looking.",
+             "items": {"type": "object", "properties": {
+                 "title": {"type": "string", "description": "A few words, like \"Personal Brand notes\"."},
+                 "kind": {"type": "string", "enum": ["file", "link", "note"]},
+                 "ref": {"type": "string", "description": "file: its full path. link: the URL. note: the text."}},
+                 "required": ["title"]}},
     "milestone": {"type": "string", "description": "One of the goal's milestones (or this offer's own), by name or id."}},
     "required": ["title"]}
 
@@ -1213,7 +1228,9 @@ OFFER_SCHEMA = _schema(
     "looks like (a number or a date), what they already have or want to follow, how much time a week. A plan of set-up "
     "fields alone is fine when they ask (a goal with a plan but no number). kind 'checkin': (the lead only, "
     "in the weekly check-in) summary, then the next three or so tasks. kind 'tasks': tasks for a goal. Each task "
-    "says who: 'me' (theirs) or 'bot' (a bot's own). Tasks already under the goal come back as 'already'. After it, "
+    "says who: 'me' (theirs) or 'bot' (a bot's own). A task that names something to use (their notes, a lesson, a "
+    "page, a site, a template) carries it in made, found first, so they never go looking; if you can't find it, the "
+    "notes say so. Tasks already under the goal come back as 'already'. After it, "
     "end your reply with one short line that asks (\"Want … on …?\"): nothing is added until they tap, so never say \"I "
     "added\" or \"I put\". Your own steps on a goal you lead or help go in with tasks_add instead. Research and drafts "
     "only, always.",
