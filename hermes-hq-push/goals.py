@@ -4,7 +4,8 @@ to help me achieve that goal." The risk is five bots each helping their own way,
 (and in tasks.py's ``bot_goal_place`` for tasks_add / tasks_update), not only in the tools' words:
 
 1. One lead per goal: it plans, runs the check-in, writes where the goal stands and keeps its page.
-2. Helpers take tasks, not the plan: only the lead offers a plan or a check-in (``offer``).
+2. Helpers take tasks, not the plan: only the lead offers a plan or a check-in (``offer``). A plan may also set the
+   goal's name, why, date and number, each only where the goal lacks it (``_setup_kept``).
 3. Every bot knows the active goals by name and why (``known_to_all``, on by default); only the lead and helpers read
    a goal's tasks, milestones, number and page (``goals_list``, ``tasks.goal_seen``).
 4. Offers, not edits: a bot puts its OWN task in a goal it is on; anything for the person, any milestone, any date,
@@ -66,6 +67,9 @@ HISTORY_WEEKS = 12
 PAGE_KEY = "goal:"            # a goal's page in task_pages: "goal:<id>" (a task's is its bare id)
 FOLDED = "folded"             # a held offer its lead was handed at a check-in: folded in, or dropped
 PERSON_TTL = 6 * 3600         # how long a typed turn says "the person is in this chat"
+SETUP_KEYS = ("name", "why", "due", "measure")   # a plan offer's set-up fields: what it may set on the goal
+BUILT_ON_CAP = 3              # a plan offer's built_on: what the plan rests on, a line each
+BUILT_ON_MAX = 90
 
 CHECKIN_JOB_NAME = "Goal check-in"
 CHECKIN_JOB_MARK = "goals_next_review"   # in every version's instruction: how an older, unrecorded one is told
@@ -84,9 +88,21 @@ CHECKIN_JOB_PROMPT = (
 # What every bot hears (pre_llm_call), next to Tasks' own note.
 MARK = "[Hermes HQ Goals note, not from the person:"
 GOALS_RULE = ("When something they say serves one of these, point it there with goals_offer (kind 'tasks'; kind 'goal' "
-              "for a new aim they state, \"I want to…\"); never add to a goal silently.")
+              "for a new aim they state, \"I want to…\"): a task for them waits for their tap, so ask (\"Want … on …?\"), "
+              "never say you added it. Your own step on a goal you lead or help goes in with tasks_add (who 'bot'); "
+              "say so in a line, and never add to a goal silently.")
+# What a bot says beside its goals_offer card (owner 2026-11-22: "I put … on a card" read as already done).
+OFFER_LINE = ("The card is on their screen and nothing is added until they tap: that is the asking. End your reply with "
+              "one short line that asks, as a question (\"Want “<task>” on “<goal>”?\"). Never say you added, put or "
+              "made it, and don't list it again.")
 LEAD_RULE = (
-    "You lead this goal: you plan it (goals_offer kind 'plan': milestones and the first week's tasks, each with who), "
+    "You lead this goal: you plan it (goals_offer kind 'plan': milestones and the first week's tasks, each with who). "
+    "Before a plan, look first for what they already have for it (their notes and files, memory, earlier tries, a "
+    "course or method they follow) and build on that. Then ask at most three questions on ONE question card, each "
+    "with choices, skipping any your looking answered, in this order: what done looks like (a number or a date), what "
+    "they already have or want to follow, how much time a week. Then offer the plan with name (when the goal's name "
+    "is a sentence), why in their words, measure or due when they gave one, and built_on (what the plan rests on). A "
+    "goal with a plan but no number, or a sentence for a name, can be offered just those, when they ask. You also "
     "keep where it stands current (goals_update stands; page for what worked and what didn't) and run its weekly "
     "check-in. Your own tasks go under it with tasks_add (goal, who 'bot'); anything for them, any milestone, any date "
     "is an offer they tap. Never tick their task, a milestone or the goal: say it looks done (goals_update "
@@ -99,8 +115,10 @@ HELPER_RULE = (
 
 
 def status() -> dict:
-    """``/status`` (0.9.66): bots on a goal, and the Goal Page (GET /goals/{id}/page)."""
-    return {"goal_bots": True, "goal_pages": True}
+    """``/status`` (0.9.66): bots on a goal, and the Goal Page (GET /goals/{id}/page). ``goal_setup``: a plan offer
+    may carry ``setup`` and ``built_on``, and POST /goals takes lead, helpers, adds and review in the same call (an
+    add-on without it drops them, so the app sends them in a PATCH after)."""
+    return {"goal_bots": True, "goal_pages": True, "goal_setup": True}
 
 
 def _now_iso(store) -> str:
@@ -326,6 +344,57 @@ def _clean_offer_measure(value) -> dict | None:
     return {"unit": tasks._text(value.get("unit"), tasks.UNIT_MAX), "start": start, "target": target}
 
 
+def _setup_kept(setup: dict, goal: dict, goals: list[dict]) -> tuple[dict, list[str]]:
+    """(the set-up fields a plan may set on ``goal``, why each other one was dropped). ``name`` only when it differs
+    from the goal's name and no other active or paused goal has it; ``why``, ``due`` and ``measure`` only when the
+    goal has none. The same rules hold when the person taps Add (the goal may have changed since)."""
+    kept, dropped = {}, []
+    name = setup.get("name")
+    if name:
+        if name.casefold() == goal["title"].casefold():
+            dropped.append("name: it is the goal's name already")
+        elif any(g["id"] != goal["id"] and g["status"] in ("active", "paused") and g["title"].casefold() == name.casefold()
+                 for g in goals):
+            dropped.append(f"name: another goal is called “{name}”")
+        else:
+            kept["name"] = name
+    for key, words in (("why", "why"), ("due", "date"), ("measure", "number")):
+        if setup.get(key):
+            if goal.get(key):
+                dropped.append(f"{key}: the goal has a {words} already")
+            else:
+                kept[key] = setup[key]
+    return kept, dropped
+
+
+def _clean_offer_setup(args: dict, goal: dict, goals: list[dict]) -> tuple[dict, list[str]]:
+    """A plan offer's set-up fields, cleaned (``name`` as a goal's title, ``why`` one line, ``due`` a day,
+    ``measure`` as a goal offer's), then kept by ``_setup_kept``'s rules. A number is checked only when it would be
+    kept."""
+    given = {"name": tasks._text(args.get("name"), tasks.TITLE_MAX),
+             "why": tasks._text(args.get("why"), tasks.OFFER_WHY_MAX),
+             "due": tasks._clean_start(args.get("due"))}
+    if isinstance(args.get("measure"), dict) and not goal.get("measure"):
+        given["measure"] = _clean_offer_measure(args["measure"])
+    elif isinstance(args.get("measure"), dict):
+        given["measure"] = True   # dropped below: the goal has a number already
+    return _setup_kept({k: v for k, v in given.items() if v}, goal, goals)
+
+
+def _clean_built_on(value) -> list[str]:
+    """What a plan rests on: up to three short lines (their answers, what the bot found), each one line of 90
+    characters at most, each once."""
+    items = [value] if isinstance(value, str) else value if isinstance(value, list) else []
+    out = []
+    for item in items:
+        line = tasks._text(item, BUILT_ON_MAX)
+        if line and line.casefold() not in {o.casefold() for o in out}:
+            out.append(line)
+        if len(out) == BUILT_ON_CAP:
+            break
+    return out
+
+
 def _slot_words(at: float) -> str:
     moment = datetime.fromtimestamp(at)
     return f"{moment.strftime('%a %b')} {moment.day}"
@@ -335,7 +404,10 @@ def offer(store, bot: str, session_id: str, kind: str, args: dict, with_person: 
     """``goals_offer``: a goal to make, a plan or a check-in for one the bot leads, or tasks for a goal. Nothing
     changes on the goal until the person taps, except a check-in's stamp (``goal.checkin``). A ``tasks`` offer from a
     run with no person in the chat (a scheduled job) is held for the lead's next check-in; in a chat with the
-    person it is a card at once, whichever bot makes it. Returns the offer as the app sees it, with ``already`` for tasks under the goal already."""
+    person it is a card at once, whichever bot makes it. A plan may also carry set-up fields for the goal (``setup``:
+    name, why, due, measure, each kept by ``_setup_kept``'s rules) and ``built_on``, the lines it rests on; a plan of
+    set-up fields alone is a plan. Returns the offer as the app sees it, with ``already`` for tasks under the goal
+    already and ``setup_dropped`` for the set-up fields it could not keep, and why (neither is stored)."""
     if not store.goals_on():
         raise tasks.TaskError(403, "Goals is turned off, so there is nothing to offer: help with it in the chat instead.")
     if kind not in KINDS:
@@ -387,9 +459,13 @@ def offer(store, bot: str, session_id: str, kind: str, args: dict, with_person: 
         summary = tasks._lines(args.get("summary"), SUMMARY_MAX) if kind == "checkin" else ""
         if kind == "checkin" and not summary:
             raise tasks.TaskError(400, "A check-in needs its summary: two sentences on what moved since the last one.")
-        if kind == "plan" and not milestones and not fresh:
-            raise tasks.TaskError(400, "A plan needs milestones or tasks (or both): the steps to the goal and the "
-                                       "first week's tasks, each with who.")
+        setup, dropped = _clean_offer_setup(args, goal, goals) if kind == "plan" else ({}, [])
+        built_on = _clean_built_on(args.get("built_on")) if kind == "plan" else []
+        if kind == "plan" and not milestones and not fresh and not setup:
+            raise tasks.TaskError(400, "A plan needs milestones, tasks or set-up fields (name, why, due, measure): any "
+                                       "one is enough. Send the steps to the goal and the first week's tasks, each "
+                                       "with who, or only the set-up fields the goal lacks."
+                                  + (f" Dropped: {'; '.join(dropped)}." if dropped else ""))
         if kind == "tasks" and not fresh:
             raise tasks.TaskError(400, "Nothing to offer: every task is under the goal already, or none was given."
                                   + (f" Already there: {json.dumps(already, ensure_ascii=False)}" if already else ""))
@@ -406,6 +482,10 @@ def offer(store, bot: str, session_id: str, kind: str, args: dict, with_person: 
                         measure=_clean_offer_measure(args.get("measure")))
         if kind in ("goal", "plan"):
             made["milestones"] = milestones
+        if setup:
+            made["setup"] = setup
+        if built_on:
+            made["built_on"] = built_on
         if kind == "checkin":
             made["summary"] = summary
             for o in offers:   # the lead was handed these at this check-in: folded in, or dropped
@@ -421,6 +501,8 @@ def offer(store, bot: str, session_id: str, kind: str, args: dict, with_person: 
         shown = store._show_offer(db, made)
     if already:
         shown["already"] = already
+    if dropped:
+        shown["setup_dropped"] = dropped
     return shown
 
 
@@ -428,12 +510,53 @@ def _goal_name_taken(db, title: str) -> bool:
     return any(g["title"].casefold() == title.casefold() and g["status"] in ("active", "paused") for g in _read_goals(db))
 
 
+def _setup_mark(key: str, value):
+    """What undo compares to tell "changed since": a number by its unit, start, target and where it is."""
+    if key == "measure" and isinstance(value, dict):
+        return {k: value.get(k) for k in ("unit", "start", "target", "now")}
+    return value
+
+
+def _apply_setup(db, goal: dict, setup: dict, stamp: str) -> tuple[dict, dict, dict]:
+    """Accepting a plan's set-up fields: (the goal's changed keys and their new values, what each had before, the
+    marks undo compares). ``name`` becomes the title; when the goal has no why and the plan brings none, the old
+    title (their own words) becomes the why. A number starts where it starts, as a new goal's does."""
+    kept, _ = _setup_kept(setup, goal, _read_goals(db))
+    changes = {}
+    if kept.get("name"):
+        changes["title"] = tasks._text(kept["name"], tasks.TITLE_MAX)
+        if not goal["why"] and not kept.get("why"):
+            changes["why"] = tasks._text(goal["title"], tasks.GOAL_WHY_MAX)
+    if kept.get("why"):
+        changes["why"] = tasks._text(kept["why"], tasks.GOAL_WHY_MAX)
+    if kept.get("due"):
+        changes["due"] = tasks._clean_start(kept["due"])
+    if kept.get("measure"):
+        changes["measure"] = tasks._clean_measure(kept["measure"], None, stamp)
+    changes = {k: v for k, v in changes.items() if v}
+    return (changes, {k: goal.get(k) for k in changes}, {k: _setup_mark(k, v) for k, v in changes.items()})
+
+
+def _undo_setup(db, goal: dict, made: dict) -> dict:
+    """Undo's half for set-up fields: each key back to what it was, unless the person changed it since (it no
+    longer reads as accepting left it) or, for the name, another goal has taken the old one."""
+    changes, set_to = {}, made.get("setup_to") or {}
+    for key, old in (made.get("setup") or {}).items():
+        if key not in set_to or _setup_mark(key, goal.get(key)) != set_to[key]:
+            continue   # theirs now
+        if key == "title" and _goal_name_taken(db, old):
+            continue
+        changes[key] = old
+    return changes
+
+
 def answer_offer(store, offer_id: str, action: str, plan: bool = True, in_goal: bool = True,
                  make_list: bool = True) -> dict:
     """``POST /tasks/offers/{id}`` for every offer: a list offer (no ``kind``) goes to the store as before. On a goal
     offer, ``accept`` makes the goal (led by the bot that offered it; ``plan: false`` is "Keep the Goal, No Plan"),
-    adds a plan's milestones, or adds the tasks under the goal (``in_goal: false``: "Just Tasks", with no goal);
-    ``decline`` changes nothing; ``undo`` takes back what accepting made, except what the person has changed since.
+    adds a plan's milestones and sets its set-up fields in the same write (``made.setup``: what each changed key
+    had before), or adds the tasks under the goal (``in_goal: false``: "Just Tasks", with no goal); ``decline``
+    changes nothing; ``undo`` takes back what accepting made, except what the person has changed since.
     ``{rev, offer, sections, goals}``."""
     with closing(store._db()) as db:
         found = next((o for o in store._read_offers(db) if o["id"] == offer_id), None)
@@ -485,10 +608,13 @@ def answer_offer(store, offer_id: str, action: str, plan: bool = True, in_goal: 
                 adding = [m for m in offer.get("milestones") or [] if m["title"].casefold() not in have]
                 room = tasks.MILESTONES_CAP - len(goal["milestones"])
                 new = tasks._clean_milestones(adding[:max(room, 0)], now=stamp)
-                if new:
-                    goal = _save(store, db, dict(goal, milestones=goal["milestones"] + new,
+                changes, before, after = _apply_setup(db, goal, offer.get("setup") or {}, stamp)
+                if new or changes:   # one write, one line, also when only set-up fields changed
+                    goal = _save(store, db, dict(goal, milestones=goal["milestones"] + new, **changes,
                                                  log=goal["log"] + [{"at": stamp, "by": "you", "text": "Plan added"}]), stamp)
                 made["milestones"] = [m["id"] for m in new]
+                if before:
+                    made["setup"], made["setup_to"] = before, after
             in_it = goal is not None and (in_goal or kind in ("goal", "plan"))
             offer["in_goal"] = bool(in_it)
             if kind != "goal" or plan:
@@ -523,13 +649,18 @@ def answer_offer(store, offer_id: str, action: str, plan: bool = True, in_goal: 
             target = store._read_goal(db, made.get("goal") or offer.get("goal"))
             # A goal it made is theirs once anyone changed it after the accept (an edit, a tick, a lead's words).
             touched = target is not None and (target.get("updated_at") or "") > (made.get("at") or "")
+            changes = {}
             if target is not None and made.get("milestones"):
                 busy = {r[0] for r in db.execute("select milestone from tasks where goal=? and milestone is not null",
                                                  (target["id"],))}
                 gone = {m for m in made["milestones"]}
                 keep = [m for m in target["milestones"] if m["id"] not in gone or m["done"] or m["id"] in busy]
                 if len(keep) != len(target["milestones"]):
-                    target = _save(store, db, dict(target, milestones=keep), stamp)
+                    changes["milestones"] = keep
+            if target is not None and made.get("setup"):
+                changes.update(_undo_setup(db, target, made))
+            if changes:   # the milestones and the set-up fields back in one write
+                target = _save(store, db, dict(target, **changes), stamp)
             if made.get("goal") and target is not None:
                 if not touched and not _under(db, target["id"]) and not any(m["done"] for m in target["milestones"]):
                     db.execute("delete from goals where id=?", (target["id"],))
@@ -1075,17 +1206,31 @@ OFFER_SCHEMA = _schema(
     "The one way to propose anything for a goal: it shows as ONE card the user taps (nothing changes until they do; "
     "Undo takes it back). kind 'goal': they said they want to reach something (\"I want to…\"): offer it as a goal, "
     "with a first plan if you have one (milestones, this week's tasks); if they say yes you lead it. kind 'plan': "
-    "(the lead only) milestones and the first week of tasks for a goal that exists. kind 'checkin': (the lead only, "
+    "(the lead only) milestones and the first week of tasks for a goal that exists, and any set-up fields it lacks "
+    "(name, why, due, measure) with built_on. Before a plan, look first for what they already have for it (their "
+    "notes and files, memory, earlier tries, a course or method they follow) and build on it; then ask at most three "
+    "questions on ONE question card, each with choices, skipping any the looking answered, in this order: what done "
+    "looks like (a number or a date), what they already have or want to follow, how much time a week. A plan of set-up "
+    "fields alone is fine when they ask (a goal with a plan but no number). kind 'checkin': (the lead only, "
     "in the weekly check-in) summary, then the next three or so tasks. kind 'tasks': tasks for a goal. Each task "
     "says who: 'me' (theirs) or 'bot' (a bot's own). Tasks already under the goal come back as 'already'. After it, "
-    "end your reply with one short line: the card is the asking. Research and drafts only, always.",
+    "end your reply with one short line that asks (\"Want … on …?\"): nothing is added until they tap, so never say \"I "
+    "added\" or \"I put\". Your own steps on a goal you lead or help go in with tasks_add instead. Research and drafts "
+    "only, always.",
     {"kind": {"type": "string", "enum": list(KINDS)},
      "goal": GOAL_REF,
      "title": {"type": "string", "description": "kind 'goal': the goal's name, a few words (\"1,000 public testers\")."},
-     "why": {"type": "string", "description": "kind 'goal': why it matters to them, one line in their words."},
-     "due": {"type": "string", "description": "kind 'goal': the day they want it by, YYYY-MM-DD, only if they said."},
-     "measure": {"type": "object", "description": "kind 'goal': a number that says how far it is, {unit, start, "
-                 "target}, only when there is one."},
+     "name": {"type": "string", "description": "kind 'plan': a short name for the goal, a few words (\"Run a 10K\"), "
+              "when its name is a sentence. Their sentence becomes its why when it has none."},
+     "why": {"type": "string", "description": "kind 'goal', or 'plan' when the goal has none: why it matters to "
+             "them, one line in their words."},
+     "due": {"type": "string", "description": "kind 'goal', or 'plan' when the goal has no date: the day they want "
+             "it by, YYYY-MM-DD, only if they said."},
+     "measure": {"type": "object", "description": "kind 'goal', or 'plan' when the goal has no number: a number that "
+                 "says how far it is, {unit, start, target}, only when there is one."},
+     "built_on": {"type": "array", "items": {"type": "string"}, "description": "kind 'plan': up to 3 short lines on "
+                  "what the plan rests on, their answers and what you found (\"Your course notes, 8 units\", "
+                  "\"3 hours a week\")."},
      "summary": {"type": "string", "description": "kind 'checkin': what moved since the last one, two sentences."},
      "milestones": {"type": "array", "description": "kind 'goal' or 'plan': the steps to the goal, in order, a few "
                     "words each.", "items": {"type": "object", "properties": {
@@ -1153,12 +1298,13 @@ def register_tools(ctx, store_for: Callable, profile: Callable[[], str], notify:
         out = {"offer": "waiting", "id": made["id"], "kind": made["kind"]}
         if made.get("already"):
             out["already"] = made["already"]
+        if made.get("setup_dropped"):
+            out["setup_dropped"] = made["setup_dropped"]
         if made.get("held"):
             out = {"held": True, "id": made["id"], "note": "Held for the goal's lead: it isn't a card now; its lead "
                    "folds it in at the next check-in, or drops it. Don't tell them it's waiting for them."}
         else:
-            out["note"] = ("The card is on their screen: that is the asking. End your reply with one short line; "
-                           "don't list it again or ask in words.")
+            out["note"] = OFFER_LINE
         if made["kind"] == "checkin":
             goal = store.get_goal(made["goal"])
             if goal is not None and not store._quiet_now(store.get_settings()):
@@ -1194,6 +1340,7 @@ def register_tools(ctx, store_for: Callable, profile: Callable[[], str], notify:
         except Exception:
             return False
 
+    log.info("hermes-hq-push: goal offers ask before adding")
     for schema, handler, emoji in ((LIST_SCHEMA, handle_list, "🎯"), (OFFER_SCHEMA, handle_offer, "🗳️"),
                                    (UPDATE_SCHEMA, handle_update, "📍"), (NEXT_REVIEW_SCHEMA, handle_next_review, "🗓️")):
         ctx.register_tool(name=schema["name"], toolset="hq_goals", check_fn=on, schema=schema, handler=handler,

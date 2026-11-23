@@ -707,6 +707,52 @@ def _goal_page_skill(ctx):
         log.warning("hermes-hq-push: goal page skill not offered", exc_info=True)
 
 
+# The page skill (skills/html-page, 0.9.78): how to make an HTML page the person opens in the app (a map, a report, a
+# small tool) that holds together on a phone: a starter page in the app's look and check_page.py, which draws it
+# at phone size in dark and light and names what's off (owner 2026-11-21: every bot's page made the same mistakes,
+# a title and checkboxes in one wrapping row, edges that don't line up). A line in every prompt points at it, since
+# a bot about to write a page doesn't think to look for a skill.
+HTML_PAGE_SKILL = Path(__file__).resolve().parent / "skills" / "html-page" / "SKILL.md"
+HTML_PAGE_NOTE = ("Pages for Hermes HQ: before you write an HTML page for the person to open (a map, a report, a chart, "
+                  "a list, a small tool), load the hermes-hq-push:html-page skill, build from its starter page and "
+                  "check the page with it at phone size. Dashboard tiles use hermes-hq-push:dashboard-tile instead.")
+
+
+def _html_page_skill(ctx):
+    if not hasattr(ctx, "register_skill"):
+        log.info("hermes-hq-push: page skill not offered (this Hermes has no plugin skills)")
+        return
+    try:
+        ctx.register_skill("html-page", HTML_PAGE_SKILL,
+                           "Make an HTML page the person opens in the Hermes HQ app (a map, a report, a chart, a "
+                           "list, a small tool): built from a starter in the app's look, checked at phone size.")
+        if callable(getattr(ctx, "register_system_prompt_section", None)):
+            ctx.register_system_prompt_section("hermes-hq-push.pages", HTML_PAGE_NOTE, max_chars=400)
+        log.info("hermes-hq-push: page skill offered")
+    except Exception:
+        log.warning("hermes-hq-push: page skill not offered", exc_info=True)
+
+
+# Background job names (0.9.81): the app's Background list names a running job by the bot's own sentence before the call
+# that started it, else a leading `# comment` in the command (owner 2026-11-22: a row read "claude -p 'Read .goals-bri…"
+# over "No output yet" for 1h 22m, "no way to have any idea what it's for"). A line in every prompt asks bots for both.
+JOB_NAMES_NOTE = ("Background jobs in Hermes HQ: when you start a terminal command in the background (a build, a test run, "
+                  "a coding agent), say in one plain sentence just before the call what it's for, and make the command's "
+                  "first line a short comment naming it (# Fixing the four goal set-up issues). The app shows that as "
+                  "the job's name while it runs.")
+
+
+def _job_names_note(ctx):
+    if not callable(getattr(ctx, "register_system_prompt_section", None)):
+        log.info("hermes-hq-push: job names note not offered (this Hermes has no prompt sections)")
+        return
+    try:
+        ctx.register_system_prompt_section("hermes-hq-push.jobs", JOB_NAMES_NOTE, max_chars=400)
+        log.info("hermes-hq-push: job names note offered")
+    except Exception:
+        log.warning("hermes-hq-push: job names note not offered", exc_info=True)
+
+
 def _short_titles():
     try:
         log.info("hermes-hq-push: short chat names %s", short_titles.install())
@@ -765,7 +811,8 @@ def _tasks_notify(task: dict, profile: str) -> None:
 
 def _tasks_tools(ctx):
     try:
-        tasks.register_tools(ctx, _tasks_store, _profile, _tasks_notify)
+        tasks.register_tools(ctx, _tasks_store, _profile, _tasks_notify, goals.person_in)
+        log.info("hermes-hq-push: tasks finish on their word on")   # 0.9.81: the restart's proof of load
     except Exception:
         log.warning("hermes-hq-push: tasks tools not registered", exc_info=True)
     try:
@@ -856,6 +903,8 @@ def register(ctx):
     _dashboard_skill(ctx)
     _task_page_skill(ctx)
     _goal_page_skill(ctx)
+    _html_page_skill(ctx)
+    _job_names_note(ctx)
     _desktop_theme()
     _restart_guard()
     _own_chats()

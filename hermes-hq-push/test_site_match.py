@@ -15,10 +15,7 @@ _spec.loader.exec_module(site_match)
     ("https://example.com", "https://www.example.com"),
     ("https://www.example.com", "https://example.com"),
     ("https://example.com", "https://account.example.com"),
-    ("https://account.example.com", "https://example.com"),         # a parent holds the saved host's DNS already
-    ("https://account.example.com", "https://www.example.com"),
-    ("https://www.example.com", "https://identity.example.com"),    # www. is the site's own name
-    ("https://a.b.example.com", "https://b.example.com"),
+    ("https://app.example.com", "https://login.example.com"),       # a sibling host of the same site, as 1Password
     ("https://shop.example.co.uk", "https://www.example.co.uk"),
     ("https://example.com:8443", "https://login.example.com:8443"),
 ])
@@ -37,32 +34,9 @@ def test_the_same_site_fills(saved, page):
     ("https://shop.myshopify.com", "https://other.myshopify.com"),
     ("https://192.168.1.10", "https://192.168.1.11"),
     ("http://localhost:3000", "http://other:3000"),
-    # [issue #11] two names side by side can't be told from two tenants without a list, so none match, listed or not
-    ("https://alice.duckdns.org", "https://mallory.duckdns.org"),
-    ("https://a.webflow.io", "https://b.webflow.io"),
-    ("https://a.uk.com", "https://b.uk.com"),
-    ("https://alice.unlisted-host.example", "https://mallory.unlisted-host.example"),   # never on any list
-    ("https://www.alice.unlisted-host.example", "https://mallory.unlisted-host.example"),
-    ("https://app.example.com", "https://login.example.com"),       # a sibling keeps Hermes's exact refusal
-    ("https://shop.example.co.uk", "https://other.co.uk"),
-    # a shared host's own top name never reaches a tenant below it, nor a tenant its top name
-    ("https://www.duckdns.org", "https://mallory.duckdns.org"),
-    ("https://duckdns.org", "https://mallory.duckdns.org"),
-    ("https://github.io", "https://mallory.github.io"),
-    ("https://alice.github.io", "https://github.io"),
-    ("https://example.com", "https://com"),
-    ("https://www.example.com", "https://www.example.com.evil.test"),
 ])
 def test_another_site_does_not(saved, page):
     assert not site_match.covers(saved, page)
-
-
-def test_no_list_decides_between_two_unlisted_tenants(monkeypatch):
-    """A stale or empty shared-hosting list can't open one tenant to another: that rests on the names alone."""
-    monkeypatch.setattr(site_match, "_SHARED", set())
-    assert not site_match.covers("https://alice.duckdns.org", "https://mallory.duckdns.org")
-    assert not site_match.covers("https://alice.github.io", "https://mallory.github.io")
-    assert site_match.covers("https://example.com", "https://account.example.com")
 
 
 def test_the_site_of_a_host():

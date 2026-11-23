@@ -542,6 +542,8 @@ class SessionPRBatchIn(BaseModel):
     sessions: list[SessionPRIn] = Field(max_length=32)
     # A chat being opened: its waiting pull requests are asked about again rather than read from the cache.
     fresh: StrictBool = False
+    # The one chat whose pull request card is open: each waiting item's files and check runs too.
+    detail: StrictBool = False
 
 
 class SessionPRMarkIn(BaseModel):
@@ -717,7 +719,7 @@ def sessions_pr_status(body: SessionPRBatchIn, request: Request):
             access[actor.subject] = session_pr_status.access_for(data_dir, actor.subject, config)
         return {"profile": profile, "id": sid, "created": created, "work": work, "access": access[actor.subject],
                 "repos": config['repos'], "data_dir": data_dir, "closed": f"{profile}/{sid}" in marks,
-                "fresh": body.fresh and len(rows) <= 4}
+                "fresh": body.fresh and len(rows) <= 4, "detail": body.detail and len(rows) <= 4}
 
     return {"sessions": session_pr_status.resolve_batch(_pr_owned(request, rows, visit))}
 
@@ -995,6 +997,13 @@ class GoalIn(BaseModel):
     position: float | None = None
     measure: MeasureIn | None = None
     milestones: list[MilestoneIn] = Field(default_factory=list, max_length=30)
+    # Goal set-up: the bots in the same call, so a goal made with a lead is one write and one "Added" line (before, the app
+    # sent them in a PATCH after, which wrote "Lead changed" too). Left out: no lead, as before. review left out with
+    # a lead is Monday 08:00; null is no check-in.
+    lead: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    helpers: list[str] = Field(default_factory=list, max_length=5)
+    adds: str | None = Field(default=None, pattern="^(ask|auto)$")
+    review: ReviewIn | None = None
 
 
 class GoalPatchIn(BaseModel):
@@ -1244,11 +1253,18 @@ def _measure_fields(measure: "MeasureIn | None"):
 
 @router.post("/goals")
 def goals_create(body: GoalIn):
-    """A goal: its name, and any of why, a day, a colour, a number and milestones. Returns the Goal."""
-    fields = body.model_dump(exclude={"measure", "milestones"})
+    """A goal: its name, and any of why, a day, a colour, a number and milestones, and its bots (lead, helpers, adds,
+    review) in the same call: one write, one "Added" line. Returns the Goal. Setting the bots with a PATCH after
+    still works."""
+    fields = body.model_dump(exclude={"measure", "milestones", "review"})
     fields["measure"] = _measure_fields(body.measure)
     fields["milestones"] = [m.model_dump(exclude_unset=True) for m in body.milestones]
-    return _goal_call(lambda: _tasks_store().create_goal(fields))
+    if "review" in body.model_fields_set:   # left out: a lead's default; null: no check-in
+        fields["review"] = body.review.model_dump() if body.review is not None else None
+    goal = _goal_call(lambda: _tasks_store().create_goal(fields))
+    if goal.get("lead"):
+        _reconcile_checkin({goal["lead"]})   # its check-in job, as a PATCH that gives a lead arms it
+    return goal
 
 
 @router.patch("/goals/{goal_id}")

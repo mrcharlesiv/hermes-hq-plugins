@@ -470,6 +470,23 @@ def test_the_goals_setting_is_a_bool_and_defaults_on(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Offers: the line beside the card asks (owner 2026-11-22: "I put … on a card" read as already done)
+# ---------------------------------------------------------------------------
+
+def test_the_line_beside_an_offer_asks_and_never_says_it_was_added(tmp_path):
+    w = Wired(tmp_path)
+    offered = w.call("goals_offer", {"kind": "goal", "title": "Grow a following", "tasks": [{"title": "Post the demo"}]},
+                     as_bot="herald")
+    note = offered["note"]
+    assert note == goals.OFFER_LINE and "nothing is added until they tap" in note and "question" in note
+    assert "never say you added, put" in note.lower()
+    assert "never say \"i added\" or \"i put\"" in goals.OFFER_SCHEMA["description"].lower()
+    rule = goals.GOALS_RULE
+    assert "waits for their tap" in rule and "never say you added it" in rule
+    assert "tasks_add (who 'bot')" in rule and "never add to a goal silently" in rule
+
+
+# ---------------------------------------------------------------------------
 # Offers: kind goal
 # ---------------------------------------------------------------------------
 
@@ -1154,7 +1171,7 @@ def test_the_manifest_lists_the_goals_tools_and_the_skill_is_there():
     manifest = (HERE / "plugin.yaml").read_text()
     for name in ("goals_list", "goals_offer", "goals_update", "goals_next_review"):
         assert name in manifest
-    assert 'version: "0.9.76"' in manifest and push.PLUGIN_VERSION == "0.9.76"
+    assert 'version: "0.9.84"' in manifest and push.PLUGIN_VERSION == "0.9.84"
     skill = (HERE / "skills" / "goal-page" / "SKILL.md").read_text()
     assert skill.startswith("---\nname: goal-page\n") and "stands" in skill and "summary" in skill
     for bot in ("otto", "herald", "ivy", "wren", "juno"):
@@ -1177,3 +1194,4 @@ def test_undo_takes_back_a_goal_the_offer_made_and_keeps_one_that_changed_since(
     w.store.update_goal(kept_id, w.store.get_goal(kept_id)["rev"], {"why": "For Sunday."})
     kept = goals.answer_offer(w.store, again["id"], "undo")
     assert w.store.get_goal(kept_id) is not None and kept_id in kept["offer"]["kept"]
+

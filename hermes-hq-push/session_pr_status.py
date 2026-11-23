@@ -334,6 +334,34 @@ def _pr_result(pr, repo, branch=None, number=None, head_repo=None):
             'url': f'https://github.com/{repo}/pull/{num}'}
 
 
+_BASE_REF = re.compile(r'[^\x00-\x20\x7f~^:?*\[\\]{1,255}\Z')
+_HEAD_SHA = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?\Z')
+_MAX_COUNT = 2147483647
+MAX_TITLE = 200
+MAX_RUN_NAME = 120
+MAX_RUNS = 30
+
+
+def _pr_facts(pr):
+    """What a review card shows, from the pull request answer already fetched, each checked on its own
+    (a malformed one is left out): ``_size``, ``_title``, ``_base`` and ``_sha`` (the head commit, for
+    its check runs). All internal until ``_review`` decides they are sent."""
+    facts = {}
+    numbers = [pr.get(key) for key in ('changed_files', 'additions', 'deletions')]
+    if all(type(n) is int and 0 <= n <= _MAX_COUNT for n in numbers):
+        facts['_size'] = {'files': numbers[0], 'additions': numbers[1], 'deletions': numbers[2]}
+    title = pr.get('title')
+    if isinstance(title, str) and title.strip():
+        facts['_title'] = title.strip()[:MAX_TITLE].strip()
+    base = pr['base'].get('ref')
+    if isinstance(base, str) and _BASE_REF.fullmatch(base):
+        facts['_base'] = base
+    sha = pr['head'].get('sha')
+    if isinstance(sha, str) and _HEAD_SHA.fullmatch(sha):
+        facts['_sha'] = sha
+    return facts
+
+
 _merged_loaded = set()
 
 
@@ -382,8 +410,9 @@ def _lookup(repo, number, access, fresh=False):
     """What became of one pull request: draft, open, merged, closed, or unknown (never a guess).
 
     The answer carries ``_head`` (the pull request's branch) when GitHub said it, for joining it to the
-    chat's own branch; it is never sent. *fresh*: a waiting answer older than ``FRESH_AFTER`` is asked
-    again (with its ETag, so an unchanged one costs GitHub nothing new)."""
+    chat's own branch, and what ``_pr_facts`` read; none of it is sent as is. *fresh*: a waiting answer
+    older than ``FRESH_AFTER`` is asked again (with its ETag, so an unchanged one costs GitHub nothing
+    new)."""
     link = {'repo': repo, 'number': number, 'url': f'https://github.com/{repo}/pull/{number}'}
     unknown = {'state': 'unknown', **link}
     if not _valid_repo(repo) or type(number) is not int or not 0 < number <= 2147483647:
@@ -410,6 +439,7 @@ def _lookup(repo, number, access, fresh=False):
         pr, tag = _api(f'/repos/{quote(owner, safe="")}/{quote(name, safe="")}/pulls/{number}', access, etag)
         result = {('_head' if key_ == 'branch' else key_): value
                   for key_, value in _pr_result(pr, repo, None, number).items()}
+        result.update(_pr_facts(pr))
         etag = tag
     except _Unchanged:
         result = dict(previous)
@@ -429,6 +459,212 @@ def _lookup(repo, number, access, fresh=False):
         if result['state'] == 'merged' and not access.token and not (previous and previous['state'] == 'merged'):
             _save_merged(access.data_dir)
     return result
+
+
+_reviews = OrderedDict()   # (access key, repo, 'checks', head) or (…, 'files', number, head) -> (expires, answer, etag, failed)
+
+
+def _asked(key, endpoint, access, read, fresh=False):
+    """*read* of GitHub's answer at *endpoint*, under the rules ``_lookup`` follows: kept for ``TTL``,
+    asked again with its ETag (an unchanged answer costs nothing), *fresh* asks again once it is
+    ``FRESH_AFTER`` old; a failed or malformed answer keeps the last one and isn't asked again for
+    ``TTL_FAILED``. None when nothing is known."""
+    with _lock:
+        entry = _reviews.get(key)
+        now = time.monotonic()
+        stale = fresh and entry is not None and not entry[3] and now - (entry[0] - TTL) >= FRESH_AFTER
+        if entry and entry[0] > now and not stale:
+            _reviews.move_to_end(key)
+            return entry[1]
+    previous = entry[1] if entry else None
+    etag = entry[2] if previous is not None else None
+    failed = False
+    try:
+        data, tag = _api(endpoint, access, etag)
+        result = read(data)
+        if result is None:
+            raise ValueError('malformed answer')
+        etag = tag
+    except _Unchanged:
+        result = previous
+    except Exception:
+        result, failed = previous, True
+    with _lock:
+        _reviews[key] = (time.monotonic() + (TTL_FAILED if failed else TTL), result, etag, failed)
+        _reviews.move_to_end(key)
+        while len(_reviews) > MAX_CACHE:
+            _reviews.popitem(last=False)
+    return result
+
+
+def _may_ask(repo, access):
+    """Nothing unproven leaves the computer: the owner's token, or a repository declared public."""
+    return _valid_repo(repo) and bool(access.token or repo.lower() in access.public_repos)
+
+
+_PASSED = ('success', 'neutral', 'skipped')
+_RUN_ORDER = {'failed': 0, 'running': 1, 'passed': 2}
+
+
+def _read_checks(data):
+    """GitHub's check runs of a commit as ``{'state', 'passed', 'failed', 'running', 'runs'}``; ``{}``
+    when there are none or more than one page of them (not all known); None when malformed."""
+    if not isinstance(data, dict) or type(data.get('total_count')) is not int or not isinstance(data.get('check_runs'), list):
+        return None
+    runs = data['check_runs']
+    if data['total_count'] > len(runs):
+        return {}
+    if data['total_count'] < len(runs) or len(runs) > 100:
+        return None
+    counts = {'passed': 0, 'failed': 0, 'running': 0}
+    named = []
+    for run in runs:
+        if not isinstance(run, dict) or not isinstance(run.get('status'), str):
+            return None
+        if run['status'] == 'completed':
+            state = 'passed' if run.get('conclusion') in _PASSED else 'failed'
+        else:
+            state = 'running'
+        counts[state] += 1
+        name = run.get('name')
+        if isinstance(name, str) and name.strip():
+            named.append({'name': name.strip()[:MAX_RUN_NAME].strip(), 'state': state})
+    if not runs:
+        return {}
+    named.sort(key=lambda run: _RUN_ORDER[run['state']])
+    state = 'failed' if counts['failed'] else 'running' if counts['running'] else 'passed'
+    return {'state': state, **counts, 'runs': named[:MAX_RUNS]}
+
+
+def _checks(repo, sha, access, fresh=False):
+    """The check runs of a waiting pull request's head commit: one request, ``/commits/{sha}/check-runs``."""
+    if not isinstance(sha, str) or not _HEAD_SHA.fullmatch(sha) or not _may_ask(repo, access):
+        return None
+    owner, name = repo.split('/')
+    return _asked((access.key, repo.lower(), 'checks', sha),
+                  f'/repos/{quote(owner, safe="")}/{quote(name, safe="")}/commits/{sha}/check-runs?per_page=100',
+                  access, _read_checks, fresh)
+
+
+def _read_files(data):
+    """GitHub's files of a pull request as the contract's ``files``; None when malformed."""
+    if not isinstance(data, list):
+        return None
+    files = []
+    local = _local()
+    for entry in data[:local.MAX_FILES]:
+        if not isinstance(entry, dict):
+            return None
+        path, adds, dels = entry.get('filename'), entry.get('additions'), entry.get('deletions')
+        if (not isinstance(path, str) or not 0 < len(path) <= 4096 or '\x00' in path
+                or type(adds) is not int or type(dels) is not int or not 0 <= adds <= _MAX_COUNT or not 0 <= dels <= _MAX_COUNT):
+            return None
+        file = {'path': path, 'additions': adds, 'deletions': dels}
+        patch = entry.get('patch')
+        if isinstance(patch, str) and patch.startswith('@@'):
+            if len(patch) > local.MAX_PATCH:
+                file['patch_cut'] = True
+            else:
+                file['patch'] = patch
+        elif patch is None and adds + dels > 0:
+            file['patch_cut'] = True        # GitHub leaves out a diff too large to show
+        files.append(file)
+    return files
+
+
+def _pr_files(repo, number, sha, access, fresh=False):
+    """The files of a waiting pull request (with their patches): one request, ``/pulls/{n}/files``."""
+    if (not isinstance(sha, str) or not _HEAD_SHA.fullmatch(sha) or type(number) is not int
+            or not 0 < number <= _MAX_COUNT or not _may_ask(repo, access)):
+        return None
+    owner, name = repo.split('/')
+    return _asked((access.key, repo.lower(), 'files', number, sha),
+                  f'/repos/{quote(owner, safe="")}/{quote(name, safe="")}/pulls/{number}/files?per_page=50',
+                  access, _read_files, fresh)
+
+
+def _review(answer, access, fresh=False, detail=False):
+    """The review facts of one item: ``size``, ``checks``, ``title``, ``base`` and, with *detail*,
+    ``files`` and ``checks.runs``. Only what is known; anything that fails leaves them out, never the
+    answer.
+
+    A pull request on GitHub (``source: github``) has GitHub's title, base and, while it waits there,
+    its size and check runs. A branch of the chat's own still waiting (``_where``) has the repository's
+    main as its base, git's size and files; a finished branch has none of them (a list poll's items
+    are mostly finished: nothing is added to them). A pull request joined to its branch has GitHub's
+    size while it waits on GitHub, else the branch's; its files are the branch's while the branch waits."""
+    if answer['state'] not in _WAITING:
+        # Finished or unknown (most items of a list poll): a title and a base at most, asked of nothing.
+        if answer['source'] == 'github':
+            facts = {'title': answer['_title']} if '_title' in answer else {}
+            if '_base' in answer:
+                facts['base'] = answer['_base']
+            return facts
+        return {}
+    try:
+        facts = {}
+        waiting = answer.get('state') in _WAITING
+        github = answer.get('source') == 'github'
+        where = answer.get('_where')
+        pr_waiting = github and answer.get('_pr_state', answer.get('state')) in _WAITING
+        branch_waiting = bool(where) and where[3] is not None and answer.get('_git_state', answer.get('state')) == 'draft'
+        local = (None, None)
+        if waiting and branch_waiting and (not pr_waiting or detail):
+            local = _local().branch_review(where[0], where[2], where[3], detail)
+        if waiting:
+            if pr_waiting:
+                if '_size' in answer:
+                    facts['size'] = dict(answer['_size'])
+            elif local[0] is not None:
+                facts['size'] = local[0]
+            checks = _checks(answer.get('repo'), answer.get('_sha'), access, fresh) if pr_waiting else None
+            if checks:
+                facts['checks'] = {key: checks[key] for key in ('state', 'passed', 'failed', 'running')}
+                if detail:
+                    facts['checks']['runs'] = [dict(run) for run in checks['runs']]
+        if github and '_title' in answer:
+            facts['title'] = answer['_title']
+        if github and '_base' in answer:
+            facts['base'] = answer['_base']
+        elif where:
+            facts['base'] = where[1]
+        if detail and waiting:
+            files = local[1] if branch_waiting else (
+                _pr_files(answer.get('repo'), answer.get('number'), answer.get('_sha'), access, fresh)
+                if pr_waiting and not where else None)
+            if files is not None:
+                facts['files'] = [dict(file) for file in files]
+        return {key: facts[key] for key in ('size', 'checks', 'title', 'base', 'files') if key in facts}
+    except Exception:
+        return {}
+
+
+_LEAD = ('size', 'checks', 'title', 'base')
+
+
+def _lead(answer, facts):
+    """The one answer as it is sent, with the same ``size``, ``checks``, ``title`` and ``base`` as its
+    item (never ``files`` or ``checks.runs``)."""
+    lead = _public(answer)
+    if not facts:
+        return lead
+    for key in _LEAD:
+        if key in facts:
+            lead[key] = ({k: v for k, v in facts[key].items() if k != 'runs'} if key == 'checks' else facts[key])
+    return lead
+
+
+def _cut_patches(items):
+    """The patches of one answer total at most ``MAX_PATCHES`` characters, in the items' order."""
+    budget = _local().MAX_PATCHES
+    for item in items:
+        for file in item.get('files', ()):
+            if 'patch' in file:
+                if len(file['patch']) > budget:
+                    del file['patch']
+                    file['patch_cut'] = True
+                else:
+                    budget -= len(file['patch'])
 
 
 def _public(answer):
@@ -480,10 +716,13 @@ def _joined(github, git):
         state = github['state']
     joined = {**git, **{k: v for k, v in github.items() if k in ('repo', 'number', 'url')}, 'state': state,
               'branch': git.get('branch') or github.get('_head'), 'source': 'github'}
+    # What GitHub and the branch each said, for the review facts (internal, never sent).
+    joined.update({k: v for k, v in github.items() if k in ('_size', '_title', '_base', '_sha')},
+                  _pr_state=github['state'], _git_state=git['state'])
     return joined
 
 
-def _detail(created, work, access=None, repos=(), tips=None, fresh=False):
+def _detail(created, work, access=None, repos=(), tips=None, fresh=False, detail=False, review=False):
     """``(answer, items)``: where a session's code changes stand as one answer, and every pull request
     and branch of its own that it rests on (newest first, at most ``MAX_ITEMS``).
 
@@ -493,13 +732,17 @@ def _detail(created, work, access=None, repos=(), tips=None, fresh=False):
     finished: merged before closed (a chat whose work landed is not undone by a later attempt it gave
     up). Then, when older work was left out or half the history couldn't be read, ``unknown``. No pull
     request and no branch of its own: ``none``.
+
+    *review* (the route's answers): each item, and the one answer as its item, also carries the review
+    facts ``_review`` knows; with *detail* the items waiting carry their ``files`` and ``checks.runs``
+    too. Without it the answer and items are exactly what they were before review facts existed.
     """
     if created is None and work is None:
         return {'state': 'unknown'}, []
     access = access if access is not None else Access()
     github = [dict(_lookup(repo, number, access, fresh), source='github') for repo, number in (created or ())]
     try:
-        git, unplaced = _local().local_items(work, repos, tips) if work and repos else ([], [])
+        git, unplaced = _local().local_items(work, repos, tips, where=review) if work and repos else ([], [])
     except Exception:
         git, unplaced = [], [None]
     git = [dict(answer, source='git') for answer in git]
@@ -510,25 +753,45 @@ def _detail(created, work, access=None, repos=(), tips=None, fresh=False):
         if match is not None:
             github[index] = _joined(pr, git.pop(match))
     known = git + github          # the same state from GitHub is told before a branch's (newest last)
-    items = [{**_public(a), 'source': a['source']} for a in list(reversed(github)) + list(reversed(git))]
+    ordered = list(reversed(github)) + list(reversed(git))
+    items = [{**_public(a), 'source': a['source']} for a in ordered]
     items += [{'state': 'unknown', 'branch': name, 'source': 'git'} for name in reversed(unplaced) if name]
     items = items[:MAX_ITEMS]
+    reviewed = {}
+
+    def facts(answer):
+        if not review:
+            return {}
+        found = reviewed.get(id(answer))
+        return found if found is not None else _review(answer, access, fresh, detail)
+    if review:
+        # The pull requests, and the branches still waiting (only they carry ``_where``): a finished
+        # branch has no review facts.
+        shown = [(index, answer) for index, answer in enumerate(github[::-1][:len(items)])]
+        shown += [(len(ordered) - 1 - index, answer) for index, answer in enumerate(git)
+                  if '_where' in answer and len(ordered) - 1 - index < len(items)]
+        for index, answer in shown:
+            found = reviewed[id(answer)] = _review(answer, access, fresh, detail)
+            if found:
+                items[index].update(found)
+        if detail:
+            _cut_patches(items)
 
     waiting = next((a for a in reversed(github) if a['state'] in _WAITING), None) \
         or next((a for a in reversed(git) if a['state'] in _WAITING), None)
     if waiting is not None:
-        return _public(waiting), items
+        return _lead(waiting, facts(waiting)), items
     unreadable = next((a for a in reversed(github) if a['state'] == 'unknown'), None)
     if unreadable is not None and not git:
-        return _public(unreadable), items
+        return _lead(unreadable, facts(unreadable)), items
     finished = _finished_pick([a for a in known if a['state'] in ('merged', 'closed')])
     truncated = bool(getattr(created, 'truncated', False)) or bool((work or {}).get('truncated'))
     if finished is not None and not truncated:
-        return _public(finished), items
+        return _lead(finished, facts(finished)), items
     if truncated:
         return {'state': 'unknown'}, items       # older work was left out: it may still be waiting
     if unreadable is not None:
-        return _public(unreadable), items
+        return _lead(unreadable, facts(unreadable)), items
     if created is None or work is None or unplaced:
         # Half the history could not be read, or the chat made a branch no listed repository
         # knows: not proof of nothing.
@@ -547,29 +810,33 @@ def _resolve(created, work, access=None, repos=(), tips=None, closed=False):
     return _resolve_detail(created, work, access, repos, tips, closed)[0]
 
 
-def _resolve_detail(created, work, access=None, repos=(), tips=None, closed=False, fresh=False):
-    answer, items = _detail(created, work, access, repos, tips, fresh)
+def _resolve_detail(created, work, access=None, repos=(), tips=None, closed=False, fresh=False, detail=False,
+                    review=False):
+    answer, items = _detail(created, work, access, repos, tips, fresh, detail, review)
     # The owner's own mark: a label over whatever isn't merged, a pull request still open on GitHub
-    # included (each item keeps what GitHub or git says). Work that reached main says so itself.
+    # included (each item keeps what GitHub or git says). Work that reached main says so itself. A
+    # marked answer is closed: no size or checks of its own (its item keeps them).
     if closed and answer.get('state') in ('none', 'draft', 'open', 'unknown', 'closed'):
-        answer = {**answer, 'state': 'closed', 'manual': True}
+        answer = {**{k: v for k, v in answer.items() if k not in ('size', 'checks')}, 'state': 'closed', 'manual': True}
     return answer, items
 
 
 def resolve_batch(items):
-    """*items*: ``{'profile', 'id', 'created', 'work', 'access', 'repos', 'data_dir', 'closed', 'fresh'}`` already
-    authorized and read in one snapshot."""
+    """*items*: ``{'profile', 'id', 'created', 'work', 'access', 'repos', 'data_dir', 'closed', 'fresh', 'detail'}``
+    already authorized and read in one snapshot. *detail* (files and check runs) is honoured for a batch
+    of 4 or fewer only."""
     if len(items) > MAX_BATCH:
         raise ValueError('too many sessions')
     data_dir = next((item.get('data_dir') for item in items if item.get('data_dir')), None)
     tips = _tips_for(data_dir)
     before = dict(tips) if tips is not None else None
+    few = len(items) <= 4
 
     def one(item):
         try:
             result, listed = _resolve_detail(item.get('created'), item.get('work', {}), item.get('access'),
                                              item.get('repos') or (), tips, bool(item.get('closed')),
-                                             bool(item.get('fresh')))
+                                             bool(item.get('fresh')), bool(item.get('detail')) and few, True)
         except Exception:
             result, listed = {'state': 'unknown'}, []
         answer = {'profile': item['profile'], 'id': item['id'], **result}

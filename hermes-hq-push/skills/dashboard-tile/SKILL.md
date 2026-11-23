@@ -228,6 +228,9 @@ is cut off, cramped or plain, or asks for a new look, make it again as a spec at
 
 ## A page of your own
 
+A page that isn't a tile (a map, a report, a list to open and read) is made with the `hermes-hq-push:html-page`
+skill instead.
+
 Only when the whole tile is something the kit's layout can't hold (a game, a full-bleed animation): start from
 `${HERMES_SKILL_DIR}/custom.html`, a hand-written page with the same fit script, and follow the rules in its
 comments. Check it the same way. A `custom` block inside a kit tile is almost always the better answer.
