@@ -295,7 +295,7 @@ def test_the_route_turns_the_tools_on_and_the_status_says_so(client, tmp_path):
     base = "/api/plugins/hermes-hq-push"
     before = test.get(f"{base}/status").json()
     assert before["travelCards"] is True and before["travelCardsShown"] is False
-    assert "shoppingCards" in before
+    assert "shoppingCards" in before and before["toolPermissions"] is True
     assert test.put(f"{base}/travel/cards").json() == {"ok": True}
     assert (tmp_path / "data" / travel.CARDS).exists()
     after = test.get(f"{base}/status").json()

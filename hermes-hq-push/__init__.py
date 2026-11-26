@@ -54,6 +54,9 @@ to reading only, and nothing becomes a task until the user adds it. 0.9.66: bots
 and helpers, the plan and the weekly check-in as offer cards, tools goals_list, goals_offer, goals_update and
 goals_next_review (toolset hq_goals), a note naming the person's goals, one "Goal check-in" job per lead bot (kept to
 research and drafts by pre_tool_call), and the Goal Page (GET /goals/{id}/page; skills/goal-page).
+0.9.86: travel.py shows flights and hotels as cards (show_flights, show_hotels; toolset hq_travel), and
+tool_permissions.py makes a connector tool's level from the app's Connectors real: pre_tool_call asks the person
+through Hermes's own approval before a tool set to ask runs (last, so every refusal above stands).
 """
 import importlib.util
 import logging
@@ -126,6 +129,14 @@ else:
     travel = importlib.util.module_from_spec(_travel_spec)
     sys.modules["hermes_hq_travel"] = travel
     _travel_spec.loader.exec_module(travel)
+if "hermes_hq_tool_permissions" in sys.modules:   # [tool-permissions] 0.9.86: shared with the status route
+    tool_permissions = sys.modules["hermes_hq_tool_permissions"]
+else:
+    _perms_spec = importlib.util.spec_from_file_location("hermes_hq_tool_permissions",
+                                                         Path(__file__).with_name("tool_permissions.py"))
+    tool_permissions = importlib.util.module_from_spec(_perms_spec)
+    sys.modules["hermes_hq_tool_permissions"] = tool_permissions
+    _perms_spec.loader.exec_module(tool_permissions)
 if "hermes_hq_tasks" in sys.modules:   # one copy for this process: ideas.py and the dashboard routes share it
     tasks = sys.modules["hermes_hq_tasks"]
 else:
@@ -393,10 +404,28 @@ def pre_tool_call(tool_name="", args=None, **kwargs):
                or _goals_veto(tool_name, kwargs.get("session_id"))
                or _draft_veto(tool_name, args, kwargs.get("session_id"))
                or _pay_block(tool_name, args, kwargs.get("session_id")) or _show_first(tool_name, args, kwargs)
-               or _job_clarify(tool_name))
-    if verdict is None:
+               or _job_clarify(tool_name)
+               or _connector_level(tool_name, args))
+    if verdict is None or (isinstance(verdict, dict) and verdict.get("action") == "approve"):
         _named_site(tool_name, args, kwargs.get("task_id"))
         _live_step(tool_name, args, kwargs)
+    return verdict
+
+
+def _connector_level(tool_name, args):
+    """[tool-permissions] 0.9.86: a connector tool set to ask in the app's Connectors (tools.permissions in the bot's
+    config.yaml) asks the person through Hermes's own approval, or is refused where this Hermes can't ask
+    (tool_permissions.check). Last, so every refusal above stands as it was: Hermes takes any block over an approve.
+    One prefix test for a tool that isn't a connector's; never raises, never logs the call's arguments."""
+    if not isinstance(tool_name, str) or not tool_name.startswith("mcp_"):
+        return None
+    try:
+        verdict = tool_permissions.check(tool_name, args)
+    except Exception:
+        return None
+    if verdict:
+        log.info("hermes-hq-push: %s %s: its connector level asks first", tool_name,
+                 "asked" if verdict["action"] == "approve" else "refused")
     return verdict
 
 

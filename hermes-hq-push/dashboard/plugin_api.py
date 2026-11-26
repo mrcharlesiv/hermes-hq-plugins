@@ -105,6 +105,14 @@ else:
     travel = importlib.util.module_from_spec(_travel_spec)
     sys.modules["hermes_hq_travel"] = travel
     _travel_spec.loader.exec_module(travel)
+if "hermes_hq_tool_permissions" in sys.modules:   # [tool-permissions] 0.9.86
+    tool_permissions = sys.modules["hermes_hq_tool_permissions"]
+else:
+    _perms_spec = importlib.util.spec_from_file_location("hermes_hq_tool_permissions",
+                                                         Path(__file__).parents[1] / "tool_permissions.py")
+    tool_permissions = importlib.util.module_from_spec(_perms_spec)
+    sys.modules["hermes_hq_tool_permissions"] = tool_permissions
+    _perms_spec.loader.exec_module(tool_permissions)
 
 if "hermes_hq_terminal" in sys.modules:
     terminal = sys.modules["hermes_hq_terminal"]
@@ -245,7 +253,7 @@ def status():
     """The app probes this to offer push; a 404 means the plugin isn't installed or enabled."""
     return {**push.status_body(push.data_dir(), push.sender_from_env()), **terminal.status(push.data_dir()),
             **tasks.status(), **goals.status(), **drafts.status(push.data_dir()), **shopping.status(push.data_dir()), **travel.status(push.data_dir()),
-            **asks.status(push.data_dir()),
+            **tool_permissions.status(), **asks.status(push.data_dir()),
             **plugin_updates.status(),
             **onepassword_allow.status(), "sessionPRStatus": session_pr_status.supported(),
             # 0.9.70: the owner's "closed" mark on a chat, and repositories linked per project from the app.
