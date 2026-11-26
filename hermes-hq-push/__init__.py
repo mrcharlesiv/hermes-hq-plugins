@@ -119,6 +119,13 @@ else:
     shopping = importlib.util.module_from_spec(_shopping_spec)
     sys.modules["hermes_hq_shopping"] = shopping
     _shopping_spec.loader.exec_module(shopping)
+if "hermes_hq_travel" in sys.modules:   # [travel] 0.9.86: one copy for this process: the tools and the route share it
+    travel = sys.modules["hermes_hq_travel"]
+else:
+    _travel_spec = importlib.util.spec_from_file_location("hermes_hq_travel", Path(__file__).with_name("travel.py"))
+    travel = importlib.util.module_from_spec(_travel_spec)
+    sys.modules["hermes_hq_travel"] = travel
+    _travel_spec.loader.exec_module(travel)
 if "hermes_hq_tasks" in sys.modules:   # one copy for this process: ideas.py and the dashboard routes share it
     tasks = sys.modules["hermes_hq_tasks"]
 else:
@@ -865,6 +872,13 @@ def _shopping_tools(ctx):
         log.warning("hermes-hq-push: shopping tools not registered", exc_info=True)
 
 
+def _travel_tools(ctx):
+    try:
+        travel.register_tool(ctx, push.data_dir, _serves_app_sessions)
+    except Exception:
+        log.warning("hermes-hq-push: travel tools not registered", exc_info=True)
+
+
 def _tasks_prep_job():
     """Startup safety net: reconcile this bot's "Task prep" job against its tasks.db right now, in case it fell
     out of sync (the job was removed by hand while prep tasks are still open, or vice versa)."""
@@ -899,6 +913,7 @@ def register(ctx):
     _tasks_tools(ctx)
     _draft_tool(ctx)
     _shopping_tools(ctx)
+    _travel_tools(ctx)
     _ask_tool(ctx)
     _dashboard_skill(ctx)
     _task_page_skill(ctx)

@@ -98,6 +98,13 @@ else:
     shopping = importlib.util.module_from_spec(_shopping_spec)
     sys.modules["hermes_hq_shopping"] = shopping
     _shopping_spec.loader.exec_module(shopping)
+if "hermes_hq_travel" in sys.modules:   # [travel] 0.9.86: one copy for this process: the tools and the route share it
+    travel = sys.modules["hermes_hq_travel"]
+else:
+    _travel_spec = importlib.util.spec_from_file_location("hermes_hq_travel", Path(__file__).parents[1] / "travel.py")
+    travel = importlib.util.module_from_spec(_travel_spec)
+    sys.modules["hermes_hq_travel"] = travel
+    _travel_spec.loader.exec_module(travel)
 
 if "hermes_hq_terminal" in sys.modules:
     terminal = sys.modules["hermes_hq_terminal"]
@@ -237,7 +244,8 @@ class ApprovalIn(BaseModel):
 def status():
     """The app probes this to offer push; a 404 means the plugin isn't installed or enabled."""
     return {**push.status_body(push.data_dir(), push.sender_from_env()), **terminal.status(push.data_dir()),
-            **tasks.status(), **goals.status(), **drafts.status(push.data_dir()), **shopping.status(push.data_dir()), **asks.status(push.data_dir()),
+            **tasks.status(), **goals.status(), **drafts.status(push.data_dir()), **shopping.status(push.data_dir()), **travel.status(push.data_dir()),
+            **asks.status(push.data_dir()),
             **plugin_updates.status(),
             **onepassword_allow.status(), "sessionPRStatus": session_pr_status.supported(),
             # 0.9.70: the owner's "closed" mark on a chat, and repositories linked per project from the app.
@@ -375,6 +383,14 @@ def shopping_cards():
     """[shopping] An app that draws product and order cards uses this computer: bots get show_products and
     order_card from now on (shopping.py)."""
     shopping.note_cards(push.data_dir())
+    return {"ok": True}
+
+
+@router.put("/travel/cards")
+def travel_cards():
+    """[travel] An app that draws flight and hotel cards uses this computer: bots get show_flights and show_hotels
+    from now on (travel.py)."""
+    travel.note_cards(push.data_dir())
     return {"ok": True}
 
 
