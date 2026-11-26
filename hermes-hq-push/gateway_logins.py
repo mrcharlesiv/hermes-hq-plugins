@@ -19,6 +19,7 @@ Unchanged: a turn that has a prompt of its own, and anywhere Hermes says nobody 
 from __future__ import annotations
 
 import json
+import importlib.util
 import logging
 import os
 import re
@@ -44,6 +45,25 @@ METHODS = {"vault.save_login": (("origin", "site"), 600),
            "vault.unlock_prompt": (("backend", "display_name"), 300)}
 _SESSION = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _reach = {"at": 0.0, "ok": False, "path": ""}
+
+if os.name == "nt":
+    _pipe_spec = importlib.util.spec_from_file_location(
+        "hermes_hq_windows_bridge", Path(__file__).with_name("windows_bridge.py"))
+    _pipe = importlib.util.module_from_spec(_pipe_spec)
+    _pipe_spec.loader.exec_module(_pipe)
+
+
+def _connect(path, timeout):
+    if os.name == "nt":
+        return _pipe.connect(path, timeout)
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        conn.settimeout(timeout)
+        conn.connect(str(path))
+    except OSError:
+        conn.close()
+        raise
+    return conn
 
 
 # MARK: The gateway's side
@@ -82,9 +102,7 @@ def turn() -> dict | None:
 
 def _answers(path: Path) -> bool:
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-            probe.settimeout(0.5)
-            probe.connect(str(path))
+        with _connect(path, 0.5) as probe:
             return True
     except OSError:
         return False
@@ -104,9 +122,7 @@ def ask(path: Path, method: str, params: dict, where: dict) -> str:
     request = {"method": method, "params": params, "session_id": where["session_id"], "home": where["home"],
                "timeout": timeout}
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-            conn.settimeout(5)
-            conn.connect(str(path))
+        with _connect(path, 5) as conn:
             conn.sendall(json.dumps(request).encode() + b"\n")
             conn.settimeout(timeout + 60)
             data = b""
@@ -721,6 +737,8 @@ def find_chat(session_id: str, home: str):
 def _closed(conn: socket.socket) -> bool:
     """The gateway hung up (its turn ended or was stopped)."""
     try:
+        if os.name == "nt":
+            return conn.peer_closed()
         ready, _, _ = select.select([conn], [], [], 0)
         return bool(ready) and conn.recv(1, socket.MSG_PEEK) == b""
     except OSError:
@@ -801,8 +819,11 @@ class _Handler(socketserver.StreamRequestHandler):
             pass
 
 
-class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
+if os.name == "nt":
+    _Server = _pipe.Server
+else:
+    class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
 
 
 def start_server(data_dir: Path) -> str:
@@ -817,6 +838,12 @@ def start_server(data_dir: Path) -> str:
     except Exception:
         return "absent"
     path = socket_path(data_dir)
+    if os.name == "nt":
+        if _answers(path):
+            return "busy"
+        listener = _Server(str(path), _Handler)
+        threading.Thread(target=listener.serve_forever, name=THREAD, daemon=True).start()
+        return "started"
     if path.exists():
         if _answers(path):
             return "busy"
@@ -871,9 +898,7 @@ def chat_of(key: str) -> str:
 
 def _hello(path: Path) -> frozenset:
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-            conn.settimeout(1)
-            conn.connect(str(path))
+        with _connect(path, 1) as conn:
             conn.sendall(json.dumps({"method": HELLO}).encode() + b"\n")
             data = b""
             while not data.endswith(b"\n") and len(data) < 4096:
@@ -980,10 +1005,9 @@ def _approval_pending(key: str, request_id: str) -> bool:
 def _converse(path: Path, request: dict, still_waiting, timeout: float):
     """Send one request to the server and read its answer; hang up (the server takes the card down) as soon as
     ``still_waiting()`` says Hermes stopped waiting. The answer's ``value``, or None."""
-    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn = None
     try:
-        conn.settimeout(5)
-        conn.connect(str(path))
+        conn = _connect(path, 5)
         conn.sendall(json.dumps(request).encode() + b"\n")
         conn.settimeout(1)
         deadline = time.monotonic() + timeout + 60
@@ -1004,11 +1028,12 @@ def _converse(path: Path, request: dict, still_waiting, timeout: float):
                  request.get("session_id"), exc_info=True)
         return None
     finally:
-        try:
-            conn.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        conn.close()
+        if conn is not None:
+            try:
+                conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            conn.close()
 
 
 def forward_approval(path: Path, kwargs: dict) -> bool:
