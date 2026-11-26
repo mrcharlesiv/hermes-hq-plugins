@@ -7,7 +7,8 @@ draft doesn't wait inside the turn. ``draft_message`` answers at once (``{"draft
 to end its reply. The app draws the tool call as the card. The person's decision comes back as an ordinary message
 in the chat, written by the app, whose first line names the draft:
 
-    [Hermes HQ draft d-1a2b3c4d: send]      then the place and the final text, edits included
+    [Hermes HQ draft d-1a2b3c4d: send]      then the place (and an email's Cc: and Bcc: lines), and the final text,
+                                            edits included
     [Hermes HQ draft d-1a2b3c4d: skip]      "Don't send this draft."
 
 The bot then sends that text with whatever tool it has for the place (this add-on sends nothing itself). A person on
@@ -38,6 +39,10 @@ SWITCH = "drafts.off"
 CARDS = "draft-cards.on"
 MAX_BODY = 20_000
 MAX_PLACE = 300
+# An email's copies (`cc`, `bcc`, 0.9.86): a list of addresses, or one text of them. The card shows them joined by
+# ", " and the person's Send names them back.
+MAX_COPIES = 50
+MAX_COPIES_TEXT = 2000
 MAX_APP = 40
 # The conversation a draft answers (`thread`): the card shows it behind a button, so the person can check the reply
 # against what was said.
@@ -64,8 +69,9 @@ SCHEMA = {
         "line saying the draft is ready and stop. Their answer arrives as a message starting "
         "\"[Hermes HQ draft <id>: send]\" followed by the final text (send exactly that, to the same place, with "
         "the tool you'd normally use, then confirm in a few words) or \"[Hermes HQ draft <id>: skip]\" (don't send "
-        "it). When the draft answers something (an email, a Slack thread, a text), pass the messages it answers in "
-        "`thread` so the user can read them on the card before deciding. One call per message."),
+        "it). An email's Send names its copies on lines \"Cc: …\" and \"Bcc: …\" under the first line: send it to "
+        "exactly the To, Cc and Bcc the answer names, nobody added or dropped (no Cc line means no Cc). When the "
+        "draft answers something (an email, a Slack thread, a text), pass the messages it answers in `thread` so the user can read them on the card before deciding. One call per message."),
     "parameters": {
         "type": "object",
         "properties": {
@@ -74,6 +80,10 @@ SCHEMA = {
             "to": {"type": "string",
                    "description": "Who or where it goes: a channel, a person, an address, a thread."},
             "subject": {"type": "string", "description": "Email only: the subject line."},
+            "cc": {"type": "array", "items": {"type": "string"},
+                   "description": "Email only, optional: who else gets a copy (Cc), one address each."},
+            "bcc": {"type": "array", "items": {"type": "string"},
+                    "description": "Email only, optional: who gets a hidden copy (Bcc), one address each."},
             "from": {"type": "string",
                      "description": "The account or address it is sent from, when the user has more than one."},
             "body": {"type": "string", "description": "The message, exactly as it would be sent."},
@@ -103,7 +113,7 @@ WAITING_NOTE = (
     "The user now sees this draft as a card with Send and Don't Send, and can edit it first. Nothing has been sent. "
     "Say in one short line that the draft is ready (don't repeat its text) and end your reply. If they answer in "
     "their own words instead of the card (\"send it\", or changes), follow that: for changes, call draft_message "
-    "again with the new text.")
+    "again with the new text. When Send names Cc and Bcc lines, send to exactly that To, Cc and Bcc.")
 
 _lock = threading.Lock()
 _drafts: dict[str, dict] = {}   # id -> {session, body, state: waiting|send|skip, at}
@@ -185,9 +195,38 @@ def take(args, session_id: str = "") -> str:
     wrong = _thread_error(args.get("thread"))
     if wrong:
         return _failed(wrong)
+    copies = {}
+    for key in ("cc", "bcc"):
+        joined, wrong = recipients(args.get(key), key)
+        if wrong:
+            return _failed(wrong)
+        if joined:
+            copies[key] = joined
     new_id = draft_id(app, _text(args, "to"), _text(args, "subject"), body)
     remember(session_id, new_id, body)
-    return _reply({"draft": "waiting", "id": new_id, "note": WAITING_NOTE})
+    return _reply({"draft": "waiting", "id": new_id, **copies, "note": WAITING_NOTE})
+
+
+def recipients(value, key: str) -> tuple[str, str | None]:
+    """An email's copies as the card shows them (the app's DraftCards.recipients): a list of addresses, each trimmed,
+    the empty ones left out, joined by ", "; or one text of them, trimmed. ("", None) when there are none, else
+    (the text, what is wrong or None)."""
+    if value is None or value == "" or value == []:
+        return "", None
+    if isinstance(value, str):
+        names = [value.strip()] if value.strip() else []
+    elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+        names = [v.strip() for v in value if v.strip()]
+    else:
+        return "", f"`{key}` is a list of addresses: [\"sam@example.com\"]. Leave it out when there is none."
+    if len(names) > MAX_COPIES:
+        return "", f"`{key}` has {len(names)} addresses; a draft card takes {MAX_COPIES}."
+    if any(len(v) > MAX_PLACE for v in names):
+        return "", f"Each address in `{key}` takes {MAX_PLACE} characters."
+    joined = ", ".join(names)
+    if len(joined) > MAX_COPIES_TEXT:
+        return "", f"`{key}` is {len(joined)} characters in all; a draft card takes {MAX_COPIES_TEXT}."
+    return joined, None
 
 
 def _thread_error(thread) -> str | None:
@@ -214,8 +253,8 @@ def _thread_error(thread) -> str | None:
 def draft_id(app: str, to: str, subject: str, body: str) -> str:
     """A draft's id is made from its own words, so the app makes the same one from the call it draws (its
     DraftCards.id) without reading this tool's result: "d-" and 8 hex digits of SHA-256 over the four values (as
-    checked here: stripped) joined by newlines. `from` and `thread` aren't part of it: the card shows them, and the
-    person's Send names `from` back."""
+    checked here: stripped) joined by newlines. `from`, `cc`, `bcc` and `thread` aren't part of it: the card shows
+    them, and the person's Send names `from`, Cc and Bcc back."""
     return "d-" + hashlib.sha256("\n".join([app, to, subject, body]).encode("utf-8")).hexdigest()[:8]
 
 
