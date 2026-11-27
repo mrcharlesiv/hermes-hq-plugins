@@ -149,6 +149,18 @@ def test_another_sites_frame_is_never_the_named_sites(logins, browser):
     assert set(in_ads) <= {PROBE}, "nothing but the probe runs in another site's frame"
 
 
+def test_another_tenants_frame_on_a_shared_host_is_never_taken(logins, browser):
+    """Issue #11: mallory.duckdns.org's frame inside alice.duckdns.org's page holds a code box; it is not alice's."""
+    alice, mallory = "https://alice.duckdns.org", "https://mallory.duckdns.org"
+    _, _, _, focus = browser([(alice, [(mallory, True, True)])])
+    assert _ask(logins, focus, alice) == alice, "the tab itself, as before (then: no code field)"
+    assert "t1" not in logins._frames
+    for named, frame in ((alice, mallory), ("https://alice.unlisted-host.example", "https://mallory.unlisted-host.example"),
+                         ("https://app.example.com", "https://login.example.com")):
+        assert not logins._covers(named, frame)
+    assert logins._covers(SHOP, IDENTITY), "www.doordash.com still reaches identity.doordash.com's frame"
+
+
 def test_a_same_site_frame_without_the_form_is_not_taken(logins, browser):
     _, _, _, focus = browser([(SHOP, [(IDENTITY, False, True)])])
     assert _ask(logins, focus, SHOP) == SHOP
