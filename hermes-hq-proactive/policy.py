@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional
 
-BETA_VERSION = "0.2.0-beta.1"
+BETA_VERSION = "0.2.0-beta.2"
 BETA_LABEL = "Beta"
 
 AUTONOMY_MODES = ("observe", "prep", "full")

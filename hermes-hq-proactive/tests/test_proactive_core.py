@@ -663,15 +663,17 @@ def _create_fake_state_db(path: Path, now_utc: datetime) -> None:
         ("sess_desktop_1", "assistant", "Got it, we can follow up once you're ready.", t_recent),
     )
 
-    # Cron session that MUST be skipped.
-    conn.execute(
-        "INSERT INTO sessions(id, source, title, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?)",
-        ("sess_cron_1", "cron", "Morning job", t_cron - 10, t_cron),
-    )
-    conn.execute(
-        "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-        ("sess_cron_1", "user", "I'm waiting on cron job output that should be ignored.", t_cron),
-    )
+    # 80 newer cron sessions that MUST be filtered in SQL so they never crowd out desktop chats.
+    for i in range(80):
+        ts_c = t_cron + i
+        conn.execute(
+            "INSERT INTO sessions(id, source, title, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?)",
+            (f"sess_cron_{i}", "cron", f"Morning job {i}", ts_c - 5, ts_c),
+        )
+        conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            (f"sess_cron_{i}", "user", "I'm waiting on cron job output that should be ignored.", ts_c),
+        )
 
     # Hidden session that MUST be skipped.
     conn.execute(
@@ -773,3 +775,17 @@ def test_recent_chat_scan_honors_disable_toggle_and_missing_db(tmp_path):
     res_m = sweep.run_signal_sweep(st_missing, llm=llm, now_utc=now_utc, now_local=now_local)
     assert res_m["quiet"] is True
     assert res_m["chats_scanned"] == 0
+
+
+def test_store_resolves_state_db_when_data_dir_explicit_and_sync_enabled(tmp_path, monkeypatch):
+    fake_home = tmp_path / "hermes_home"
+    fake_home.mkdir()
+    fake_db = fake_home / "state.db"
+    fake_db.write_bytes(b"")
+    monkeypatch.setenv("HERMES_HOME", str(fake_home))
+
+    st_runtime = ProactiveStore(data_dir=fake_home / "plugin-data" / "hermes-hq-proactive", sync_hermes_config=True)
+    assert st_runtime.resolve_state_db_path() == fake_db
+
+    st_isolated = ProactiveStore(data_dir=tmp_path / "iso", sync_hermes_config=False)
+    assert st_isolated.resolve_state_db_path() is None

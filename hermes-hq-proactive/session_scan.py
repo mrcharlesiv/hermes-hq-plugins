@@ -187,7 +187,12 @@ def read_recent_chats(
             )
             title_col = "title" if "title" in s_cols else "'' AS title"
 
-            s_where = [f"{activity_expr} >= ?"]
+            excluded_list = sorted(EXCLUDED_SOURCES)
+            excluded_placeholders = ", ".join("?" for _ in excluded_list)
+            s_where = [
+                f"{activity_expr} >= ?",
+                f"LOWER(COALESCE(source, '')) NOT IN ({excluded_placeholders})",
+            ]
             if "hidden" in s_cols:
                 s_where.append("COALESCE(hidden, 0) = 0")
             if "archived" in s_cols:
@@ -200,7 +205,9 @@ def read_recent_chats(
                 f"FROM sessions WHERE {' AND '.join(s_where)} "
                 f"ORDER BY activity_ts DESC LIMIT ?"
             )
-            session_rows = conn.execute(session_sql, (effective_since, max_sessions * 4)).fetchall()
+            session_rows = conn.execute(
+                session_sql, (effective_since, *excluded_list, max_sessions * 4)
+            ).fetchall()
 
             m_where = [
                 "session_id = ?",

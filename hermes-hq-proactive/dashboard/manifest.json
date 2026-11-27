@@ -3,7 +3,7 @@
   "label": "Proactivity (Beta)",
   "description": "Opt-in Beta proactivity engine (off by default): open-loop radar, prepared drafts, daily brief, hard safety guardrails, and adaptive calibration.",
   "icon": "Sparkles",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "tab": {
     "path": "/proactive",
     "position": "after:sessions"
