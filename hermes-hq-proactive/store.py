@@ -1249,6 +1249,19 @@ class ProactiveStore:
                 ).fetchall()
                 return [dict(r) for r in rows]
 
+    def list_offers_for_closed_loops(self) -> List[Dict[str, Any]]:
+        """Suggestions still waiting whose item has since been done or dropped."""
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return []
+            with closing(conn):
+                rows = conn.execute(
+                    "SELECT o.* FROM offers o JOIN loops l ON l.id = o.loop_id "
+                    "WHERE o.status IN ('pending', 'snoozed') AND l.status IN ('resolved', 'dropped') LIMIT 200"
+                ).fetchall()
+                return [dict(r) for r in rows]
+
     def loop_ids_with_live_offer(self) -> set[str]:
         """Loops that already have a suggestion waiting, so the brief lists the thing once."""
         with _lock_for(self.db_path):

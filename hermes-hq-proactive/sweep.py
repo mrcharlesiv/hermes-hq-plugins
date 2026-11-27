@@ -816,6 +816,8 @@ def run_signal_sweep(
             now_local=now_local,
             inbox=inbox,
         )
+        # An item the chats just closed takes its suggestion with it, also one made a moment ago.
+        inbox_mod.settle_closed(store, inbox)
 
         # 3. What is due, overdue or gone quiet.
         eval_out = evaluate_signals(store, now_utc=now_utc, now_local=now_local)

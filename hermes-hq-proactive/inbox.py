@@ -243,7 +243,26 @@ def sync(store, inbox: Optional[Inbox]) -> Dict[str, int]:
     return out
 
 
+def settle_closed(store, inbox: Optional[Inbox]) -> int:
+    """An item that is done or dropped takes its suggestion with it: off the page and out of Ideas.
+
+    Called wherever an item can close (the chat scan, the page, the bot's tool). Without it a
+    suggestion made minutes before its item was done sat in Ideas asking for work already finished.
+    What the person did in Ideas is read first, so an idea they added counts as taken up. Closing
+    one this way says nothing about whether it was wanted, so it counts for nothing.
+    """
+    if not store.list_offers_for_closed_loops():
+        return 0
+    sync(store, inbox)
+    closed = 0
+    for offer in store.list_offers_for_closed_loops():
+        store.close_offer_quietly(str(offer["id"]), status="expired", note=f"Closed with its item: {offer['title']}")
+        withdraw(store, offer, inbox)
+        closed += 1
+    return closed
+
+
 def withdraw(store, offer: Mapping[str, Any], inbox: Optional[Inbox]) -> None:
-    """The person dismissed it on the Proactivity page: take the idea out of Ideas too."""
+    """Dismissed on the Proactivity page, or closed with its item: take the idea out of Ideas too."""
     if inbox is not None and offer.get("delivered_to") == "ideas" and offer.get("idea_id"):
         inbox.dismiss(str(offer["idea_id"]))
