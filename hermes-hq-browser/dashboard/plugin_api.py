@@ -27,7 +27,7 @@ from fastapi import APIRouter, Body, HTTPException, Request, WebSocket, WebSocke
 
 log = logging.getLogger("hermes-hq-browser")
 _ROOT = Path(__file__).parents[1]
-VERSION = "3.13.0"
+VERSION = "3.13.1"
 RETAIN_ENDED = 120.0
 MAX_VIEWERS = 8
 VIEWER_ID = re.compile(r"^[0-9a-f]{32}$")

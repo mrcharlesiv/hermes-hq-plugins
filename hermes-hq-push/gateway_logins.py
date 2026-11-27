@@ -652,10 +652,11 @@ def install_frames() -> str:
     if getattr(original, FRAME_MARK, False):
         return "already"
 
-    def evaluate_runtime(self, expression, *, return_by_value=True, await_promise=True, timeout=10.0):
+    def evaluate_runtime(self, expression, *, return_by_value=True, await_promise=True, timeout=10.0, **kwargs):
         kept = _frame_of(self)
         if kept is None:
-            return original(self, expression, return_by_value=return_by_value, await_promise=await_promise, timeout=timeout)
+            return original(self, expression, return_by_value=return_by_value, await_promise=await_promise,
+                            timeout=timeout, **kwargs)
         result = _evaluate(kept["cap"], kept["session"], kept["context"], expression, by_value=return_by_value,
                            await_promise=await_promise, timeout=timeout)
         if not result.get("ok") and "reference chain is too long" in str(result.get("error") or "").lower():
