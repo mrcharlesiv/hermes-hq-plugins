@@ -135,11 +135,12 @@ class PipeSocket:
         return data
 
     def peer_closed(self):
-        if not self.ended and not self.buffer and self.connection.poll(0):
-            try:
+        try:
+            if not self.ended and not self.buffer and self.connection.poll(0):
                 self.buffer = self.connection.recv_bytes(1 << 20)
-            except (EOFError, OSError):
-                self.ended = True
+        except (EOFError, OSError):
+            # Windows may report closure during poll(), before recv_bytes().
+            self.ended = True
         return self.ended
 
     def makefile(self, mode, buffering=-1):

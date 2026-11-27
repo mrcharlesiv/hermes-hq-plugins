@@ -18,6 +18,40 @@ class EchoApp(socketserver.StreamRequestHandler):
             self.wfile.write(data)
 
 
+class PipeClosureSignals(unittest.TestCase):
+    def test_polling_a_broken_pipe_counts_as_disconnect(self):
+        import windows_bridge
+
+        class ClosedPipe:
+            def poll(self, timeout):
+                raise BrokenPipeError("The other end has closed")
+
+        self.assertTrue(windows_bridge.PipeSocket(ClosedPipe()).peer_closed())
+
+    def test_polling_eof_counts_as_disconnect(self):
+        import windows_bridge
+
+        class ClosedPipe:
+            def poll(self, timeout):
+                raise EOFError
+
+        self.assertTrue(windows_bridge.PipeSocket(ClosedPipe()).peer_closed())
+
+    def test_disconnect_probe_preserves_unread_bytes(self):
+        import windows_bridge
+
+        class PendingPipe:
+            def poll(self, timeout):
+                return True
+
+            def recv_bytes(self, limit):
+                return b"pending answer\n"
+
+        stream = windows_bridge.PipeSocket(PendingPipe())
+        self.assertFalse(stream.peer_closed())
+        self.assertEqual(stream.recv(100), b"pending answer\n")
+
+
 class PipeListener:
     def __init__(self, path, handler=EchoApp):
         import windows_bridge
