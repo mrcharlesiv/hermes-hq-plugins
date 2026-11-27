@@ -119,6 +119,45 @@ def test_suggest_skips_what_is_already_a_task_or_was_offered_before_in_other_wor
     assert [i["title"] for i in ideas.page(s)["ideas"]] == ["Water the garden"]
 
 
+def test_offer_from_another_addon_saves_one_idea_without_counting_as_a_run(tmp_path):
+    s = store(tmp_path)
+    rev = s.rev()
+    out = ideas.offer(s, {"title": "Renew the library card before it lapses", "why": "Left open in a chat.",
+                          "source": "Proactivity", "who": "bot", "help": "I can look it up.", "bot": BOTS[-1]},
+                      "default", BOTS)
+    row = out["idea"]
+    assert row["state"] == "new" and row["who"] == "bot" and row["bot"] == BOTS[-1] and row["source"] == "Proactivity"
+    page = ideas.page(s)
+    assert [i["id"] for i in page["ideas"]] == [row["id"]] and page["ran_at"] is None
+    assert s.rev() > rev and ideas.OUTSIDE_API >= 1
+    for _ in range(4):   # no daily cap here: the caller keeps its own budget
+        assert "idea" in ideas.offer(s, {"title": f"Unrelated chore number {_} zebra{_}"}, "default", BOTS)
+
+
+def test_offer_skips_when_off_listed_or_offered_before(tmp_path):
+    (tmp_path / "off").mkdir()
+    (tmp_path / "on").mkdir()
+    off = store(tmp_path / "off", on=False)
+    assert ideas.offer(off, {"title": "Water the garden"}, "default", BOTS) == {"skipped": "off"}
+    s = store(tmp_path / "on")
+    assert ideas.offer(s, {"title": "  "}, "default", BOTS) == {"skipped": "empty"}
+    assert ideas.offer(s, "nope", "default", BOTS) == {"skipped": "empty"}
+    s.create({"title": "Call the plumber", "who": "me"}, created_by="you", source={"kind": "app"})
+    assert ideas.offer(s, {"title": "call plumber"}, "default", BOTS) == {"skipped": "listed"}
+    first = ideas.offer(s, {"title": "Pick up the dry cleaning"}, "default", BOTS)["idea"]
+    ideas.dismiss(s, first["id"])
+    again = ideas.offer(s, {"title": "Pick up dry cleaning"}, "default", BOTS)
+    assert again["skipped"] == "offered" and again["idea"]["id"] == first["id"] and again["idea"]["state"] == "dismissed"
+    assert ideas.page(s)["ideas"] == []
+
+
+def test_offer_masks_secrets_like_a_runs_idea(tmp_path):
+    s = store(tmp_path)
+    row = ideas.offer(s, {"title": "Rotate the key", "why": "The key sk-abc123def456ghi789jkl012mno345 was pasted."},
+                      "default", BOTS)["idea"]
+    assert "sk-abc123" not in row["why"] and "[hidden]" in row["why"]
+
+
 def test_suggest_keeps_its_fields_tidy_and_masks_secrets(tmp_path):
     s = store(tmp_path)
     ideas.suggest(s, [{"title": "  Update the router\n password ", "who": "boss", "bot": "nobody",

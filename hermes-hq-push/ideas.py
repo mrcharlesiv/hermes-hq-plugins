@@ -522,6 +522,46 @@ def suggest(store, items, by_bot: str, bots=None) -> dict:
             "note": "Saved on their Ideas page. Nothing happens until they add one. End the turn with one short line."}
 
 
+OUTSIDE_API = 1   # 0.9.90: offer() below, for another add-on (hermes-hq-proactive 0.3.0+) to check before it calls
+
+
+def offer(store, item, by_bot: str, bots=None) -> dict:
+    """One idea from another add-on's own look (hermes-hq-proactive 0.3.0+), saved like a run's idea and shown on
+    the same Ideas page. It is not a run: ``ran_at`` and the day's count stay as they are, and the page's own
+    limits (a week's freshness, NEW_CAP) still apply. ``{"idea": row}``, or ``{"skipped": why}`` where why is
+    ``off`` (Tasks or Ideas is off), ``empty``, ``listed`` (already a task) or ``offered`` (offered before in other
+    words; ``idea`` is that one while it is still kept)."""
+    if not isinstance(item, dict):
+        return {"skipped": "empty"}
+    settings = store.get_settings()
+    if not (store.enabled() and settings.get("ideas")):
+        return {"skipped": "off"}
+    title = _mask(tasks._text(item.get("title"), TITLE_MAX))
+    if not title:
+        return {"skipped": "empty"}
+    names = set(bots if bots is not None else _bot_names()) | {by_bot}
+    with closing(store._write_db()) as db, db:
+        _tidy(db, store)
+        listed = [r[0] for r in db.execute("select title from tasks where status!='done' or updated_at>=?",
+                                           (_ago(store, KEEP_DAYS * 86400),))]
+        if any(tasks.same_task(title, other) for other in listed):
+            return {"skipped": "listed"}
+        for row in db.execute(f"select {','.join(COLS)} from task_ideas order by created_at desc").fetchall():
+            twin = _row(row)
+            if tasks.same_task(title, twin["title"]):
+                return {"skipped": "offered", "idea": twin}
+        bot = tasks._text(item.get("bot"), 64)
+        row = {"id": uuid.uuid4().hex[:12], "created_at": _ago(store), "bot": bot if bot in names else by_bot,
+               "title": title, "why": _mask(tasks._text(item.get("why"), WHY_MAX)),
+               "source": _mask(tasks._text(item.get("source"), SOURCE_MAX)),
+               "who": item.get("who") if item.get("who") in WHO else "me",
+               "help": _mask(tasks._text(item.get("help"), HELP_MAX)), "state": "new"}
+        db.execute(f"insert into task_ideas ({','.join(row)}) values ({','.join('?' * len(row))})",
+                   list(row.values()))
+        store._bump_rev(db)
+    return {"idea": get(store, row["id"])}
+
+
 def _source_directives(settings: dict, profile: str, connectors: list[dict]) -> tuple[list[str], list[str]]:
     """Builds explicit check / skip source lists for ``profile``'s Task ideas run."""
     src = sources_of(settings)
