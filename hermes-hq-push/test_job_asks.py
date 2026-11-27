@@ -411,6 +411,29 @@ def test_approval_push_keeps_other_cli_surfaces_out():
     assert item is not None and item.session == SESSION and item.request == "req-1"
 
 
+def test_a_card_fill_and_an_mcp_question_alert_like_a_command():
+    """0.9.82: a card fill to confirm and an MCP server's prompt wait on a timer too; they used to wait unseen."""
+    spec = importlib.util.spec_from_file_location("hermes_hq_push_core", Path(__file__).with_name("push.py"))
+    push = sys.modules.get("hermes_hq_push_core")
+    if push is None:
+        push = importlib.util.module_from_spec(spec)
+        sys.modules["hermes_hq_push_core"] = push
+        spec.loader.exec_module(push)
+    ask = "Fill payment card 'Main Card' on https://shop.example.com"
+    pending = [{"command": ask, "pattern_keys": ["mcp_elicitation"], "request_id": "req-pay"}]
+    with tempfile.TemporaryDirectory() as root:
+        def alert(surface, **more):
+            asked = {"surface": surface, "session_key": BOT_CHAT, "session_id": SESSION, "command": ask,
+                     "pattern_keys": ["mcp_elicitation"]}
+            return push.approval_push(asked, pending, Path(root), "otto", **more)
+        for surface in ("vault-payment", "mcp-elicitation/shop", "mcp-trust/shop", "gateway"):
+            item = alert(surface, surfaces=push.CONFIRM_SURFACES)
+            assert item is not None and item.request == "req-pay", surface
+        for surface in ("cli", "mcp-events/shop", "vault-payment-other", ""):   # a prefix is not a match
+            assert alert(surface, surfaces=push.CONFIRM_SURFACES) is None, surface
+        assert alert("vault-payment") is None   # the default is still a command's surface alone
+
+
 # MARK: Questions (clarify)
 
 def ask(adapter, question="Which environment?", choices=("staging", "production"), multi=False):
