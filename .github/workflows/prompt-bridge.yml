@@ -1,14 +1,17 @@
 name: Prompt bridge
 
 on:
+  workflow_dispatch:
   push:
     paths:
+      - 'hermes-hq-push/plugin.yaml'
       - 'hermes-hq-push/gateway_logins.py'
       - 'hermes-hq-push/windows_bridge.py'
       - 'hermes-hq-push/test_windows_gateway_bridge.py'
       - '.github/workflows/prompt-bridge.yml'
   pull_request:
     paths:
+      - 'hermes-hq-push/plugin.yaml'
       - 'hermes-hq-push/gateway_logins.py'
       - 'hermes-hq-push/windows_bridge.py'
       - 'hermes-hq-push/test_windows_gateway_bridge.py'
