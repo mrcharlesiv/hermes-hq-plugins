@@ -1,0 +1,109 @@
+name: hermes-hq-proactive
+version: "0.1.0-beta.1"
+manifest_version: 2
+kind: standalone
+label: "Proactivity (Beta)"
+description: "[BETA — Off by default] Makes Hermes agents think and act more proactively in the right ways: in-turn next-step anticipation, an open-loop & commitment radar, signal-gated silent prep and follow-ups, a unified daily brief, and adaptive self-calibration that dials back categories you dismiss. Strictly read-only & draft-only in the background — never sends, books, buys, pays, posts, or deletes without your approval."
+author: Hermes HQ
+license: MIT
+requires_hermes: ">=0.22"
+tags: [beta, proactivity, open-loops, briefing, dashboard, calibration]
+provides_tools:
+  - proactive_loop_track
+  - proactive_loop_resolve
+  - proactive_loop_list
+  - proactive_offer
+  - proactive_watch_add
+  - proactive_brief_get
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - on_session_end
+config_schema:
+  enabled:
+    type: bool
+    default: false
+    label: "Enable Proactivity (Beta)"
+    description: "Off by default. Opt in to the Beta proactivity engine for this bot profile. Turning it off immediately stops all context injection, tools, and background sweeps."
+  autonomy_mode:
+    type: str
+    default: "prep"
+    choices: ["observe", "prep", "full"]
+    label: "Autonomy Mode"
+    description: "observe = quiet tracking & daily brief only; prep = read-only research, drafts & structured offers (recommended); full = prep + budgeted urgent Tier-2 interrupts."
+  in_turn_enabled:
+    type: bool
+    default: true
+    label: "In-Turn Next-Step Anticipation"
+    description: "Nudges the agent to run obvious read-only checks or stage drafts instead of stopping at generic suggestions."
+  loop_radar_enabled:
+    type: bool
+    default: true
+    label: "Open-Loop & Commitment Radar"
+    description: "Tracks soft commitments and 'waiting on' items mentioned in chat without cluttering your task list."
+  idle_sweep_enabled:
+    type: bool
+    default: true
+    label: "Signal-Gated Idle Sweeps"
+    description: "Runs cheap deterministic checks when idle and only wakes the LLM when a loop, deadline, or watch crosses threshold."
+  daily_brief_enabled:
+    type: bool
+    default: true
+    label: "Unified Daily Brief"
+    description: "Batches low-urgency open loops, prepared drafts, and waiting offers into one quiet daily brief."
+  pattern_detection_enabled:
+    type: bool
+    default: true
+    label: "Repetition & Automation Spotter"
+    description: "Notices when you repeat the same multi-step request 3+ times and offers to turn it into a skill or scheduled check."
+  allow_llm_in_sweep:
+    type: bool
+    default: true
+    label: "Allow Bounded LLM Drafting in Sweeps"
+    description: "When a signal trips during an idle sweep, allow a small read-only completion via ctx.llm to draft follow-ups or polish the daily brief."
+  daily_offer_budget:
+    type: int
+    default: 6
+    label: "Daily Offer Budget"
+    description: "Maximum number of new proactive offers queued per 24 hours across all categories."
+  daily_interrupt_budget:
+    type: int
+    default: 2
+    label: "Daily Interrupt Budget"
+    description: "Maximum Tier-2 urgent interrupts per 24 hours (only active in 'full' autonomy mode and outside quiet hours)."
+  quiet_start:
+    type: str
+    default: "22:00"
+    label: "Quiet Hours Start (HH:MM)"
+    description: "Local 24-hour time when proactive interrupts and idle LLM sweeps pause."
+  quiet_end:
+    type: str
+    default: "08:00"
+    label: "Quiet Hours End (HH:MM)"
+    description: "Local 24-hour time when quiet hours end."
+  brief_hour:
+    type: int
+    default: 8
+    label: "Daily Brief Hour (0-23)"
+    description: "Local hour after which today's unified brief is generated."
+  stale_waiting_days:
+    type: int
+    default: 3
+    label: "Stale 'Waiting On' Days"
+    description: "Days before an untouched 'waiting_on' or 'follow_up' loop triggers a follow-up draft."
+  max_context_loops:
+    type: int
+    default: 3
+    label: "Max Loops Injected Per Turn"
+    description: "Cap on relevant open loops injected in pre_llm_call to keep prompt overhead tiny."
+  focus_note:
+    type: str
+    default: ""
+    label: "Focus Note"
+    description: "Plain-English guidance on what this bot SHOULD proactively watch for."
+  skip_note:
+    type: str
+    default: ""
+    label: "Skip Note"
+    description: "Plain-English guidance on topics or domains this bot should NEVER nudge you about."
