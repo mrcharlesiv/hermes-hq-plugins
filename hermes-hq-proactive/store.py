@@ -17,20 +17,23 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 try:
-    from . import policy
+    from . import clock, policy
 except ImportError:  # pragma: no cover - loaded via spec_from_file_location
     import importlib.util
     import sys
 
-    _pmod = sys.modules.get("hermes_hq_proactive_policy")
-    if _pmod is None:
-        _pspec = importlib.util.spec_from_file_location(
-            "hermes_hq_proactive_policy", Path(__file__).with_name("policy.py")
-        )
-        _pmod = importlib.util.module_from_spec(_pspec)
-        sys.modules["hermes_hq_proactive_policy"] = _pmod
-        _pspec.loader.exec_module(_pmod)
-    policy = _pmod  # type: ignore[assignment]
+    def _load(mod_name: str, filename: str):
+        existing = sys.modules.get(mod_name)
+        if existing is not None:
+            return existing
+        spec = importlib.util.spec_from_file_location(mod_name, Path(__file__).with_name(filename))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    policy = _load("hermes_hq_proactive_policy", "policy.py")
+    clock = _load("hermes_hq_proactive_clock", "clock.py")
 
 PLUGIN_ID = "hermes-hq-proactive"
 
@@ -45,6 +48,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "allow_llm_in_sweep": True,
     "scan_recent_chats": True,
     "scan_lookback_hours": 72,
+    # 0.3.0: what is found goes to Tasks > Ideas (hermes-hq-push), where Add & Start acts on it.
+    # Off, or with that add-on missing or its Ideas tab off, finds stay on the Proactivity page.
+    "ideas_inbox": True,
     "daily_offer_budget": 6,
     "daily_interrupt_budget": 2,
     "quiet_start": "22:00",
@@ -170,6 +176,12 @@ CREATE TABLE IF NOT EXISTS calibration (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scan_marks (
+    session_id TEXT PRIMARY KEY,
+    last_ts REAL NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id TEXT PRIMARY KEY,
     at TEXT NOT NULL,
@@ -186,8 +198,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC);
 """
 
+# Columns added after 0.2.0, as (table, column, definition). Added to an older database in place.
+_ADDED_COLUMNS = (
+    ("offers", "idea_id", "TEXT"),
+    ("offers", "delivered_to", "TEXT NOT NULL DEFAULT ''"),
+    ("loops", "resolved_by", "TEXT NOT NULL DEFAULT ''"),
+    # 1 when the value was also written to config.yaml. Rows from 0.2.0 were, so they default to 1.
+    ("settings", "mirrored", "INTEGER NOT NULL DEFAULT 1"),
+)
+
 _DB_LOCKS: Dict[str, threading.RLock] = {}
 _DB_LOCKS_GUARD = threading.Lock()
+_SCHEMA_READY: set[str] = set()   # database files whose tables this process has already checked
 
 
 def _lock_for(path: Path) -> threading.RLock:
@@ -211,33 +233,32 @@ def resolve_data_dir(explicit: Optional[Path] = None) -> Path:
     return base / "plugin-data" / PLUGIN_ID
 
 
-def _read_hermes_plugin_config() -> tuple[Dict[str, Any], float]:
-    """Read ``plugins.entries.hermes-hq-proactive.settings`` + config.yaml mtime (0 if absent)."""
+def _read_hermes_plugin_config() -> Dict[str, Any]:
+    """``plugins.entries.hermes-hq-proactive.settings`` from config.yaml, or ``{}``."""
     try:
-        from hermes_cli.config import get_config_path, load_config_readonly
-        from hermes_cli.plugins_state import _plugin_settings_entry
+        from hermes_cli.config import load_config_readonly
 
-        cfg_path = get_config_path()
-        mtime = cfg_path.stat().st_mtime if cfg_path.is_file() else 0.0
-        entry = _plugin_settings_entry(load_config_readonly() or {}, PLUGIN_ID)
-        if not isinstance(entry, Mapping):
-            return {}, mtime
-        raw = entry.get("settings")
+        node: Any = load_config_readonly() or {}
+        for part in ("plugins", "entries", PLUGIN_ID):
+            node = node.get(part) if isinstance(node, Mapping) else None
+        if not isinstance(node, Mapping):
+            return {}
+        raw = node.get("settings")
         if not isinstance(raw, Mapping):
-            raw = entry.get("config")
-        return (dict(raw), mtime) if isinstance(raw, Mapping) else ({}, mtime)
+            raw = node.get("config")
+        return dict(raw) if isinstance(raw, Mapping) else {}
     except Exception:
-        return {}, 0.0
+        return {}
 
 
 def _write_hermes_plugin_setting(key: str, value: Any) -> bool:
-    """Best-effort mirror of one setting to Hermes config.yaml."""
-    if key not in _CONFIG_MIRROR_KEYS:
+    """Best-effort copy of one setting to Hermes config.yaml. True when it was written."""
+    if key not in _CONFIG_MIRROR_KEYS or not key.isidentifier():
         return False
     try:
-        from hermes_cli.plugins_state import _plugin_relative_segments, save_plugin_setting
+        from hermes_cli.plugins_state import save_plugin_setting
 
-        save_plugin_setting(PLUGIN_ID, _plugin_relative_segments(key), value)
+        save_plugin_setting(PLUGIN_ID, (key,), value)
         return True
     except Exception:
         return False
@@ -258,6 +279,7 @@ def _sanitize_settings_patch(patch: Mapping[str, Any]) -> Dict[str, Any]:
             "pattern_detection_enabled",
             "allow_llm_in_sweep",
             "scan_recent_chats",
+            "ideas_inbox",
         ):
             clean[key] = bool(val)
         elif key == "scan_lookback_hours":
@@ -356,57 +378,54 @@ class ProactiveStore:
         if not create and not path.exists():
             return None
         path.parent.mkdir(parents=True, exist_ok=True)
+        key = str(path.resolve(strict=False))
+        fresh = not path.exists()
         conn = sqlite3.connect(str(path), timeout=10.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
-        conn.executescript(_SCHEMA_SQL)
+        if fresh or key not in _SCHEMA_READY:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(_SCHEMA_SQL)
+            for table, column, definition in _ADDED_COLUMNS:
+                have = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if column not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            conn.commit()
+            _SCHEMA_READY.add(key)
         return conn
 
     # ── Settings ───────────────────────────────────────────────────────────────
 
     def get_settings(self) -> Dict[str, Any]:
-        """Return effective settings (defaults <- SQLite / config.yaml, newest wins)."""
+        """The settings in force. One rule, per setting: a value saved here that also reached
+        config.yaml follows config.yaml (so an edit there or with the Hermes CLI sticks); a value
+        that never reached it is kept from here; anything else is the default."""
         merged = dict(DEFAULT_SETTINGS)
         db_vals: Dict[str, Any] = {}
-        db_mtime = 0.0
+        unmirrored: set[str] = set()
         with _lock_for(self.db_path):
             conn = self._connect(create=False)
             if conn is not None:
                 with closing(conn):
-                    rows = conn.execute("SELECT key, value_json, updated_at FROM settings").fetchall()
-                    for row in rows:
+                    for row in conn.execute("SELECT key, value_json, mirrored FROM settings").fetchall():
                         try:
                             db_vals[row["key"]] = json.loads(row["value_json"])
                         except ValueError:
                             continue
-                        dt = policy.parse_iso(row["updated_at"])
-                        if dt is not None:
-                            db_mtime = max(db_mtime, dt.timestamp())
+                        if not int(row["mirrored"] or 0):
+                            unmirrored.add(row["key"])
 
-        cfg_vals, cfg_mtime = _read_hermes_plugin_config() if self._sync_hermes_config else ({}, 0.0)
-
-        # Layer older source first, newer source second, so both CLI config edits and UI edits stick.
-        if cfg_mtime > db_mtime:
-            for k, v in db_vals.items():
-                if k in DEFAULT_SETTINGS:
-                    merged[k] = v
-            for k, v in cfg_vals.items():
-                if k in DEFAULT_SETTINGS:
-                    try:
-                        merged.update(_sanitize_settings_patch({k: v}))
-                    except (ValueError, TypeError):
-                        pass
-        else:
-            for k, v in cfg_vals.items():
-                if k in DEFAULT_SETTINGS:
-                    try:
-                        merged.update(_sanitize_settings_patch({k: v}))
-                    except (ValueError, TypeError):
-                        pass
-            for k, v in db_vals.items():
-                if k in DEFAULT_SETTINGS:
-                    merged[k] = v
+        for k, v in db_vals.items():
+            if k in DEFAULT_SETTINGS:
+                merged[k] = v
+        if self._sync_hermes_config:
+            for k, v in _read_hermes_plugin_config().items():
+                if k not in DEFAULT_SETTINGS or k in unmirrored:
+                    continue
+                try:
+                    merged.update(_sanitize_settings_patch({k: v}))
+                except (ValueError, TypeError):
+                    pass
         return merged
 
     def is_enabled(self) -> bool:
@@ -417,18 +436,19 @@ class ProactiveStore:
         if not clean:
             return self.get_settings()
         now = policy.iso_utc()
+        mirrored = {
+            key: bool(self._sync_hermes_config and _write_hermes_plugin_setting(key, val)) for key, val in clean.items()
+        }
         with _lock_for(self.db_path):
             with closing(self._connect(create=True)) as conn:
                 for key, val in clean.items():
                     conn.execute(
-                        "INSERT INTO settings(key, value_json, updated_at) VALUES (?, ?, ?) "
-                        "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
-                        (key, json.dumps(val), now),
+                        "INSERT INTO settings(key, value_json, updated_at, mirrored) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, "
+                        "updated_at=excluded.updated_at, mirrored=excluded.mirrored",
+                        (key, json.dumps(val), now, 1 if mirrored[key] else 0),
                     )
                 conn.commit()
-        if self._sync_hermes_config:
-            for key, val in clean.items():
-                _write_hermes_plugin_setting(key, val)
         summary_keys = ", ".join(f"{k}={clean[k]!r}" for k in sorted(clean))
         self.log_audit(
             event_type="settings_updated",
@@ -455,8 +475,12 @@ class ProactiveStore:
         source_session: str = "",
         topic_key: str = "",
         prep_artifact: str = "",
+        said_at: Optional[datetime] = None,
     ) -> tuple[Dict[str, Any], bool]:
-        """Insert or deduplicate an open loop. Returns ``(loop_dict, created)``."""
+        """Insert or deduplicate an open loop. Returns ``(loop_dict, created)``.
+
+        *said_at* is when the words were said, for something read from a chat afterwards: a loop
+        that was closed since then is left closed instead of coming back."""
         kind_clean = (kind or "commitment").strip().lower()
         if kind_clean not in policy.LOOP_KINDS:
             kind_clean = "commitment"
@@ -473,6 +497,15 @@ class ProactiveStore:
 
         with _lock_for(self.db_path):
             with closing(self._connect(create=True)) as conn:
+                if said_at is not None:
+                    closed_rows = conn.execute(
+                        "SELECT * FROM loops WHERE status IN ('resolved', 'dropped') AND resolved_at >= ? "
+                        "ORDER BY resolved_at DESC LIMIT 120",
+                        (policy.iso_utc(said_at),),
+                    ).fetchall()
+                    for row in closed_rows:
+                        if row["fingerprint"] == fp or policy.token_similarity(title_clean, row["title"]) >= 0.72:
+                            return dict(row), False
                 open_rows = conn.execute(
                     "SELECT * FROM loops WHERE status IN ('open', 'snoozed') ORDER BY updated_at DESC LIMIT 120"
                 ).fetchall()
@@ -569,7 +602,16 @@ class ProactiveStore:
         detail: Optional[str] = None,
         due_at: Optional[str] = None,
         priority: Optional[int] = None,
+        title: Optional[str] = None,
+        kind: Optional[str] = None,
+        counterparty: Optional[str] = None,
+        resolved_by: Optional[str] = None,
+        touch: bool = True,
     ) -> Optional[Dict[str, Any]]:
+        """Change one loop. ``touch=False`` leaves ``updated_at`` alone: attaching a prepared draft
+        is the plugin's own work, and must not make a loop nobody touched look fresh again.
+        ``due_at=""`` clears the date. *resolved_by* says who closed it (``user``, ``bot``,
+        ``scan``, ``task``, ``idea_dismissed``)."""
         now_dt = policy.utc_now()
         now = policy.iso_utc(now_dt)
         with _lock_for(self.db_path):
@@ -580,7 +622,7 @@ class ProactiveStore:
                 existing = conn.execute("SELECT * FROM loops WHERE id=?", (loop_id,)).fetchone()
                 if existing is None:
                     return None
-                updates: Dict[str, Any] = {"updated_at": now}
+                updates: Dict[str, Any] = {"updated_at": now} if touch else {}
                 if status is not None:
                     if status not in policy.LOOP_STATUSES:
                         raise ValueError(f"Invalid loop status: {status}")
@@ -588,9 +630,20 @@ class ProactiveStore:
                     if status in ("resolved", "dropped"):
                         updates["resolved_at"] = now
                         updates["snoozed_until"] = None
+                        updates["resolved_by"] = (resolved_by or "user").strip()[:40]
                     elif status == "open":
                         updates["resolved_at"] = None
                         updates["snoozed_until"] = None
+                        updates["resolved_by"] = ""
+                if title is not None and title.strip():
+                    updates["title"] = title.strip()[:180]
+                    updates["fingerprint"] = policy.normalize_fingerprint(kind or existing["kind"], updates["title"])
+                if kind is not None:
+                    if kind not in policy.LOOP_KINDS:
+                        raise ValueError(f"Invalid loop kind: {kind}")
+                    updates["kind"] = kind
+                if counterparty is not None:
+                    updates["counterparty"] = counterparty.strip()[:100]
                 if snooze_hours is not None and snooze_hours > 0:
                     updates["status"] = "snoozed"
                     updates["snoozed_until"] = policy.iso_utc(now_dt + timedelta(hours=float(snooze_hours)))
@@ -604,9 +657,10 @@ class ProactiveStore:
                 if priority is not None:
                     updates["priority"] = max(1, min(3, int(priority)))
 
-                cols = ", ".join(f"{k}=?" for k in updates)
-                conn.execute(f"UPDATE loops SET {cols} WHERE id=?", (*updates.values(), loop_id))
-                conn.commit()
+                if updates:
+                    cols = ", ".join(f"{k}=?" for k in updates)
+                    conn.execute(f"UPDATE loops SET {cols} WHERE id=?", (*updates.values(), loop_id))
+                    conn.commit()
                 row = conn.execute("SELECT * FROM loops WHERE id=?", (loop_id,)).fetchone()
                 return dict(row) if row else None
 
@@ -627,9 +681,9 @@ class ProactiveStore:
 
     # ── Offers & Calibration ───────────────────────────────────────────────────
 
-    def get_calibration(self, category: str) -> Dict[str, Any]:
-        now = policy.iso_utc()
-        default_row = {
+    @staticmethod
+    def _fresh_calibration(category: str) -> Dict[str, Any]:
+        return {
             "category": category,
             "accepted": 0,
             "edited": 0,
@@ -641,20 +695,29 @@ class ProactiveStore:
             "cooldown_multiplier": 1.0,
             "auto_paused_until": None,
             "last_reason": "",
-            "updated_at": now,
+            "updated_at": policy.iso_utc(),
         }
+
+    def get_calibration(self, category: str) -> Dict[str, Any]:
         with _lock_for(self.db_path):
             conn = self._connect(create=False)
             if conn is None:
-                return default_row
+                return self._fresh_calibration(category)
             with closing(conn):
                 row = conn.execute("SELECT * FROM calibration WHERE category=?", (category,)).fetchone()
-                return dict(row) if row else default_row
+                return dict(row) if row else self._fresh_calibration(category)
 
     def list_calibration(self) -> List[Dict[str, Any]]:
+        """Every kind of suggestion as it counts today, in one read (this runs on every chat turn)."""
+        saved: Dict[str, Dict[str, Any]] = {}
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is not None:
+                with closing(conn):
+                    saved = {str(r["category"]): dict(r) for r in conn.execute("SELECT * FROM calibration").fetchall()}
         rows = []
         for cat in policy.OFFER_CATEGORIES:
-            row = self.get_calibration(cat)
+            row = policy.effective_calibration(saved.get(cat) or self._fresh_calibration(cat))
             row["acceptance_rate"] = policy.acceptance_rate(row)
             rows.append(row)
         return rows
@@ -691,6 +754,99 @@ class ProactiveStore:
                 ).fetchone()
                 return int(row["n"]) if row else 0
 
+    def _admission(
+        self,
+        *,
+        cat: str,
+        title: str,
+        tier: int,
+        confidence: float,
+        loop_id: Optional[str],
+        now_dt: datetime,
+        now_local: Optional[datetime],
+    ) -> Dict[str, Any]:
+        """Would this suggestion be let through right now? Reads only. ``ok`` plus, when it is
+        not, ``status`` (``suppressed`` or ``duplicate``) and ``reason``."""
+        now_iso = policy.iso_utc(now_dt)
+        cal = policy.effective_calibration(self.get_calibration(cat), now=now_dt)
+        gate = policy.evaluate_offer_gate(
+            settings=self.get_settings(),
+            category=cat,
+            requested_tier=tier,
+            confidence=float(confidence),
+            calibration=cal,
+            offers_last_24h=self.count_recent_offers(hours=24, min_tier=1, now=now_dt),
+            interrupts_last_24h=self.count_recent_offers(hours=24, min_tier=2, now=now_dt),
+            now_utc=now_dt,
+            now_local=now_local or clock.to_local(now_dt),
+        )
+        if not gate.allowed:
+            return {"ok": False, "status": "suppressed", "reason": gate.reason}
+        fp = policy.normalize_fingerprint(cat, title)
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is not None:
+                with closing(conn):
+                    # One live suggestion per loop, whatever it is called this hour.
+                    if loop_id:
+                        row = conn.execute(
+                            "SELECT id FROM offers WHERE loop_id=? AND (status IN ('pending', 'snoozed') "
+                            "OR (cooldown_until IS NOT NULL AND cooldown_until > ?)) LIMIT 1",
+                            (loop_id, now_iso),
+                        ).fetchone()
+                        if row is not None:
+                            return {
+                                "ok": False,
+                                "status": "duplicate",
+                                "reason": "This already has a suggestion waiting or cooling down.",
+                                "existing_id": row["id"],
+                            }
+                    recent = conn.execute(
+                        "SELECT id, title, fingerprint FROM offers "
+                        "WHERE status IN ('pending', 'snoozed') OR (cooldown_until IS NOT NULL AND cooldown_until > ?) "
+                        "ORDER BY created_at DESC LIMIT 120",
+                        (now_iso,),
+                    ).fetchall()
+                    for row in recent:
+                        if row["fingerprint"] == fp or policy.token_similarity(title, row["title"]) >= 0.72:
+                            return {
+                                "ok": False,
+                                "status": "duplicate",
+                                "reason": "The same suggestion is already waiting or cooling down.",
+                                "existing_id": row["id"],
+                            }
+        return {"ok": True, "gate": gate, "calibration": cal, "fingerprint": fp}
+
+    def precheck_offer(
+        self,
+        *,
+        category: str,
+        title: str,
+        tier: int = 1,
+        confidence: float = 0.72,
+        loop_id: Optional[str] = None,
+        now_utc: Optional[datetime] = None,
+        now_local: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Ask whether ``create_offer`` would accept this, without writing anything. The check
+        calls it before spending a model call on a draft that would then be thrown away."""
+        cat = (category or "next_step").strip().lower()
+        if cat not in policy.OFFER_CATEGORIES:
+            cat = "next_step"
+        res = self._admission(
+            cat=cat,
+            title=(title or "").strip()[:160],
+            tier=tier,
+            confidence=confidence,
+            loop_id=loop_id,
+            now_dt=now_utc or policy.utc_now(),
+            now_local=now_local,
+        )
+        out = {k: v for k, v in res.items() if k in ("ok", "status", "reason", "existing_id")}
+        if res.get("ok"):
+            out["tier"] = int(res["gate"].effective_tier)   # 0 = it would only be kept quietly
+        return out
+
     def create_offer(
         self,
         *,
@@ -709,14 +865,20 @@ class ProactiveStore:
         now_utc: Optional[datetime] = None,
         now_local: Optional[datetime] = None,
     ) -> Dict[str, Any]:
-        """Run safety, dedupe, calibration, quiet-hours, and budget gates, then persist an offer."""
+        """Run the wording check, dedupe, the category's bar, quiet hours and the daily limit,
+        then save the suggestion."""
         cat = (category or "next_step").strip().lower()
         if cat not in policy.OFFER_CATEGORIES:
             cat = "next_step"
         title_clean = (title or "").strip()[:160]
         summary_clean = (summary or "").strip()[:600]
         if not title_clean or not summary_clean:
-            return {"ok": False, "status": "rejected", "reason": "Offer requires both title and summary."}
+            return {"ok": False, "status": "rejected", "reason": "A suggestion needs a title and a summary."}
+        try:
+            tier = max(0, min(2, int(tier)))
+            confidence = max(0.0, min(1.0, float(confidence)))
+        except (TypeError, ValueError):
+            return {"ok": False, "status": "rejected", "reason": "tier and confidence must be numbers."}
 
         safe, safe_reason = policy.validate_offer_safety(title_clean, summary_clean, suggested_action)
         if not safe:
@@ -725,7 +887,7 @@ class ProactiveStore:
                 category=cat,
                 tier=tier,
                 trigger=trigger,
-                summary=f"Blocked unsafe offer: {title_clean}",
+                summary=f"Refused a suggestion for its wording: {title_clean}",
                 outcome="blocked",
                 details={"reason": safe_reason},
             )
@@ -733,52 +895,34 @@ class ProactiveStore:
 
         now_dt = now_utc or policy.utc_now()
         now_iso = policy.iso_utc(now_dt)
-        settings = self.get_settings()
-        cal = self.get_calibration(cat)
-
-        gate = policy.evaluate_offer_gate(
-            settings=settings,
-            category=cat,
-            requested_tier=tier,
-            confidence=float(confidence),
-            calibration=cal,
-            offers_last_24h=self.count_recent_offers(hours=24, min_tier=1, now=now_dt),
-            interrupts_last_24h=self.count_recent_offers(hours=24, min_tier=2, now=now_dt),
-            now_utc=now_dt,
+        loop_id = (str(loop_id).strip() or None) if loop_id else None
+        admit = self._admission(
+            cat=cat,
+            title=title_clean,
+            tier=tier,
+            confidence=confidence,
+            loop_id=loop_id,
+            now_dt=now_dt,
             now_local=now_local,
         )
-        if not gate.allowed:
-            self.log_audit(
-                event_type="offer_suppressed",
-                category=cat,
-                tier=tier,
-                trigger=trigger,
-                summary=f"Suppressed '{title_clean}': {gate.reason}",
-                outcome="suppressed",
-            )
-            return {"ok": False, "status": "suppressed", "reason": gate.reason}
+        if not admit["ok"]:
+            if admit["status"] == "suppressed":
+                self.log_audit(
+                    event_type="offer_suppressed",
+                    category=cat,
+                    tier=tier,
+                    trigger=trigger,
+                    summary=f"Held back '{title_clean}': {admit['reason']}",
+                    outcome="suppressed",
+                )
+            return {k: v for k, v in admit.items() if k in ("ok", "status", "reason", "existing_id")}
 
-        fp = policy.normalize_fingerprint(cat, title_clean)
-        cooldown_hours = 24.0 * float(cal.get("cooldown_multiplier", 1.0))
+        gate = admit["gate"]
+        fp = admit["fingerprint"]
+        cooldown_hours = 24.0 * float(admit["calibration"].get("cooldown_multiplier", 1.0))
 
         with _lock_for(self.db_path):
             with closing(self._connect(create=True)) as conn:
-                # Dedupe against pending offers or recently dismissed/cooled identical offers.
-                recent = conn.execute(
-                    "SELECT id, title, status, fingerprint, cooldown_until FROM offers "
-                    "WHERE status = 'pending' OR (cooldown_until IS NOT NULL AND cooldown_until > ?) "
-                    "ORDER BY created_at DESC LIMIT 120",
-                    (now_iso,),
-                ).fetchall()
-                for row in recent:
-                    if row["fingerprint"] == fp or policy.token_similarity(title_clean, row["title"]) >= 0.72:
-                        return {
-                            "ok": False,
-                            "status": "duplicate",
-                            "reason": "An equivalent offer is already pending or cooling down.",
-                            "existing_id": row["id"],
-                        }
-
                 offer_id = f"of_{uuid.uuid4().hex[:12]}"
                 expires = policy.iso_utc(now_dt + timedelta(hours=max(6, int(ttl_hours))))
                 cooldown = policy.iso_utc(now_dt + timedelta(hours=cooldown_hours))
@@ -800,7 +944,7 @@ class ProactiveStore:
                         (why or "").strip()[:300],
                         (draft_content or "").strip()[:3000],
                         (suggested_action or "").strip()[:300],
-                        max(0.0, min(1.0, float(confidence))),
+                        confidence,
                         fp,
                         (source_session or "").strip()[:120],
                         now_iso,
@@ -816,11 +960,62 @@ class ProactiveStore:
             category=cat,
             tier=gate.effective_tier,
             trigger=trigger,
-            summary=f"Created Tier-{gate.effective_tier} offer: {title_clean}",
+            summary=f"New suggestion: {title_clean}",
             outcome="pending",
             details={"offer_id": offer["id"], "confidence": offer["confidence"], "gate_note": gate.reason},
         )
         return {"ok": True, "status": "pending", "offer": offer, "note": gate.reason}
+
+    def get_offer(self, offer_id: str) -> Optional[Dict[str, Any]]:
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return None
+            with closing(conn):
+                row = conn.execute("SELECT * FROM offers WHERE id=?", (offer_id,)).fetchone()
+                return dict(row) if row else None
+
+    def mark_offer_delivered(
+        self, offer_id: str, *, delivered_to: str, idea_id: Optional[str] = None, keep_days: int = 0
+    ) -> None:
+        """Note where a suggestion was shown (``ideas`` or ``page``). One sent to Ideas lives as
+        long as the idea does, so its own clock is pushed out by *keep_days*."""
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return
+            with closing(conn):
+                conn.execute(
+                    "UPDATE offers SET delivered_to=?, idea_id=? WHERE id=?",
+                    ((delivered_to or "").strip()[:20], idea_id, offer_id),
+                )
+                if keep_days > 0:
+                    conn.execute(
+                        "UPDATE offers SET expires_at=? WHERE id=?",
+                        (policy.iso_utc(policy.utc_now() + timedelta(days=keep_days)), offer_id),
+                    )
+                conn.commit()
+
+    def close_offer_quietly(self, offer_id: str, *, status: str = "expired", note: str = "") -> None:
+        """End a suggestion without it counting for or against its category: it was already on
+        the task list, or the idea aged out unseen."""
+        if status not in ("expired", "accepted", "dismissed"):
+            raise ValueError("status must be expired, accepted or dismissed")
+        now_iso = policy.iso_utc()
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return
+            with closing(conn):
+                cur = conn.execute(
+                    "UPDATE offers SET status=?, answered_at=? WHERE id=? AND status IN ('pending', 'snoozed')",
+                    (status, now_iso, offer_id),
+                )
+                conn.commit()
+                changed = cur.rowcount > 0
+        if changed and note:
+            self.log_audit(event_type="offer_closed", trigger="proactivity", summary=note, outcome=status,
+                           details={"offer_id": offer_id})
 
     def list_offers(self, *, status: Optional[str] = "pending", limit: int = 60) -> List[Dict[str, Any]]:
         with _lock_for(self.db_path):
@@ -847,8 +1042,12 @@ class ProactiveStore:
         *,
         snooze_hours: float = 24.0,
         now: Optional[datetime] = None,
+        actor: str = "user",
+        loop_outcome: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Record user response on an offer and adapt category calibration."""
+        """Record the person's answer and adapt the category's bar. Accepting closes the loop the
+        suggestion was about (*loop_outcome* names why: ``task`` when it became a task);
+        ``loop_outcome="idea_dismissed"`` on a dismiss drops it, so it stops coming back."""
         action_map = {
             "accept": "accepted",
             "accepted": "accepted",
@@ -877,7 +1076,8 @@ class ProactiveStore:
                 offer = dict(row)
                 cat = offer["category"]
                 cal_row = conn.execute("SELECT * FROM calibration WHERE category=?", (cat,)).fetchone()
-                cal_dict = dict(cal_row) if cal_row else {"category": cat}
+                # From the bar as it counts today, so an old raise that has since eased is not re-applied.
+                cal_dict = policy.effective_calibration(dict(cal_row), now=now_dt) if cal_row else {"category": cat}
                 next_cal = policy.update_calibration(cal_dict, status, now=now_dt)
 
                 snoozed_until = (
@@ -936,6 +1136,18 @@ class ProactiveStore:
                         "UPDATE loops SET status='snoozed', snoozed_until=?, updated_at=? WHERE id=? AND status='open'",
                         (snoozed_until, now_iso, offer["loop_id"]),
                     )
+                if offer.get("loop_id") and status in ("accepted", "edited_accepted"):
+                    conn.execute(
+                        "UPDATE loops SET status='resolved', resolved_at=?, resolved_by=?, snoozed_until=NULL, "
+                        "updated_at=? WHERE id=? AND status IN ('open', 'snoozed')",
+                        (now_iso, (loop_outcome or "offer")[:40], now_iso, offer["loop_id"]),
+                    )
+                elif offer.get("loop_id") and status == "dismissed" and loop_outcome:
+                    conn.execute(
+                        "UPDATE loops SET status='dropped', resolved_at=?, resolved_by=?, snoozed_until=NULL, "
+                        "updated_at=? WHERE id=? AND status IN ('open', 'snoozed')",
+                        (now_iso, loop_outcome[:40], now_iso, offer["loop_id"]),
+                    )
                 conn.commit()
                 updated_offer = dict(conn.execute("SELECT * FROM offers WHERE id=?", (offer_id,)).fetchone())
 
@@ -943,15 +1155,17 @@ class ProactiveStore:
             event_type="offer_answered",
             category=cat,
             tier=updated_offer["tier"],
-            trigger="user",
-            summary=f"User marked '{updated_offer['title']}' as {status}.",
+            trigger=actor[:60],
+            summary=f"'{updated_offer['title']}' was {status.replace('_', ' ')}.",
             outcome=status,
             details={"calibration_reason": next_cal.last_reason, "threshold": next_cal.threshold},
         )
         return {"offer": updated_offer, "calibration": self.get_calibration(cat)}
 
     def expire_and_wake_offers(self, *, now: Optional[datetime] = None) -> Dict[str, int]:
-        """Wake snoozed offers whose timer passed; expire stale untouched offers and calibrate gently."""
+        """Wake snoozed suggestions whose time came, and retire ones nobody touched. An untouched
+        one is only counted: it says nothing about whether it was wanted, so the category's bar
+        and its last-answer time stay as they are."""
         now_dt = now or policy.utc_now()
         now_iso = policy.iso_utc(now_dt)
         woken = 0
@@ -976,40 +1190,70 @@ class ProactiveStore:
                         "UPDATE offers SET status='expired', answered_at=? WHERE id=?",
                         (now_iso, row["id"]),
                     )
-                    cal_row = conn.execute("SELECT * FROM calibration WHERE category=?", (row["category"],)).fetchone()
-                    next_cal = policy.update_calibration(dict(cal_row) if cal_row else {}, "expired", now=now_dt)
                     conn.execute(
-                        """
-                        INSERT INTO calibration(
-                            category, accepted, edited, snoozed, dismissed, ignored,
-                            consecutive_dismissals, threshold, cooldown_multiplier,
-                            auto_paused_until, last_reason, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(category) DO UPDATE SET
-                            ignored=excluded.ignored,
-                            threshold=excluded.threshold,
-                            cooldown_multiplier=excluded.cooldown_multiplier,
-                            last_reason=excluded.last_reason,
-                            updated_at=excluded.updated_at
-                        """,
-                        (
-                            row["category"],
-                            next_cal.accepted,
-                            next_cal.edited,
-                            next_cal.snoozed,
-                            next_cal.dismissed,
-                            next_cal.ignored,
-                            next_cal.consecutive_dismissals,
-                            next_cal.threshold,
-                            next_cal.cooldown_multiplier,
-                            next_cal.auto_paused_until,
-                            next_cal.last_reason,
-                            now_iso,
-                        ),
+                        "INSERT INTO calibration(category, ignored, updated_at) VALUES (?, 1, ?) "
+                        "ON CONFLICT(category) DO UPDATE SET ignored = ignored + 1",
+                        (row["category"], now_iso),
                     )
                     expired += 1
                 conn.commit()
         return {"woken": woken, "expired": expired}
+
+    def list_offers_in_ideas(self) -> List[Dict[str, Any]]:
+        """Suggestions that were handed to Tasks > Ideas and are still waiting on an answer there."""
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return []
+            with closing(conn):
+                rows = conn.execute(
+                    "SELECT * FROM offers WHERE status IN ('pending', 'snoozed') AND delivered_to='ideas' "
+                    "AND idea_id IS NOT NULL ORDER BY created_at DESC LIMIT 200"
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+    def loop_ids_with_live_offer(self) -> set[str]:
+        """Loops that already have a suggestion waiting, so the brief lists the thing once."""
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return set()
+            with closing(conn):
+                rows = conn.execute(
+                    "SELECT DISTINCT loop_id FROM offers WHERE loop_id IS NOT NULL AND status IN ('pending', 'snoozed')"
+                ).fetchall()
+                return {str(r["loop_id"]) for r in rows}
+
+    # ── Chat bookmarks ─────────────────────────────────────────────────────────
+
+    def get_scan_marks(self) -> Dict[str, float]:
+        """Chat id -> the timestamp its messages have been read up to."""
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return {}
+            with closing(conn):
+                return {str(r["session_id"]): float(r["last_ts"]) for r in conn.execute("SELECT * FROM scan_marks")}
+
+    def save_scan_marks(self, marks: Mapping[str, float], *, now: Optional[datetime] = None) -> None:
+        """Move bookmarks forward (never back), and forget chats untouched for 30 days."""
+        if not marks:
+            return
+        now_dt = now or policy.utc_now()
+        now_iso = policy.iso_utc(now_dt)
+        with _lock_for(self.db_path):
+            with closing(self._connect(create=True)) as conn:
+                for sid, ts in marks.items():
+                    conn.execute(
+                        "INSERT INTO scan_marks(session_id, last_ts, updated_at) VALUES (?, ?, ?) "
+                        "ON CONFLICT(session_id) DO UPDATE SET last_ts=MAX(last_ts, excluded.last_ts), "
+                        "updated_at=excluded.updated_at",
+                        (str(sid), float(ts), now_iso),
+                    )
+                conn.execute(
+                    "DELETE FROM scan_marks WHERE updated_at < ?", (policy.iso_utc(now_dt - timedelta(days=30)),)
+                )
+                conn.commit()
 
     # ── Watches ────────────────────────────────────────────────────────────────
 
@@ -1262,9 +1506,34 @@ class ProactiveStore:
 
     # ── Status & Overview ──────────────────────────────────────────────────────
 
-    def get_status(self, *, now_local: Optional[datetime] = None) -> Dict[str, Any]:
+    def note_check(self, *, trigger: str, summary: str, tokens_used: int = 0, quiet: bool = False,
+                   now: Optional[datetime] = None) -> None:
+        """Remember the latest check in one small record. A quiet hourly check is noted here and
+        nowhere else, so it no longer pushes real events out of the short activity list."""
+        record = {
+            "at": policy.iso_utc(now),
+            "trigger": trigger,
+            "summary": summary[:300],
+            "tokens_used": max(0, int(tokens_used)),
+            "quiet": bool(quiet),
+        }
+        self.set_meta("last_check", json.dumps(record))
+        if trigger == "idle_task":
+            self.set_meta("last_auto_check_at", record["at"])
+
+    def get_last_check(self) -> Optional[Dict[str, Any]]:
+        raw = self.get_meta("last_check")
+        if not raw:
+            return None
+        try:
+            found = json.loads(raw)
+        except ValueError:
+            return None
+        return found if isinstance(found, dict) else None
+
+    def get_status(self, *, now_local: Optional[datetime] = None, inbox: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         settings = self.get_settings()
-        now_local = now_local or datetime.now()
+        now_local = now_local or clock.to_local()
         quiet = policy.is_quiet_hours(now_local, settings["quiet_start"], settings["quiet_end"])
         offers_24h = self.count_recent_offers(hours=24, min_tier=1)
         interrupts_24h = self.count_recent_offers(hours=24, min_tier=2)
@@ -1272,8 +1541,7 @@ class ProactiveStore:
         open_loops = len(self.list_loops(status="open", limit=300))
         snoozed_loops = len(self.list_loops(status="snoozed", limit=300))
         active_watches = len(self.list_watches(active_only=True))
-        recent_audit = self.list_audit(limit=15)
-        last_sweep = next((a for a in recent_audit if a["event_type"].startswith("sweep_")), None)
+        last_check = self.get_last_check()
         return {
             "plugin": PLUGIN_ID,
             "version": policy.BETA_VERSION,
@@ -1282,6 +1550,8 @@ class ProactiveStore:
             "enabled": bool(settings["enabled"]),
             "autonomy_mode": settings["autonomy_mode"],
             "quiet_hours_active": quiet,
+            "timezone": clock.zone_name(),
+            "local_time": now_local.strftime("%H:%M"),
             "budgets": {
                 "offers_used_24h": offers_24h,
                 "offers_limit_24h": int(settings["daily_offer_budget"]),
@@ -1294,12 +1564,16 @@ class ProactiveStore:
                 "snoozed_loops": snoozed_loops,
                 "active_watches": active_watches,
             },
-            "last_sweep": last_sweep,
+            "last_check": last_check,
+            "last_sweep": last_check,   # 0.2.0 name, kept for an older page still open in a browser
+            "last_auto_check_at": self.get_meta("last_auto_check_at"),
+            "inbox": dict(inbox) if inbox is not None else None,
+            "brief_job": self.get_meta("brief_job_state") or "",
             "settings": settings,
         }
 
-    def get_overview(self) -> Dict[str, Any]:
-        status = self.get_status()
+    def get_overview(self, *, inbox: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        status = self.get_status(inbox=inbox)
         return {
             "status": status,
             "brief": self.get_latest_brief(),

@@ -1,9 +1,19 @@
-"""Read-only recent-chat scanner for hermes-hq-proactive (Beta).
+"""Read-only chat reader for hermes-hq-proactive (Beta).
 
-Reads recent interactive user/assistant turns from the active Hermes profile's
-``state.db`` strictly in SQLite read-only mode (``mode=ro`` + ``PRAGMA query_only=ON``).
-Skips cron, subagent, oneshot, tool, kanban, hidden, and archived sessions, and bounds
-both session count and transcript length so background checks stay fast and cheap.
+Reads the person's own one-to-one chats from the active Hermes profile's ``state.db`` strictly in
+SQLite read-only mode (``mode=ro`` + ``PRAGMA query_only=ON``).
+
+How it reads (0.3.0):
+
+* One bookmark per chat. Each chat is read oldest first from its own bookmark, so a busy chat is
+  finished over a few checks instead of being skipped. (0.2.0 read the newest 8 messages of each
+  chat and then moved a single bookmark past everything else.)
+* The caller saves the new bookmarks only once it has dealt with what was read, so a failed
+  model call means the same messages are read again next time.
+* A chat that was active in the last few minutes is left for a later check, so a conversation is
+  not judged halfway through.
+* Continued chats (a chat carried on after a long history is folded up) are read like any other;
+  scheduled jobs, helper agents, one-shots, hidden and archived chats, and group chats are not.
 """
 from __future__ import annotations
 
@@ -12,10 +22,10 @@ import os
 import re
 import sqlite3
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 EXCLUDED_SOURCES = frozenset({
     "cron",
@@ -29,7 +39,10 @@ EXCLUDED_SOURCES = frozenset({
     "delegate",
     "background",
     "worker",
+    "batch",
+    "webhook",
 })
+SHARED_CHAT_TYPES = ("group", "supergroup", "channel", "room", "forum", "thread", "guild")
 
 _INTERNAL_TITLE_PREFIXES = (
     "cron:",
@@ -41,6 +54,9 @@ _INTERNAL_TITLE_PREFIXES = (
 
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```", re.M)
 _WS_RE = re.compile(r"\s+")
+
+USER_DIGEST_CHARS = 420
+ASSISTANT_DIGEST_CHARS = 260
 
 
 @dataclass(frozen=True)
@@ -57,9 +73,27 @@ class ScannedTurn:
 class ChatScanBundle:
     sessions_scanned: int
     messages_scanned: int
-    newest_ts: Optional[float]
-    user_turns: Tuple[ScannedTurn, ...]
+    turns: Tuple[ScannedTurn, ...]
     digest_text: str
+    # chat id -> timestamp of the last message read from it; the caller saves these when done.
+    marks: Mapping[str, float] = field(default_factory=dict)
+    more: bool = False   # something was left unread for the next pass
+    waiting: int = 0     # chats left alone because they were active a moment ago
+
+    @property
+    def user_turns(self) -> Tuple[ScannedTurn, ...]:
+        return tuple(t for t in self.turns if t.role == "user")
+
+    @property
+    def assistant_turns(self) -> Tuple[ScannedTurn, ...]:
+        return tuple(t for t in self.turns if t.role == "assistant")
+
+    @property
+    def newest_ts(self) -> Optional[float]:
+        return max(self.marks.values()) if self.marks else None
+
+
+EMPTY = ChatScanBundle(sessions_scanned=0, messages_scanned=0, turns=(), digest_text="")
 
 
 def default_state_db_path() -> Optional[Path]:
@@ -127,41 +161,46 @@ def _is_excluded_session(source: str, title: str) -> bool:
     return False
 
 
+def _is_relayed_notice(text: str) -> bool:
+    """A job's output handed to the chat as an inbound turn; nobody typed it."""
+    return text.startswith("[") and "not the user" in text[:400].lower()
+
+
 def read_recent_chats(
     state_db_path: Optional[Path],
     *,
     lookback_hours: int = 72,
-    since_ts: Optional[float] = None,
+    marks: Optional[Mapping[str, float]] = None,
     now_utc: Optional[datetime] = None,
+    settle_minutes: float = 20.0,
     max_sessions: int = 12,
-    max_turns_per_session: int = 8,
-    max_total_messages: int = 60,
-    max_digest_chars: int = 7500,
+    max_turns_per_session: int = 60,
+    max_total_messages: int = 160,
+    max_digest_chars: int = 9000,
 ) -> ChatScanBundle:
-    """Read recent interactive user/assistant turns strictly read-only from ``state.db``."""
-    empty = ChatScanBundle(
-        sessions_scanned=0,
-        messages_scanned=0,
-        newest_ts=None,
-        user_turns=(),
-        digest_text="",
-    )
+    """Read what is new in the person's recent chats, oldest first, from each chat's bookmark.
+
+    *marks* maps a chat id to the timestamp already read up to. The bundle's own ``marks`` are
+    the new bookmarks for the chats read in this pass. ``settle_minutes=0`` reads chats that are
+    still going (a check the person asked for by hand).
+    """
     if state_db_path is None:
-        return empty
+        return EMPTY
     path = Path(state_db_path)
     if not path.is_file():
-        return empty
+        return EMPTY
 
+    known = dict(marks or {})
     now_dt = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     hours = max(1, min(336, int(lookback_hours)))
     cutoff_ts = (now_dt - timedelta(hours=hours)).timestamp()
-    effective_since = max(cutoff_ts, float(since_ts)) if since_ts is not None else cutoff_ts
+    settle_ts = now_dt.timestamp() - max(0.0, float(settle_minutes)) * 60.0
 
     try:
         uri = f"file:{path.resolve()}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=3.0)
     except (sqlite3.Error, OSError):
-        return empty
+        return EMPTY
 
     try:
         with closing(conn):
@@ -172,134 +211,157 @@ def read_recent_chats(
             s_cols = _table_columns(conn, "sessions")
             m_cols = _table_columns(conn, "messages")
             if not {"id", "source", "started_at"}.issubset(s_cols):
-                return empty
+                return EMPTY
             if not {"session_id", "role", "content", "timestamp"}.issubset(m_cols):
-                return empty
+                return EMPTY
 
-            activity_expr_parts = []
-            for col in ("last_activity_at", "ended_at", "started_at"):
-                if col in s_cols:
-                    activity_expr_parts.append(col)
+            activity_cols = [c for c in ("last_activity_at", "ended_at", "started_at") if c in s_cols]
             activity_expr = (
-                f"COALESCE({', '.join(activity_expr_parts)})"
-                if len(activity_expr_parts) > 1
-                else activity_expr_parts[0]
+                f"MAX({', '.join(f'COALESCE({c}, 0)' for c in activity_cols)})" if len(activity_cols) > 1 else activity_cols[0]
             )
             title_col = "title" if "title" in s_cols else "'' AS title"
 
             excluded_list = sorted(EXCLUDED_SOURCES)
-            excluded_placeholders = ", ".join("?" for _ in excluded_list)
             s_where = [
                 f"{activity_expr} >= ?",
-                f"LOWER(COALESCE(source, '')) NOT IN ({excluded_placeholders})",
+                f"LOWER(COALESCE(source, '')) NOT IN ({', '.join('?' for _ in excluded_list)})",
             ]
+            params: List[Any] = [cutoff_ts, *excluded_list]
             if "hidden" in s_cols:
                 s_where.append("COALESCE(hidden, 0) = 0")
             if "archived" in s_cols:
                 s_where.append("COALESCE(archived, 0) = 0")
-            if "parent_session_id" in s_cols:
-                s_where.append("(parent_session_id IS NULL OR parent_session_id = '')")
+            if "chat_type" in s_cols:
+                s_where.append(f"LOWER(COALESCE(chat_type, '')) NOT IN ({', '.join('?' for _ in SHARED_CHAT_TYPES)})")
+                params.extend(SHARED_CHAT_TYPES)
+            if "session_key" in s_cols:
+                for kind in SHARED_CHAT_TYPES:
+                    s_where.append("COALESCE(session_key, '') NOT LIKE ?")
+                    params.append(f"%:{kind}:%")
 
-            session_sql = (
-                f"SELECT id, source, {title_col}, {activity_expr} AS activity_ts "
-                f"FROM sessions WHERE {' AND '.join(s_where)} "
-                f"ORDER BY activity_ts DESC LIMIT ?"
-            )
+            # Oldest activity first, so a chat that went quiet is finished before a newer one starts.
             session_rows = conn.execute(
-                session_sql, (effective_since, *excluded_list, max_sessions * 4)
+                f"SELECT id, source, {title_col}, {activity_expr} AS activity_ts FROM sessions "
+                f"WHERE {' AND '.join(s_where)} ORDER BY activity_ts ASC LIMIT 400",
+                params,
             ).fetchall()
 
             m_where = [
                 "session_id = ?",
                 "role IN ('user', 'assistant')",
                 "timestamp > ?",
+                "content IS NOT NULL",
+                "TRIM(content) <> ''",
             ]
             if "active" in m_cols:
                 m_where.append("COALESCE(active, 1) = 1")
             if "_compressed_summary" in m_cols:
                 m_where.append("COALESCE(_compressed_summary, 0) = 0")
             msg_sql = (
-                f"SELECT role, content, timestamp FROM messages "
-                f"WHERE {' AND '.join(m_where)} "
-                f"ORDER BY timestamp DESC LIMIT ?"
+                f"SELECT role, content, timestamp FROM messages WHERE {' AND '.join(m_where)} "
+                f"ORDER BY timestamp ASC LIMIT ?"
             )
+            newest_sql = f"SELECT MAX(timestamp) FROM messages WHERE {' AND '.join(m_where)}"
 
             sessions_scanned = 0
             total_messages = 0
-            newest_ts: Optional[float] = None
-            user_turns: List[ScannedTurn] = []
+            waiting = 0
+            more = False
+            new_marks: Dict[str, float] = {}
+            turns: List[ScannedTurn] = []
             digest_sections: List[str] = []
             digest_len = 0
 
             for srow in session_rows:
-                if sessions_scanned >= max_sessions or total_messages >= max_total_messages:
-                    break
                 sid = str(srow["id"] or "")
                 source = str(srow["source"] or "")
                 title = str(srow["title"] or "").strip()
+                activity_ts = float(srow["activity_ts"] or 0.0)
                 if not sid or _is_excluded_session(source, title):
                     continue
+                since = max(cutoff_ts, float(known.get(sid, 0.0)))
+                newest = conn.execute(newest_sql, (sid, since)).fetchone()[0]
+                if newest is None:
+                    continue   # nothing new in this chat
+                if float(newest) > settle_ts:
+                    waiting += 1
+                    continue   # still going; read it once it has gone quiet
+                room = max_total_messages - total_messages
+                if sessions_scanned >= max_sessions or room <= 0 or digest_len >= max_digest_chars - 200:
+                    more = True
+                    break
 
-                raw_msgs = conn.execute(msg_sql, (sid, effective_since, max_turns_per_session)).fetchall()
+                limit = min(max_turns_per_session, room)
+                raw_msgs = conn.execute(msg_sql, (sid, since, limit + 1)).fetchall()
                 if not raw_msgs:
                     continue
-                # Restore chronological order within this session.
-                raw_msgs = list(reversed(raw_msgs))
+                if len(raw_msgs) > limit:
+                    more = True
+                    raw_msgs = raw_msgs[:limit]
 
+                dt_label = datetime.fromtimestamp(activity_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                header = f"--- Chat ({source}, {dt_label})" + (f": {title[:80]}" if title else "") + " ---"
                 kept_lines: List[str] = []
-                session_has_user = False
+                session_turns: List[ScannedTurn] = []
+                section_len = len(header) + 1
+                last_ts = since
+                cut_short = False
                 for mrow in raw_msgs:
-                    if total_messages >= max_total_messages:
-                        break
                     role = str(mrow["role"] or "").strip().lower()
                     ts = float(mrow["timestamp"] or 0.0)
                     text = _extract_message_text(mrow["content"])
-                    if not text or text.startswith("/"):
+                    if not text or text.startswith("/") or (role == "user" and _is_relayed_notice(text)):
+                        last_ts = max(last_ts, ts)   # read, and nothing to keep
                         continue
-                    total_messages += 1
-                    if newest_ts is None or ts > newest_ts:
-                        newest_ts = ts
-                    if role == "user":
-                        session_has_user = True
-                        user_turns.append(
-                            ScannedTurn(
-                                session_id=sid,
-                                session_title=title,
-                                source=source,
-                                role="user",
-                                content=text[:1500],
-                                timestamp=ts,
-                            )
+                    line = (
+                        f"USER: {_compact_for_digest(text, USER_DIGEST_CHARS)}"
+                        if role == "user"
+                        else f"ASSISTANT: {_compact_for_digest(text, ASSISTANT_DIGEST_CHARS)}"
+                    )
+                    if digest_len + section_len + len(line) + 1 > max_digest_chars and (kept_lines or digest_sections):
+                        cut_short = True   # the rest of this chat waits for the next pass
+                        break
+                    kept_lines.append(line)
+                    section_len += len(line) + 1
+                    session_turns.append(
+                        ScannedTurn(
+                            session_id=sid,
+                            session_title=title,
+                            source=source,
+                            role=role,
+                            content=text[:1500],
+                            timestamp=ts,
                         )
-                        compact = _compact_for_digest(text, 420)
-                        kept_lines.append(f"USER: {compact}")
-                    else:
-                        compact = _compact_for_digest(text, 240)
-                        kept_lines.append(f"ASSISTANT: {compact}")
+                    )
+                    last_ts = max(last_ts, ts)
 
-                if not kept_lines or not session_has_user:
+                if cut_short:
+                    more = True
+                if last_ts > since:
+                    new_marks[sid] = last_ts
+                if not kept_lines:
+                    if cut_short:
+                        break
                     continue
 
                 sessions_scanned += 1
-                dt_label = datetime.fromtimestamp(float(srow["activity_ts"] or 0.0), tz=timezone.utc).strftime(
-                    "%Y-%m-%d %H:%M UTC"
-                )
-                header = f"--- Session ({source}, {dt_label})" + (f": {title[:80]}" if title else "") + " ---"
-                section = header + "\n" + "\n".join(kept_lines)
-                if digest_len + len(section) + 2 <= max_digest_chars:
-                    digest_sections.append(section)
-                    digest_len += len(section) + 2
-                elif digest_len < max_digest_chars - 160:
-                    remaining = max_digest_chars - digest_len - 2
-                    digest_sections.append(section[:remaining].rstrip() + "…")
-                    digest_len = max_digest_chars
+                total_messages += len(session_turns)
+                turns.extend(session_turns)
+                # A chat with only bot lines (a job's relayed output) has nothing the person said.
+                if any(t.role == "user" for t in session_turns):
+                    digest_sections.append(header + "\n" + "\n".join(kept_lines))
+                    digest_len += section_len + 2
+                if cut_short:
+                    break
 
             return ChatScanBundle(
                 sessions_scanned=sessions_scanned,
                 messages_scanned=total_messages,
-                newest_ts=newest_ts,
-                user_turns=tuple(user_turns),
+                turns=tuple(turns),
                 digest_text="\n\n".join(digest_sections),
+                marks=new_marks,
+                more=more,
+                waiting=waiting,
             )
     except (sqlite3.Error, OSError):
-        return empty
+        return EMPTY

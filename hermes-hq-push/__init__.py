@@ -59,6 +59,8 @@ tool_permissions.py makes a connector tool's level from the app's Connectors rea
 through Hermes's own approval before a tool set to ask runs (last, so every refusal above stands).
 0.9.87: show_cards.py tells a bot in an app chat to show the flights, hotels and products it finds with those card
 tools instead of a table (Hermes's tool search keeps add-on tools out of a busy bot's tool list).
+0.9.90: ideas.offer() takes one idea from another add-on (hermes-hq-proactive 0.3.0+) into the Ideas tab, with the
+same checks as a run's ideas; ideas.OUTSIDE_API says it is there.
 """
 import importlib.util
 import logging

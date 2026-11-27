@@ -7,25 +7,28 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 try:
-    from . import policy
+    from . import clock, policy
 except ImportError:  # pragma: no cover - loaded via spec_from_file_location
     import importlib.util
     import sys
 
-    _pmod = sys.modules.get("hermes_hq_proactive_policy")
-    if _pmod is None:
-        _pspec = importlib.util.spec_from_file_location(
-            "hermes_hq_proactive_policy", Path(__file__).with_name("policy.py")
-        )
-        _pmod = importlib.util.module_from_spec(_pspec)
-        sys.modules["hermes_hq_proactive_policy"] = _pmod
-        _pspec.loader.exec_module(_pmod)
-    policy = _pmod  # type: ignore[assignment]
+    def _load(mod_name: str, filename: str):
+        existing = sys.modules.get(mod_name)
+        if existing is not None:
+            return existing
+        spec = importlib.util.spec_from_file_location(mod_name, Path(__file__).with_name(filename))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    policy = _load("hermes_hq_proactive_policy", "policy.py")
+    clock = _load("hermes_hq_proactive_clock", "clock.py")
 
 _CODE_FENCE_RE = re.compile(r"```[\s\S]*?```", re.M)
 _INLINE_CODE_RE = re.compile(r"`[^`]+`")
@@ -76,14 +79,48 @@ _LOOP_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     ),
 )
 
+# What a bot says when it takes something on for later. Captured from the bot's own reply so its
+# promise is tracked too, with the bot as the owner.
+_BOT_PROMISE_RE = re.compile(
+    r"\b(?:i['’]?ll|i\s+will|i['’]?m\s+going\s+to|let\s+me)\s+"
+    r"(?P<verb>check\s+back(?:\s+(?:on|in|with))?|follow\s+up(?:\s+(?:on|with))?|circle\s+back(?:\s+(?:on|to|with))?|"
+    r"keep\s+an\s+eye\s+on|keep\s+(?:watching|monitoring|tracking)|monitor|watch\s+for|"
+    r"let\s+you\s+know(?:\s+(?:when|if|once|as\s+soon\s+as))?|remind\s+you(?:\s+(?:to|about|when))?|"
+    r"get\s+back\s+to\s+you(?:\s+(?:on|about|with))?|ping\s+you(?:\s+(?:when|if|once))?|"
+    r"report\s+back(?:\s+(?:on|when|once))?|update\s+you(?:\s+(?:when|once|on))?)\s+"
+    r"(?P<body>[^.!?\n]{6,140})",
+    re.I,
+)
+# "I'll look into the venue options and get back to you": the work first, the coming back second.
+_BOT_PROMISE_THEN_RE = re.compile(
+    r"\b(?:i['’]?ll|i\s+will|let\s+me)\s+(?P<body>[^.!?\n]{6,120}?)\s*,?\s+(?:and|then)\s+(?:i['’]?ll\s+)?"
+    r"(?:get\s+back\s+to\s+you|let\s+you\s+know|report\s+back|follow\s+up|update\s+you|circle\s+back)\b",
+    re.I,
+)
+# "I'll check the lease terms again on Friday": a second look, on a day. Only with a date.
+_BOT_PROMISE_AGAIN_RE = re.compile(
+    r"\b(?:i['’]?ll|i\s+will)\s+(?P<body>(?:check|look\s+at|look\s+into|review|revisit|try|test|run)\s+"
+    r"[^.!?\n]{4,120}?\s+again\b[^.!?\n]{0,40})",
+    re.I,
+)
+# "I'll check back if you want" / "let me know if..." are offers of help, not something taken on.
+_BOT_PROMISE_SOFT_RE = re.compile(
+    r"\b(?:if\s+you(?:['’]d)?\s+(?:want|like|need|prefer)|whenever\s+you|just\s+(?:say|ask|let\s+me\s+know))\b", re.I
+)
+
 _ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 _IN_DAYS_RE = re.compile(r"\bin\s+(\d{1,2})\s+(day|days|week|weeks|hour|hours)\b", re.I)
+_TODAY_RE = re.compile(r"\b(?:today|tonight|this\s+(?:evening|afternoon)|eod|end\s+of\s+(?:the\s+)?day|cob)\b", re.I)
+_TOMORROW_RE = re.compile(r"\btomorrow\b", re.I)
+_NEXT_WEEK_RE = re.compile(r"\bnext\s+week\b", re.I)
 _WEEKDAYS = {
     "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
     "friday": 4, "saturday": 5, "sunday": 6,
 }
+# A weekday counts as a date only after a word that makes it one ("by Friday"), so "the Friday
+# report" or a person called Sunday is left alone.
 _WEEKDAY_RE = re.compile(
-    r"\b(?:by|on|before|next|this)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    r"\b(?:by|on|before|next|this|until|due)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     re.I,
 )
 _COUNTERPARTY_RE = re.compile(
@@ -111,43 +148,48 @@ class ExtractedLoop:
     priority: int
 
 
-def resolve_relative_due(text: str, *, now: Optional[datetime] = None) -> Optional[str]:
-    """Resolve simple date phrases ('tomorrow', 'in 3 days', 'Friday', '2026-12-01') into ISO UTC."""
-    now = (now or policy.utc_now()).astimezone(timezone.utc)
+def resolve_relative_due(text: str, *, now: Optional[datetime] = None, tz=None) -> Optional[str]:
+    """Turn a simple date phrase into an ISO UTC instant, read on the person's own clock.
+
+    "today", "tonight" and "end of day" mean the end of that local day (never an hour that has
+    already gone by); "tomorrow", a weekday or a plain date mean 5 pm local on that day;
+    "in 3 hours" is exact. *now* is when the words were said.
+    """
+    local_now = clock.to_local(now or policy.utc_now(), tz)
+    zone = local_now.tzinfo
     low = (text or "").lower()
 
     m_iso = _ISO_DATE_RE.search(low)
     if m_iso:
         try:
-            dt = datetime.fromisoformat(m_iso.group(1)).replace(hour=17, minute=0, tzinfo=timezone.utc)
-            return policy.iso_utc(dt)
+            day = datetime.fromisoformat(m_iso.group(1)).date()
+            return policy.iso_utc(clock.local_day_at(day, clock.WORK_DAY_END, zone))
         except ValueError:
             pass
 
-    if "today" in low or "tonight" in low or "eod" in low:
-        return policy.iso_utc(now.replace(hour=17, minute=0, second=0, microsecond=0))
-    if "tomorrow" in low:
-        return policy.iso_utc((now + timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0))
-    if "next week" in low:
-        return policy.iso_utc((now + timedelta(days=7)).replace(hour=17, minute=0, second=0, microsecond=0))
+    if _TODAY_RE.search(low):
+        return policy.iso_utc(clock.local_day_at(local_now.date(), clock.END_OF_DAY, zone))
+    if _TOMORROW_RE.search(low):
+        return policy.iso_utc(clock.local_day_at(clock.days_from(local_now, 1), clock.WORK_DAY_END, zone))
+    if _NEXT_WEEK_RE.search(low):
+        return policy.iso_utc(clock.local_day_at(clock.days_from(local_now, 7), clock.WORK_DAY_END, zone))
 
     m_in = _IN_DAYS_RE.search(low)
     if m_in:
         qty = int(m_in.group(1))
         unit = m_in.group(2).lower()
         if unit.startswith("hour"):
-            return policy.iso_utc(now + timedelta(hours=qty))
-        if unit.startswith("week"):
-            return policy.iso_utc(now + timedelta(days=qty * 7))
-        return policy.iso_utc(now + timedelta(days=qty))
+            return policy.iso_utc(local_now + timedelta(hours=qty))
+        days = qty * 7 if unit.startswith("week") else qty
+        return policy.iso_utc(clock.local_day_at(clock.days_from(local_now, days), clock.WORK_DAY_END, zone))
 
     m_wd = _WEEKDAY_RE.search(low)
     if m_wd:
         target_wd = _WEEKDAYS[m_wd.group(1).lower()]
-        delta = (target_wd - now.weekday()) % 7
+        delta = (target_wd - local_now.weekday()) % 7
         if delta == 0:
             delta = 7
-        return policy.iso_utc((now + timedelta(days=delta)).replace(hour=17, minute=0, second=0, microsecond=0))
+        return policy.iso_utc(clock.local_day_at(clock.days_from(local_now, delta), clock.WORK_DAY_END, zone))
 
     return None
 
@@ -207,7 +249,8 @@ def extract_loops_from_text(
             due = resolve_relative_due(sentence, now=now)
             cp_match = _COUNTERPARTY_RE.search(sentence)
             counterparty = cp_match.group(1).strip() if cp_match else ""
-            priority = 1 if (due is not None or kind == "pre_event") else 2
+            # A date alone does not make something urgent: only an event to get ready for is.
+            priority = 1 if kind == "pre_event" else 2
             found.append(
                 ExtractedLoop(
                     kind=kind,
@@ -220,6 +263,53 @@ def extract_loops_from_text(
                 )
             )
             break
+        if len(found) >= max_items:
+            break
+    return found
+
+
+def extract_bot_promises(
+    text: str,
+    *,
+    now: Optional[datetime] = None,
+    max_items: int = 1,
+) -> List[ExtractedLoop]:
+    """What the bot said it would come back to ("I'll check back on the quote Friday"), from its
+    own reply. At most *max_items*, owned by the bot, so a promise is tracked even when the
+    person never repeats it."""
+    if not text or not isinstance(text, str):
+        return []
+    cleaned = _URL_RE.sub(" ", _INLINE_CODE_RE.sub(" ", _CODE_FENCE_RE.sub(" ", text)))
+    found: List[ExtractedLoop] = []
+    for raw_sentence in _SENTENCE_SPLIT_RE.split(cleaned):
+        sentence = _clean_sentence(raw_sentence)
+        if len(sentence) < 18 or len(sentence) > 280 or sentence.endswith("?"):
+            continue
+        if _BOT_PROMISE_SOFT_RE.search(sentence):
+            continue
+        due_at = resolve_relative_due(sentence, now=now)
+        m = _BOT_PROMISE_RE.search(sentence)
+        if m:
+            verb = re.sub(r"\s+", " ", m.group("verb")).strip().lower()
+            body = _clean_sentence(m.group("body")).rstrip(",;:")
+        else:
+            m = _BOT_PROMISE_THEN_RE.search(sentence) or (_BOT_PROMISE_AGAIN_RE.search(sentence) if due_at else None)
+            if not m:
+                continue
+            verb, _, body = _clean_sentence(m.group("body")).rstrip(",;:").partition(" ")
+        if len(body) < 6:
+            continue
+        found.append(
+            ExtractedLoop(
+                kind="follow_up",
+                owner="bot",
+                title=f"{verb[0].upper()}{verb[1:]} {body}"[:160],
+                detail=sentence[:300],
+                counterparty="",
+                due_at=due_at,
+                priority=2,
+            )
+        )
         if len(found) >= max_items:
             break
     return found
@@ -293,6 +383,12 @@ def select_relevant_loops(
     return [item[1] for item in scored[:limit]]
 
 
+def _local_day(iso: str) -> str:
+    """A stored UTC instant as the local date the person would call it."""
+    moment = policy.parse_iso(iso)
+    return clock.to_local(moment).strftime("%Y-%m-%d") if moment is not None else str(iso)[:10]
+
+
 def build_pre_llm_context(
     *,
     settings: Mapping[str, Any],
@@ -313,41 +409,32 @@ def build_pre_llm_context(
 
     mode = str(settings.get("autonomy_mode") or "prep").lower()
     now = now or policy.utc_now()
-    lines: List[str] = [f"[Proactivity Beta · mode={mode}]"]
+    lines: List[str] = ["[Proactivity]"]
 
-    if in_turn:
-        if mode == "observe":
-            lines.append(
-                "- Think one step ahead quietly: track soft commitments with `proactive_loop_track`; "
-                "stage quiet summaries as Tier-0 offers instead of interrupting."
-            )
-        else:
-            lines.append(
-                "- Think one step ahead: if an obvious read-only check, verification, or draft would save "
-                "the user a follow-up turn, do it now instead of stopping at 'you could check X'. "
-                "Propose concrete next moves via `proactive_offer` (at most 1 per turn when genuinely helpful)."
-            )
+    # The person is here, in the chat, so the next step belongs in the reply itself. (0.2.0 told
+    # the bot to file it on a page instead, at about 100 tokens a turn.)
+    if in_turn and mode != "observe":
         lines.append(
-            "- Hard safety fence: never send messages, email, post, book, buy, pay, merge, or delete "
-            "without explicit user approval."
+            "If one obvious read-only check or draft would save the user a follow-up, do it now and say "
+            "what you found in your reply. Ask before anything that sends, books, pays or deletes."
         )
 
     if radar_on:
         max_loops = max(0, int(settings.get("max_context_loops", 3)))
         relevant = select_relevant_loops(open_loops, user_message, limit=max_loops, now=now)
         if relevant:
-            lines.append("Relevant open loops:")
+            lines.append("Still open with this user (mention only if it helps; proactive_loop_resolve closes one):")
             for lp in relevant:
-                due_tag = f" [due {lp['due_at'][:10]}]" if lp.get("due_at") else ""
+                due_tag = f" [due {_local_day(lp['due_at'])}]" if lp.get("due_at") else ""
                 prep_tag = " [draft ready]" if lp.get("prep_artifact") else ""
-                lines.append(f"  * ({lp['kind']}) {lp['title']}{due_tag}{prep_tag} [id={lp['id']}]")
+                lines.append(f"  * {lp['title']}{due_tag}{prep_tag} [id={lp['id']}]")
 
     # Mention at most 1 relevant pending offer if the user's message clearly relates to it.
     msg_tokens = policy.significant_tokens(user_message or "")
     for of in pending_offers[:8]:
         of_tokens = policy.significant_tokens(f"{of.get('title', '')} {of.get('summary', '')}")
         if msg_tokens and len(msg_tokens & of_tokens) >= 2:
-            lines.append(f"Pending proactive offer related to this topic: {of['title']} (id={of['id']}).")
+            lines.append(f"Already suggested to the user on this topic: {of['title']}.")
             break
 
     # Surface cooled/disabled categories so the model doesn't waste calls proposing them.
@@ -356,15 +443,15 @@ def build_pre_llm_context(
         paused = policy.parse_iso(cal.get("auto_paused_until"))
         if paused is not None and paused > now:
             suppressed.add(str(cal.get("category")))
-    if suppressed:
-        lines.append(f"Do NOT propose offers in paused/disabled categories: {', '.join(sorted(suppressed))}.")
+    if suppressed and mode != "observe":
+        lines.append(f"The user turned these kinds of suggestion down, so skip them: {', '.join(sorted(suppressed))}.")
 
     focus = str(settings.get("focus_note") or "").strip()
     skip = str(settings.get("skip_note") or "").strip()
     if focus:
-        lines.append(f"User proactive focus: {focus[:220]}")
+        lines.append(f"The user wants a heads-up about: {focus[:220]}")
     if skip:
-        lines.append(f"User proactive skip rules: {skip[:220]}")
+        lines.append(f"The user does not want to be nudged about: {skip[:220]}")
 
     text = "\n".join(lines).strip()
     return text[:1500] if len(lines) > 1 else None

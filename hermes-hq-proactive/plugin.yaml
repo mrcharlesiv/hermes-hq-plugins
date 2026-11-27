@@ -1,13 +1,13 @@
 name: hermes-hq-proactive
-version: "0.2.0-beta.2"
+version: "0.3.0-beta.1"
 manifest_version: 2
 kind: standalone
 label: "Proactivity (Beta)"
-description: "[BETA — Off by default] Makes Hermes agents think and act more proactively in the right ways: in-turn next-step anticipation, an open-loop & commitment radar, signal-gated silent prep and follow-ups, a unified daily brief, and adaptive self-calibration that dials back categories you dismiss. Strictly read-only & draft-only in the background — never sends, books, buys, pays, posts, or deletes without your approval."
+description: "Beta, off by default. Keeps track of what is left open in your own chats with a bot (things you said you would do, things you are waiting on, things the bot said it would come back to), closes them when the chat shows they got done, and suggests a next step when one is due or has gone quiet. Suggestions go to Tasks › Ideas in the Hermes HQ app and a short brief is posted in the bot's chat each morning. It only reads and suggests: nothing is sent, booked, paid, posted or deleted without you."
 author: Hermes HQ
 license: MIT
 requires_hermes: ">=0.22"
-tags: [beta, proactivity, open-loops, briefing, dashboard, calibration]
+tags: [beta, proactivity, open-loops, briefing, dashboard]
 provides_tools:
   - proactive_loop_track
   - proactive_loop_resolve
@@ -24,96 +24,101 @@ config_schema:
   enabled:
     type: bool
     default: false
-    label: "Enable Proactivity (Beta)"
-    description: "Off by default. Opt in to the Beta proactivity engine for this bot profile. Turning it off immediately stops all context injection, tools, and background sweeps."
+    label: "Turn on Proactivity (Beta)"
+    description: "Off by default. While it is off nothing is added to chats, the bot has no Proactivity tools, and no checks run."
   autonomy_mode:
     type: str
     default: "prep"
     choices: ["observe", "prep", "full"]
-    label: "Autonomy Mode"
-    description: "observe = quiet tracking & daily brief only; prep = read-only research, drafts & structured offers (recommended); full = prep + budgeted urgent Tier-2 interrupts."
+    label: "How much it does"
+    description: "observe = only keeps track and writes the brief. prep = also makes suggestions (recommended). full = the same as prep, and a suggestion that is past its date is marked Time-sensitive and listed first. No mode sends or changes anything by itself."
   in_turn_enabled:
     type: bool
     default: true
-    label: "In-Turn Next-Step Anticipation"
-    description: "Nudges the agent to run obvious read-only checks or stage drafts instead of stopping at generic suggestions."
+    label: "Go one step further in chats"
+    description: "Asks the bot to do the one obvious read-only check and tell you what it found, instead of stopping at a suggestion."
   loop_radar_enabled:
     type: bool
     default: true
-    label: "Open-Loop & Commitment Radar"
-    description: "Tracks soft commitments and 'waiting on' items mentioned in chat without cluttering your task list."
+    label: "Keep track of what is left open"
+    description: "Notes things you say you will do, things you are waiting on, and things the bot says it will come back to. Kept apart from your task list."
   idle_sweep_enabled:
     type: bool
     default: true
-    label: "Signal-Gated Idle Sweeps"
-    description: "Runs cheap deterministic checks when idle and only wakes the LLM when a loop, deadline, or watch crosses threshold."
+    label: "Check every hour"
+    description: "About once an hour while the bot is idle, looks at what is due, overdue or has gone quiet. Costs nothing when there is nothing new."
   daily_brief_enabled:
     type: bool
     default: true
-    label: "Unified Daily Brief"
-    description: "Batches low-urgency open loops, prepared drafts, and waiting offers into one quiet daily brief."
+    label: "Morning brief in the bot's chat"
+    description: "Once a day, posts a few lines in this bot's chat: what is open and what was suggested. Says nothing on a day with nothing to report."
   pattern_detection_enabled:
     type: bool
     default: true
-    label: "Repetition & Automation Spotter"
-    description: "Notices when you repeat the same multi-step request 3+ times and offers to turn it into a skill or scheduled check."
+    label: "Notice repeated requests"
+    description: "When you ask for much the same multi-step thing three times, suggests making it a skill or a scheduled job."
   allow_llm_in_sweep:
     type: bool
     default: true
-    label: "Allow Bounded LLM Drafting in Sweeps"
-    description: "When a signal trips during an idle sweep, allow a small read-only completion via ctx.llm to draft follow-ups or polish the daily brief."
+    label: "Let the check use a model"
+    description: "Lets the hourly check use a small model to read new chat messages and write short drafts. Off: it only uses fixed rules, at no cost."
   scan_recent_chats:
     type: bool
     default: true
-    label: "Scan Recent Chats During Checks (Read-Only)"
-    description: "During signal checks and idle sweeps, scan recent non-cron chats in state.db (read-only) to capture open loops and draft timely follow-ups."
+    label: "Read your recent chats"
+    description: "The check reads new messages in your own one-to-one chats with this bot to find what is left open and what got done. It never reads group chats, scheduled jobs or helper agents, and never changes a chat."
   scan_lookback_hours:
     type: int
     default: 72
-    label: "Chat Scan Lookback (Hours)"
-    description: "Maximum lookback window (in hours) on the initial recent-chat scan. Later checks only scan messages newer than the last watermark."
+    label: "How far back to read the first time (hours)"
+    description: "On the first check, how many hours of chats to read. After that each chat is read from where the last check stopped."
+  ideas_inbox:
+    type: bool
+    default: true
+    label: "Send suggestions to Tasks › Ideas"
+    description: "Suggestions appear in the Ideas tab of Tasks in the Hermes HQ app, where Add puts one on your list and Add & Start has the bot do it. Off, or without the Hermes HQ add-on: they stay on the Proactivity page."
   daily_offer_budget:
     type: int
     default: 6
-    label: "Daily Offer Budget"
-    description: "Maximum number of new proactive offers queued per 24 hours across all categories."
+    label: "Most suggestions a day"
+    description: "The most new suggestions in any 24 hours."
   daily_interrupt_budget:
     type: int
     default: 2
-    label: "Daily Interrupt Budget"
-    description: "Maximum Tier-2 urgent interrupts per 24 hours (only active in 'full' autonomy mode and outside quiet hours)."
+    label: "Most Time-sensitive suggestions a day"
+    description: "The most suggestions marked Time-sensitive in any 24 hours (only in the 'full' mode, never in quiet hours)."
   quiet_start:
     type: str
     default: "22:00"
-    label: "Quiet Hours Start (HH:MM)"
-    description: "Local 24-hour time when proactive interrupts and idle LLM sweeps pause."
+    label: "Quiet hours start (HH:MM)"
+    description: "From this time, on the clock Hermes is set to, nothing is marked Time-sensitive and the check uses no model."
   quiet_end:
     type: str
     default: "08:00"
-    label: "Quiet Hours End (HH:MM)"
-    description: "Local 24-hour time when quiet hours end."
+    label: "Quiet hours end (HH:MM)"
+    description: "When quiet hours end."
   brief_hour:
     type: int
     default: 8
-    label: "Daily Brief Hour (0-23)"
-    description: "Local hour after which today's unified brief is generated."
+    label: "Morning brief hour (0-23)"
+    description: "The hour the morning brief is posted, on the clock Hermes is set to."
   stale_waiting_days:
     type: int
     default: 3
-    label: "Stale 'Waiting On' Days"
-    description: "Days before an untouched 'waiting_on' or 'follow_up' loop triggers a follow-up draft."
+    label: "Days before a nudge"
+    description: "How many days something you are waiting on can sit with no news before a follow-up is suggested."
   max_context_loops:
     type: int
     default: 3
-    label: "Max Loops Injected Per Turn"
-    description: "Cap on relevant open loops injected in pre_llm_call to keep prompt overhead tiny."
+    label: "Open items mentioned per message"
+    description: "The most open items the bot is reminded of in one message, so little is added to each chat turn."
   focus_note:
     type: str
     default: ""
-    label: "Focus Note"
-    description: "Plain-English guidance on what this bot SHOULD proactively watch for."
+    label: "Watch for"
+    description: "In your own words, what this bot should look out for."
   skip_note:
     type: str
     default: ""
-    label: "Skip Note"
-    description: "Plain-English guidance on topics or domains this bot should NEVER nudge you about."
+    label: "Leave alone"
+    description: "In your own words, what this bot should never bring up."

@@ -1,9 +1,9 @@
 {
   "name": "hermes-hq-proactive",
   "label": "Proactivity (Beta)",
-  "description": "Opt-in Beta proactivity engine (off by default): open-loop radar, prepared drafts, daily brief, hard safety guardrails, and adaptive calibration.",
+  "description": "Beta, off by default. Keeps track of what is left open in your chats with this bot, suggests next steps in Tasks › Ideas, and posts a short brief each morning. It only reads and suggests.",
   "icon": "Sparkles",
-  "version": "0.2.0-beta.2",
+  "version": "0.3.0-beta.1",
   "tab": {
     "path": "/proactive",
     "position": "after:sessions"
