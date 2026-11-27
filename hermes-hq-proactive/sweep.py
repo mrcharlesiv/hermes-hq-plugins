@@ -355,17 +355,21 @@ def _build_deterministic_draft(signal: DetectedSignal) -> str:
             f"Hi, just checking in on \"{signal.title.split(':', 1)[-1].strip()}\". "
             f"Let me know if you need anything from my side to keep this moving."
         )
-    if signal.kind in ("overdue_loop", "due_soon_loop"):
-        return (
-            f"Quick checklist for {signal.title.split(':', 1)[-1].strip()}:\n"
-            f"- Where does it stand, and what is in the way?\n"
-            f"- Do it, hand it off, or move the date\n"
-            f"- Context: {signal.draft_seed[:240]}"
-        )
-    return signal.summary
+    # Anything else has nothing to draft without a model: the suggestion already says what is due
+    # and what to do next, and a stock checklist under it only repeats the title.
+    return ""
 
 
 # ── The brief ──────────────────────────────────────────────────────────────────
+
+# A kind of open item, as the brief says it.
+_KIND_WORDS = {
+    "commitment": "you said you would",
+    "waiting_on": "waiting on someone",
+    "follow_up": "to follow up",
+    "pre_event": "to get ready for",
+}
+
 
 def refresh_brief(store: ProactiveStore, *, now_local: Optional[datetime] = None) -> tuple[Dict[str, Any], bool]:
     """Work out today's brief from what is open right now and save it when it changed.
@@ -391,7 +395,7 @@ def refresh_brief(store: ProactiveStore, *, now_local: Optional[datetime] = None
             "where": of.get("delivered_to") or "page",
         })
     for lp in open_loops[:5]:
-        note = lp["kind"].replace("_", " ")
+        note = "the bot said it would" if lp.get("owner") == "bot" else _KIND_WORDS.get(lp["kind"], "open")
         if lp.get("due_at"):
             note += f", due {_local_day(lp['due_at'])}"
         highlights.append({"kind": "loop", "id": lp["id"], "title": lp["title"], "note": note, "tier": 0, "where": "page"})
@@ -404,7 +408,7 @@ def refresh_brief(store: ProactiveStore, *, now_local: Optional[datetime] = None
             bits.append(f"{len(pending)} suggestion{'s' if len(pending) != 1 else ''} waiting")
         if open_loops:
             bits.append(f"{len(open_loops)} open item{'s' if len(open_loops) != 1 else ''}")
-        summary = f"{' and '.join(bits)}. First: {highlights[0]['title']}."
+        summary = f"{' and '.join(bits)}. First is “{highlights[0]['title']}”."
         summary = summary[0].upper() + summary[1:]
 
     existing = store.get_brief_for_date(brief_date)
@@ -842,7 +846,7 @@ def run_signal_sweep(
                     suppressed_count += 1
                 continue
 
-            draft_text = _build_deterministic_draft(sig)
+            draft_text = "" if to_ideas else _build_deterministic_draft(sig)
             # A model-written draft is for a suggestion shown on the page. In Ideas the bot does the
             # work when the person taps Add & Start, and one only kept quietly (over today's limit)
             # may never be opened: a draft for either would be paid for and not read.

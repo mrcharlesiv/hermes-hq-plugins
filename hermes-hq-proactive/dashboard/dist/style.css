@@ -56,23 +56,6 @@
   border: 1px solid color-mix(in srgb, var(--hq-orange, var(--warning, #f59e0b)) 42%, transparent);
 }
 
-.hq-pro-state-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--hq-fill, var(--muted, rgba(128, 128, 128, 0.14)));
-  color: var(--hq-label2, var(--muted-foreground, #9a9aa3));
-}
-
-.hq-pro-state-pill.is-on {
-  background: color-mix(in srgb, var(--hq-green, var(--success, #22c55e)) 16%, transparent);
-  color: var(--hq-green, var(--success, #22c55e));
-}
-
 .hq-pro-subtitle {
   margin: 0;
   font-size: 13px;
@@ -168,14 +151,24 @@
   color: var(--hq-label2, var(--muted-foreground, #9a9aa3));
 }
 
+/* One row that slides sideways on a narrow phone, not two rows of pills. */
 .hq-pro-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.hq-pro-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .hq-pro-tab {
-  padding: 7px 13px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 7px 12px;
   border-radius: 999px;
   border: 1px solid var(--hq-separator, var(--border, rgba(128, 128, 128, 0.24)));
   background: transparent;

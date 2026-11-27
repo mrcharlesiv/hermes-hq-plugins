@@ -42,8 +42,8 @@
 
   const MODE_LABELS = {
     observe: "Keep track only",
-    prep: "Keep track and suggest (recommended)",
-    full: "Suggest, and mark overdue ones Time-sensitive",
+    prep: "Keep track and suggest",
+    full: "Suggest, overdue ones first",
   };
 
   const KIND_LABELS = {
@@ -115,6 +115,16 @@
   }
 
   // A date as the person reads it, on their own clock.
+  // "2026-03-04" as "Wed, Mar 4". Read as a day on the calendar, not as a moment in UTC.
+  function dayWords(day) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day || ""));
+    if (!m) return "";
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    const words = { weekday: "short", month: "short", day: "numeric" };
+    if (d.getFullYear() !== new Date().getFullYear()) words.year = "numeric";
+    return d.toLocaleDateString(undefined, words);
+  }
+
   function when(iso) {
     if (!iso) return "";
     try {
@@ -315,7 +325,7 @@
             h(
               "div",
               null,
-              h(CardTitle, null, brief ? "Today's brief · " + brief.brief_date : "Today's brief"),
+              h(CardTitle, null, brief && dayWords(brief.brief_date) ? "Today's brief · " + dayWords(brief.brief_date) : "Today's brief"),
               h(CardDescription, null, briefJobLine(st))
             ),
             h(
@@ -478,8 +488,9 @@
         h(
           "div",
           { className: "hq-pro-meta" },
-          h(Badge, { tone: "secondary" }, KIND_LABELS[lp.kind] || lp.kind),
-          lp.owner === "bot" ? h(Badge, { tone: "default" }, "The bot said it would") : null,
+          lp.owner === "bot"
+            ? h(Badge, { tone: "default" }, "The bot said it would")
+            : h(Badge, { tone: "secondary" }, KIND_LABELS[lp.kind] || lp.kind),
           lp.status !== "open" ? h(Badge, { tone: "secondary" }, STATUS_LABELS[lp.status] || lp.status) : null,
           lp.due_at ? h(Badge, { tone: "default" }, "Due " + when(lp.due_at)) : null,
           lp.counterparty ? h("span", null, "with " + lp.counterparty) : null,
@@ -762,7 +773,7 @@
                     h(
                       "div",
                       { className: "hq-pro-meta" },
-                      ((WATCH_KINDS[w.kind] || {}).label || w.kind) + (w.target ? " · " + w.target : "") +
+                      ((WATCH_KINDS[w.kind] || {}).label || w.kind) + (w.target ? " · " + (dayWords(w.target) || w.target) : "") +
                         (w.last_triggered_at ? " · last raised " + ago(w.last_triggered_at) : "")
                     )
                   ),
@@ -789,6 +800,12 @@
   function HistoryTab({ overview, busy, onResetCalibration }) {
     const calibration = overview.calibration || [];
     const audit = overview.audit || [];
+    // Paused or moved counts as something to show, even with no answers left on the books.
+    const hasAnswers = function (row) {
+      return Number(row.accepted || 0) + Number(row.edited || 0) + Number(row.snoozed || 0) + Number(row.dismissed || 0) +
+        Number(row.ignored || 0) > 0 || learningLine(row) !== "Suggested as usual.";
+    };
+    const unanswered = calibration.filter(function (row) { return !hasAnswers(row); });
 
     return h(
       "div",
@@ -813,9 +830,22 @@
         ),
         h(
           CardContent,
-          { className: "hq-pro-grid-2" },
-          calibration.map(function (row) {
+          { className: "hq-pro-section" },
+          // A kind with nothing answered yet is one name in a line, not a card saying so.
+          unanswered.length
+            ? h(
+                "div",
+                { className: "hq-pro-text is-soft" },
+                unanswered.length === calibration.length
+                  ? "Nothing to learn from yet."
+                  : "Nothing yet for: " +
+                    unanswered.map(function (row) { return CATEGORY_LABELS[row.category] || row.category; }).join(", ") + "."
+              )
+            : null,
+          h("div", { className: "hq-pro-grid-2" },
+          calibration.filter(hasAnswers).map(function (row) {
             const paused = row.auto_paused_until && new Date(row.auto_paused_until).getTime() > Date.now();
+            const taken = Number(row.accepted || 0) + Number(row.edited || 0);
             return h(
               "div",
               { key: row.category, className: "hq-pro-item" },
@@ -829,13 +859,13 @@
               h(
                 "div",
                 { className: "hq-pro-meta" },
-                h("span", null, "Taken up: " + (Number(row.accepted || 0) + Number(row.edited || 0))),
+                h("span", null, "Taken up: " + taken),
                 h("span", null, "Snoozed: " + Number(row.snoozed || 0)),
                 h("span", null, "Dismissed: " + Number(row.dismissed || 0)),
                 h("span", null, "Never looked at: " + Number(row.ignored || 0))
               )
             );
-          })
+          }))
         )
       ),
       h(
@@ -1280,8 +1310,7 @@
             "div",
             { className: "hq-pro-title-row" },
             h("h1", { className: "hq-pro-title" }, "Proactivity"),
-            h("span", { className: "hq-pro-beta-pill" }, "BETA · " + st.version),
-            h("span", { className: "hq-pro-state-pill" + (enabled ? " is-on" : "") }, enabled ? "On" : "Off")
+            h("span", { className: "hq-pro-beta-pill" }, "BETA · " + st.version)
           ),
           h(
             "p",
@@ -1332,7 +1361,7 @@
                 { className: "hq-pro-stat" },
                 h("div", { className: "hq-pro-stat-label" }, "Suggested in 24 hours"),
                 h("div", { className: "hq-pro-stat-value" }, st.budgets.offers_used_24h + " of " + st.budgets.offers_limit_24h),
-                h("div", { className: "hq-pro-stat-sub" }, MODE_LABELS[st.autonomy_mode] || st.autonomy_mode)
+                h("div", { className: "hq-pro-stat-sub" }, "Your limit is " + st.budgets.offers_limit_24h + " a day")
               ),
               h(
                 "div",

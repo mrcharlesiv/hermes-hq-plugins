@@ -574,7 +574,7 @@ def register(ctx) -> None:
             if not loops:
                 return "Nothing is open."
             return "\n".join(
-                f"- {lp['title']}" + (f" (due {lp['due_at'][:10]})" if lp.get("due_at") else "") + f"  [{lp['id']}]"
+                f"- {lp['title']}" + (f" (due {sweep._local_day(lp['due_at'])})" if lp.get("due_at") else "") + f"  [{lp['id']}]"
                 for lp in loops
             )
         if cmd in ("check", "sweep"):

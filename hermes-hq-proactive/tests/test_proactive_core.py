@@ -698,6 +698,9 @@ def test_a_watched_file_changing_is_noticed_and_a_failing_model_is_survived(tmp_
 
 def test_the_brief_is_always_current_and_lists_nothing_twice(tmp_path):
     st = _on(tmp_path, scan_recent_chats=False)
+    # The Activity list says a change in words, not as enabled=True.
+    said = st.list_audit(limit=5)[0]["summary"]
+    assert said == "Changed: Proactivity on; reading your recent chats off.", said
     brief, changed = sweep.refresh_brief(st, now_local=NOW_LOCAL)
     assert changed is True and brief["highlights"] == [] and "Nothing" in brief["summary"]
     assert sweep.refresh_brief(st, now_local=NOW_LOCAL)[1] is False
@@ -708,9 +711,16 @@ def test_the_brief_is_always_current_and_lists_nothing_twice(tmp_path):
     # 0.2.0 wrote the brief once a day and never looked again.
     brief, changed = sweep.refresh_brief(st, now_local=NOW_LOCAL)
     assert changed is True and len(brief["highlights"]) == 2
+    # In the person's words: no "commitment" or "pre_event", and the first one is named.
+    notes = sorted(h["note"] for h in brief["highlights"])
+    assert notes[1] == "you said you would" and notes[0].startswith("to get ready for, due ")
+    assert "First is “" in brief["summary"]
 
     sweep.run_signal_sweep(st, now_utc=NOW_UTC, now_local=NOW_LOCAL)
     brief, _ = sweep.refresh_brief(st, now_local=NOW_LOCAL)
+    # Without a model there is nothing to draft for a date coming up, so no stock checklist.
+    assert all(not of["draft_content"] for of in st.list_offers(status="pending"))
+    assert not st.get_loop(loop["id"]).get("prep_artifact")
     about_demo = [h for h in brief["highlights"] if "board demo" in h["title"]]
     assert len(about_demo) == 1 and about_demo[0]["kind"] == "offer"
     assert loop["id"] not in [h["id"] for h in brief["highlights"]]
