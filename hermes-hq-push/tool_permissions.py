@@ -11,8 +11,8 @@ the levels, which the app keeps beside them in the bot's config.yaml:
     no entry          the tool runs without asking, as every tool did before levels
     always_allow      the same: never asked by this file
     needs_approval    every call asks the person first
-    auto_review       a call the connector marks read-only runs; one it marks destructive asks; with no marks, one
-                      whose name says it changes something (CHANGES) asks; anything else runs
+    auto_review       a call the connector marks read-only runs; one it marks destructive, or not read-only, asks;
+                      with neither mark, one whose name says it changes something (CHANGES) asks; anything else runs
 
 "Asks" is Hermes's own approval gate: the add-on's pre_tool_call answers ``{"action": "approve", "message"}`` and Hermes
 shows the approval as it shows a risky command's (the app's card, a push, Once / Session / Always / Deny), and runs
@@ -254,10 +254,10 @@ def asks(level: str, server: str, tool: str) -> bool:
     read_only, destructive = hints(server, tool)
     if read_only is True:
         return False
-    if destructive is True:
+    # Marked as not read-only: it changes something, which is what this level asks about, whether or not the
+    # connector also calls the change harmless (MCP itself reads a missing destructiveHint as destructive).
+    if destructive is True or read_only is False:
         return True
-    if read_only is False or destructive is False:   # marked, and not destructive: an additive or harmless call
-        return False
     return changes_by_name(tool)
 
 

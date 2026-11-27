@@ -167,7 +167,10 @@ def test_the_name_rule(name, changes):
 
 @pytest.mark.parametrize("marks, asked", [
     ((True, None), False), ((True, True), False), ((None, True), True), ((False, True), True),
-    ((False, False), False), ((None, False), False), ((None, None), True),
+    # Not read-only is a change, so it asks, even when the connector calls the change harmless.
+    ((False, False), True), ((False, None), True),
+    # Only "not destructive" says nothing about whether it changes anything: the name decides.
+    ((None, False), True), ((None, None), True),
 ])
 def test_auto_review_follows_the_connectors_marks(config, monkeypatch, marks, asked):
     asks_with(monkeypatch)
@@ -175,6 +178,14 @@ def test_auto_review_follows_the_connectors_marks(config, monkeypatch, marks, as
     # update_issue's name says it changes something: only the marks decide otherwise.
     verdict = perms.check("mcp__linear__update_issue", {}, config)
     assert (verdict is not None) is asked
+
+
+def test_auto_review_a_reading_name_with_only_a_harmless_mark_runs(config, monkeypatch):
+    asks_with(monkeypatch)
+    monkeypatch.setattr(perms, "hints", lambda server, tool: (None, False))
+    assert perms.check("mcp__linear__get_issue", {}, config) is None
+    monkeypatch.setattr(perms, "hints", lambda server, tool: (False, False))
+    assert perms.check("mcp__linear__get_issue", {}, config)["action"] == "approve"
 
 
 def test_needs_approval_asks_whatever_the_marks_say(config, monkeypatch):
