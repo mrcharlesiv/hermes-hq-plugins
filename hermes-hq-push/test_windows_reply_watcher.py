@@ -1,6 +1,8 @@
 """Real interprocess watcher lock; no accounts, model calls or network."""
 import importlib.util
+from contextlib import closing
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +18,19 @@ spec.loader.exec_module(push)
 
 
 class ReplyWatcherLock(unittest.TestCase):
+    def test_bound_local_chat_reply_alerts_but_working_sessions_do_not(self):
+        with closing(sqlite3.connect(':memory:')) as db:
+            db.executescript('''CREATE TABLE sessions(id TEXT,source TEXT,model_config TEXT);
+                CREATE TABLE messages(id INTEGER,session_id TEXT,role TEXT,content TEXT,finish_reason TEXT);''')
+            rows=[('local-owner','local','{}'),('cli-history','local','{}'),
+                  ('local-child','local','{"_delegate_from":"parent"}'),('cron-run','cron','{}'),
+                  ('old-desktop','desktop','{}')]
+            db.executemany('INSERT INTO sessions VALUES (?,?,?)',rows)
+            db.executemany('INSERT INTO messages VALUES (?,?,?,?,?)',
+                           [(i,sid,'assistant','Ready','stop') for i,(sid,*_) in enumerate(rows,1)])
+            self.assertEqual([r[1] for r in db.execute(push._REPLIES_SQL,(0,5))],
+                             ['local-owner','old-desktop'])
+
     def test_watcher_starts_once_on_this_platform(self):
         with tempfile.TemporaryDirectory() as folder:
             worker=Mock()

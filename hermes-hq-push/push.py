@@ -1114,7 +1114,8 @@ def profile_sender(profile: str) -> str:
 # never a subagent's working session (Hermes marks those `_delegate_from`), a cron job's own run or a tool session.
 _CHAT_SOURCES = ", ".join(f"'{source}'" for source in sorted(APP_PLATFORMS | set(OUTSIDE_LABELS)))
 _APP_REPLY = f"""m.role = 'assistant' AND COALESCE(m.content, '') != ''
-    AND s.source IN ({_CHAT_SOURCES}) AND json_extract(s.model_config, '$._delegate_from') IS NULL"""
+    AND (s.source IN ({_CHAT_SOURCES}) OR (s.source = 'local' AND s.id LIKE 'local-%'))
+    AND json_extract(s.model_config, '$._delegate_from') IS NULL"""
 _REPLIES_SQL = f"""SELECT m.id, m.session_id, m.content, s.source FROM messages m JOIN sessions s ON s.id = m.session_id
   WHERE m.id > ? AND m.id <= ? AND m.finish_reason = 'stop' AND {_APP_REPLY}
   ORDER BY m.id"""
