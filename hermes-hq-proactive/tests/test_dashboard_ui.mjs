@@ -73,7 +73,7 @@ test("dashboard bundle registers cleanly and renders OFF (Beta) and ON states", 
   const fakeOverviewOff = {
     status: {
       plugin: "hermes-hq-proactive",
-      version: "0.2.0-beta.1",
+      version: "0.2.0-beta.2",
       beta: true,
       enabled: false,
       autonomy_mode: "prep",

@@ -309,8 +309,8 @@ class ProactiveStore:
         """Return the active profile's ``state.db`` path for read-only scanning, or None."""
         if self._state_db_path is not None:
             return self._state_db_path if self._state_db_path.is_file() else None
-        if self._explicit_dir is not None:
-            # Isolated/test stores never implicitly reach into the host ~/.hermes/state.db.
+        if not self._sync_hermes_config:
+            # Isolated/test stores (sync_hermes_config=False) never implicitly read host ~/.hermes/state.db.
             return None
         try:
             from hermes_constants import get_hermes_home
