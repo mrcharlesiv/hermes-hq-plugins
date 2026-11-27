@@ -1028,6 +1028,15 @@ class GoalPatchIn(BaseModel):
     offer_answer: str | None = Field(default=None, pattern="^(done|keep)$")   # Mark Done / Not Yet on a looks-done
 
 
+class IdeasSourcesIn(BaseModel):
+    chats: bool | None = None
+    chat_bots: list[str] | None = Field(default=None, max_length=30)
+    memory: bool | None = None
+    files: bool | None = None
+    web: bool | None = None
+    connectors: list[str] | None = Field(default=None, max_length=50)
+
+
 class SettingsIn(BaseModel):
     enabled: bool | None = None
     capture: str | None = Field(default=None, pattern="^(ask|auto|off)$")
@@ -1039,8 +1048,11 @@ class SettingsIn(BaseModel):
     sort: str | None = Field(default=None, pattern="^(smart|due|added|priority)$")
     ideas: bool | None = None
     ideas_bot: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    ideas_bots: list[str] | None = Field(default=None, max_length=20)
     ideas_at: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     ideas_max: int | None = Field(default=None, ge=1, le=5)
+    ideas_sources: IdeasSourcesIn | None = None
+    ideas_note: str | None = Field(default=None, max_length=800)
     goals: bool | None = None   # 0.9.66: false hides the goals tools, the note and every Goal check-in job
 
 
@@ -1166,13 +1178,10 @@ def tasks_settings_put(body: SettingsIn):
             home = tasks.bot_home(bot)
             if home is not None:
                 tasks.reconcile_prep_job(store, bot, home)
-    keys = ("ideas", "ideas_bot", "ideas_at")
+    keys = ("ideas", "ideas_bot", "ideas_bots", "ideas_at", "ideas_sources", "ideas_note")
     if store.enabled() != before or any(saved.get(k) != ideas_before.get(k) for k in keys):
-        # 0.9.39: the "Task ideas" job moves with the setting: gone from the bot that had it, there on the one picked.
-        for bot in {ideas_before.get("ideas_bot"), saved.get("ideas_bot")} - {None}:
-            home = tasks.bot_home(bot)
-            if home is not None:
-                ideas.reconcile_job(store, bot, home)
+        # 0.9.86: multi-bot Task ideas jobs follow settings across every previous and current participating bot.
+        ideas.reconcile_all(store, before_bots=ideas.active_bots(ideas_before))
     if store.goals_on() != goals_before:   # 0.9.66: Tasks or Goals on or off: every lead's Goal check-in job follows
         goals.reconcile_all(store)
     return saved
@@ -1190,8 +1199,14 @@ def _idea_call(call):
 
 @router.get("/tasks/ideas")
 def tasks_ideas_get():
-    """``{on, bot, at, max, ideas: [...], ran_at, looking}``: the new ideas, newest first."""
+    """``{on, bot, bots, at, max, sources, note, available_sources, ideas: [...], ran_at, looking}``."""
     return ideas.page(_tasks_store())
+
+
+@router.get("/tasks/ideas/sources")
+def tasks_ideas_sources_get():
+    """Auto-discovered connectors across every bot profile, for the app's Where to Look sheet."""
+    return ideas.available_sources(_tasks_store())
 
 
 @router.post("/tasks/ideas/run")

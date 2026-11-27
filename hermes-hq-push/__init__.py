@@ -382,7 +382,7 @@ def _desktop_theme():
 
 def pre_tool_call(tool_name="", args=None, **kwargs):
     verdict = (_veto(tool_name, args) or _code_veto(tool_name, args, kwargs)
-               or _ideas_veto(tool_name, kwargs.get("session_id"))
+               or _ideas_veto(tool_name, args, kwargs.get("session_id"))
                or _goals_veto(tool_name, kwargs.get("session_id"))
                or _draft_veto(tool_name, args, kwargs.get("session_id"))
                or _pay_block(tool_name, args, kwargs.get("session_id")) or _show_first(tool_name, args, kwargs)
@@ -548,14 +548,14 @@ def _code_veto(tool_name, args, kwargs):
     return None
 
 
-def _ideas_veto(tool_name, session_id):
-    """[ideas] Inside the Task ideas run, no tasks are added or changed (ideas.guard). Never logs the call's arguments."""
+def _ideas_veto(tool_name, args, session_id):
+    """[ideas] Inside the Task ideas run, enforces source boundaries and read-only safety (ideas.guard). Never logs args."""
     try:
-        message = ideas.guard(tool_name, session_id, _tasks_store)
+        message = ideas.guard(tool_name, session_id, _tasks_store, args=args, profile=_profile())
     except Exception:
         return None
     if message:
-        log.info("hermes-hq-push: task ideas run asked for %s; refused (ideas go to the user)", tool_name)
+        log.info("hermes-hq-push: task ideas run asked for %s; refused", tool_name)
         return {"action": "block", "message": message}
     return None
 
