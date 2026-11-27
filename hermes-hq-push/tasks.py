@@ -793,6 +793,12 @@ MINE_RULE = ("This is the user's own task, and that holds for every task with wh
              "others. What you can do on it: add a short note (note), file it in one of their lists (section), tag "
              "it (tags), offer to close it when it looks settled (offer_done, with why: they tap Mark Done or Keep "
              "Open), or take a part of it when they ask for help (who='together' with your steps in add_steps).")
+# 0.9.81: what a bot hears when it tries to finish a task that isn't its own in a turn nobody typed. (Before: "a
+# together task needs the user to finish it", and the bot told the person "HQ won't let me".)
+NOT_YOURS_TO_FINISH = ("Only a task that is yours alone (who: bot) is yours to mark done unasked. Mark their task "
+                       "or a shared one done only when they tell you to, in a message they typed in this chat. "
+                       "Otherwise offer it: tasks_update with offer_done (why, in a few words) shows them Mark Done "
+                       "and Keep Open, and they finish it with one tap. Don't tell them you were refused.")
 DONE_RULE = ("That task is finished, so nothing more goes on it. If there is new work, add it as a new task with "
              "tasks_add (and its own source), and tell the user.")
 
@@ -1187,7 +1193,9 @@ class Store:
 
     # -- writing -----------------------------------------------------------------------------------------------
 
-    def create(self, fields: dict, created_by: str, source: dict, db=None) -> dict:
+    def create(self, fields: dict, created_by: str, source: dict, db=None, made=None) -> dict:
+        """``made`` (keyword only, never from ``fields``, so an app's add can't set it): what a bot attached to a task
+        it offered (a goal offer's task, goals.py), the same files, links and notes tasks_update's ``made`` takes."""
         title = _text(fields.get("title"), TITLE_MAX)
         if not title:
             raise TaskError(400, "A task needs a title.")
@@ -1206,7 +1214,8 @@ class Store:
             "id": new_id(), "rev": 1, "title": title, "notes": _lines(fields.get("notes"), NOTES_MAX),
             "who": who, "bot": bot, "status": "open", "status_note": "",
             "due": _text(fields.get("due"), DUE_MAX) or None, "repeat": repeat, "prep": int(prep),
-            "steps": json.dumps(_clean_steps(fields.get("steps"))), "made": "[]", "source": json.dumps(source),
+            "steps": json.dumps(_clean_steps(fields.get("steps"))), "made": json.dumps(_clean_made(made)),
+            "source": json.dumps(source),
             "created_at": now, "updated_at": now, "done_at": None, "created_by": created_by, "log": "[]",
             "section": None, "position": self.clock(),
             "watch": _text(fields.get("watch"), WATCH_MAX), "chat": json.dumps(_clean_chat(fields.get("chat"))),
@@ -1683,7 +1692,7 @@ class Store:
                   add_steps=None, made=None, note=None, who=None, prep=None, due=_UNSET,
                   section=_UNSET, watch=None, page=None, title=None, undone_steps=None, next_check=_UNSET,
                   choices=None, owner_said=False, priority=None, tags=None, notes=None, source=None,
-                  offer_done=None, goal=_UNSET, milestone=_UNSET) -> dict:
+                  offer_done=None, goal=_UNSET, milestone=_UNSET, owner_asked=False) -> dict:
         """``tasks_update``: no ``rev`` (the tool contract has none — the bot always applies to the current
         task). Enforces docs/tasks.md's rules in code: a bot may only mark ``done`` a task it owns alone
         (``who == "bot"``), and may not change a ``who == "me"`` task except to add ``note`` — or to take a part
@@ -1696,7 +1705,11 @@ class Store:
         ``owner_said`` (0.9.47, owner 2026-11-09: telling the bot something in a task's own chat "doesn't really
         change the task"): the call came from this task's own chat, where the person is talking to the bot about
         it, so what they said is their decision. Then the bot may also tick or untick their steps, rename it, move
-        its date and mark it done, on any kind of task. Background runs keep the rules above."""
+        its date and mark it done, on any kind of task. Background runs keep the rules above.
+
+        ``owner_asked`` (0.9.81, owner 2026-11-22: "I booked the flight and hotel." / "You mark it done" / refused):
+        the call came from a chat turn the person typed, in any chat. There their word finishes the task too, so
+        the bot may set ``done`` on their task or a shared one — and nothing else the rules above keep from it."""
         # 0.9.55: ``filling`` (below): the bot that added a task for the person may still fill it in (what it made, its
         # Task Page, notes, where it came from, priority) until the person changes the task themselves.
         fill = bool(made) or page is not None or priority is not None or notes is not None or source is not None
@@ -1712,6 +1725,10 @@ class Store:
             filling = task["created_by"] == profile and not task.get("edited")
             mine = task["who"] in ("bot", "together") and task["bot"] == profile
             reopening = task["who"] == "bot" and task["bot"] == profile and status not in (None, "done")
+            # 0.9.81: "mark it done", typed in any chat. Only the finish itself (and its status_note) rides on it.
+            asked_done = bool(owner_asked) and not owner_said and status == "done" and task["who"] != "bot"
+            changing_else = (done_steps or add_steps or prep is not None or watch is not None or title is not None
+                             or undone_steps or next_check is not _UNSET or choices is not None)
             if task["status"] == "done" and not owner_said and not taking_part and not reopening:
                 raise TaskError(403, DONE_RULE)
             if taking_part:
@@ -1729,7 +1746,8 @@ class Store:
                 if due is not _UNSET and task["created_by"] != profile and not taking_part and not (
                         task["who"] in ("bot", "together") and task["bot"] == profile):
                     raise TaskError(403, "Only the user can change the date of a task they added.")
-                if task["who"] == "me" and not taking_part and (changing or (fill and not filling)):
+                if task["who"] == "me" and not taking_part and (
+                        (changing and not (asked_done and not changing_else)) or (fill and not filling)):
                     raise TaskError(403, MINE_RULE)
                 if (notes is not None or source is not None) and not (filling or mine):
                     raise TaskError(403, "Only the bot that added a task, before the user changes it, or the bot "
@@ -1737,9 +1755,8 @@ class Store:
                 if offer_done is not None and (task.get("offer") or {}).get("kept"):
                     raise TaskError(403, "They chose to keep this one open. Don't offer to close it again; say "
                                          "it in the chat if something new happened.")
-                if status == "done" and task["who"] != "bot":
-                    raise TaskError(403, "Only a task that is yours alone (who: bot) can be marked done; a "
-                                         "together task needs the user to finish it.")
+                if status == "done" and task["who"] != "bot" and not asked_done:
+                    raise TaskError(403, NOT_YOURS_TO_FINISH)
             patch: dict = {}
             changes: list[str] = []
             if status is not None:
@@ -1801,6 +1818,8 @@ class Store:
                     patch["offer"] = {"kind": "done", "by": profile, "text": why, "at": _iso(self.clock)}
             if priority is not None:
                 patch["priority"] = _clean_priority(priority)
+            if asked_done and task["status"] != "done":
+                changes.append("Marked done, as you said in the chat")
             if goal is not _UNSET:   # 0.9.66: already checked against rule 4 (bot_goal_place)
                 patch["goal"], patch["milestone"] = self._goal_place(db, goal, None if milestone is _UNSET else milestone)
             page_notes: list[str] = []
@@ -2249,7 +2268,10 @@ def status() -> dict:
 # 0.9.53: a task that is the bot's alone (``who: "bot"``) comes with this as ``how``: it finishes what it safely can.
 OWN_RULE = ("This task is yours alone, start to finish: do the work and finish it if you can, not only research and "
             "drafts. Still never send, book, buy, pay, post or delete anything for the user without asking: when it "
-            "comes to that, or you need a decision, set status needs_you with one question and up to 3 choices. End "
+            "comes to that, or you need a decision, set status needs_you with one question and up to 3 choices. Ask "
+            "once: first get everything else ready and find out what you can yourself (what they already told you "
+            "or have saved, the total with shipping and tax, how it would be paid), so the one question covers all "
+            "of it and never comes one detail at a time. End "
             "this run by saying where it stands: status done (what you did goes in made or on its page), needs_you, "
             "ready, or next_check for when you'll look again. Don't leave it working.")
 PREP_JOB_NAME = "Task prep"
@@ -2267,7 +2289,12 @@ PREP_JOB_PROMPT = (
     "at 3:12pm with the signed contract\") with what they need in made; if not, get their next move ready (a short draft they "
     "can send) and say so (\"No reply yet; a nudge is drafted\"). Then call tasks_next_prep again, and keep going "
     "until it says stop. If the task you get has next_check, it's a check you promised: look again, and set "
-    "next_check again if it still waits. When it needs them, give up to 3 short choices they can tap."
+    "next_check again if it still waits. If what the task was waiting on has now come through (a payment they "
+    "approved, a confirmation, a reply) and the next step is one you must not take here (send, book, buy, pay, post "
+    "or delete), don't mark it ready and don't end quietly: set status to 'needs_you', say in status_note that it "
+    "came through and what is left (\"Payment approved; the order isn't placed yet\") and give choices such as "
+    "[\"Finish it now\", \"Hold off\"], so they hear about it and can finish it with one tap. "
+    "When it needs them, give up to 3 short choices they can tap."
 )
 CHECK_JOB_NAME = "Task check"   # 0.9.37: one run at the time the next watched task's check is due
 PREP_JOB_MARK = "tasks_next_prep"   # in every version's Task prep and Task check instruction: how an old one is told
@@ -2841,7 +2868,9 @@ UPDATE_SCHEMA = _schema(
     "tasks_update",
     "Move a shared task along: note what you made, tick off your own steps, or ask for the user. You can only "
     "set status 'done' on a task that's yours alone (who='bot'); a 'together' task needs the user to finish it "
-    "— set it 'ready' instead. A finished task takes nothing more: new work is a new task. A 'me' task is the "
+    "— set it 'ready' instead. Two ways they finish one without leaving the chat: when they tell you the work "
+    "is done (\"I booked it\"), offer it (offer_done) and they get Mark Done to tap; when they tell you "
+    "to mark it done or close it, in a message they typed, set status 'done' yourself. A finished task takes nothing more: new work is a new task. A 'me' task is the "
     "user's: you may file it (section), tag it, add a short note, or offer to close it (offer_done); one you added "
     "yourself you may also fill in (notes, source, made, page) until they change it; or — when they ask you to help with it "
     "(first ask which parts with one clarify card: multi_select, up to 3 things you could do, best first, unless "
@@ -2887,8 +2916,8 @@ UPDATE_SCHEMA = _schema(
                "is yours: its notes, rewritten. Otherwise use note."},
      "source": SOURCE,
      "offer_done": {"type": "string", "description": "On a task that isn't yours alone and looks settled: why, in "
-                    "a few words (\"Sam confirmed by email Tuesday\"). The user sees it on the task with Mark Done "
-                    "and Keep Open; you never mark their task done yourself."},
+                    "a few words (\"Sam confirmed by email Tuesday\"). The user gets Mark Done and Keep Open to tap; "
+                    "you never mark their task done yourself unless they tell you to (then: status 'done')."},
      "goal": {"type": "string", "description": "Put your own task under a goal you lead or help (id or exact name); "
               "empty takes your own task out of its goal."},
      "milestone": {"type": "string", "description": "One of the task's goal's milestones, by id or name."},
@@ -2973,9 +3002,12 @@ def bot_goal_place(store: "Store", bot: str, goal_value, milestone_value, own: b
 
 
 def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], str],
-                   notify: Callable[[dict, str], None]) -> None:
+                   notify: Callable[[dict, str], None],
+                   person_in: Callable[[str], bool] | None = None) -> None:
     """``notify(task, profile)`` sends the push for a task that just went ``ready``/``needs_you`` (injected, like
-    ``device_access``'s ``wake``, so this module never needs to import ``push.py`` or hold a ``Dispatcher``)."""
+    ``device_access``'s ``wake``, so this module never needs to import ``push.py`` or hold a ``Dispatcher``).
+    ``person_in(session_id)`` (0.9.81, injected the same way: goals.py's ``person_in``): whether the person typed
+    this chat's turn. Without it nobody is taken to have asked."""
 
     def handle_list(args, **kwargs):
         store, bot = store_for(), profile()
@@ -3074,6 +3106,12 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         before = store.get(task_id) or {}
         own_chat = store.task_for_chat(str(session_id or ""))
         owner_said = bool(own_chat) and own_chat["id"] == task_id
+        owner_asked = False   # 0.9.81: "mark it done", typed in this chat's turn (never a job's run or a helper's)
+        if person_in is not None and session_id and args.get("status") == "done":
+            try:
+                owner_asked = bool(person_in(str(session_id)))
+            except Exception:
+                owner_asked = False
         goal, milestone = _UNSET, _UNSET
         if before and ("goal" in args or "milestone" in args):   # 0.9.66: rule 4, in code
             own = before.get("who") == "bot" and before.get("bot") == bot
@@ -3103,13 +3141,18 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
                                     priority=(0 if args.get("priority") == "none" else args.get("priority")) if "priority" in args else None,
                                     tags=args.get("tags") if "tags" in args else None,
                                     notes=args.get("notes"), source=args.get("source"),
-                                    offer_done=args.get("offer_done"), goal=goal, milestone=milestone)
+                                    offer_done=args.get("offer_done"), goal=goal, milestone=milestone,
+                                    owner_asked=owner_asked)
         except TaskError as error:
             return json.dumps({"error": str(error.detail)}, ensure_ascii=False)
         store.mark_checked(bot)
         out = dict(task)
         if args.get("offer_done") and task.get("offer"):
-            out["offered"] = "They see Mark Done and Keep Open on the task. Say so in a few words; don't ask again."
+            out["offered"] = ("They get Mark Done and Keep Open to tap. Say so in a few words; don't ask again. If "
+                              "they then tell you to mark it done, do: status 'done'.")
+        if (owner_asked and not owner_said and task["status"] == "done" and before.get("status") != "done"
+                and task["who"] != "bot"):
+            out["asked"] = True   # the app's chat card: "Marked Done", with Undo
         if before.get("who") == "me" and task["who"] == "together":
             # The app's "Hermes Is Helping" card keys on this: the log's last line is the bot's own note when it
             # gave one (2026-11-04 live test: "Hermes taking the shortlist; …", so the card never showed).
