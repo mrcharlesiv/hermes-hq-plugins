@@ -185,6 +185,9 @@ test("on: every tab renders in plain words", () => {
   assert.match(pages.today, /Time-sensitive/);
   assert.match(pages.today, /Marking it done only records your answer/);
   assert.match(pages.today, /Check Now/);
+  assert.match(pages.today, /Today's brief · \w{3}, \w{3} 4/);        // "Wed, Mar 4", not 2026-03-04
+  assert.doesNotMatch(pages.today, /2026-03-04/);
+  assert.match(pages.today, /Your limit is \d+ a day/);
   // Open items: all five filters with counts, who said it, and no Dropped item hiding.
   assert.match(pages.loops, /Open \(2\)/);
   assert.match(pages.loops, /Dropped \(1\)/);
@@ -193,6 +196,8 @@ test("on: every tab renders in plain words", () => {
   // History: what it learned in words, and what a check cost.
   assert.match(pages.history, /Suggested less often, because you turned some down/);
   assert.match(pages.history, /Never looked at: 4/);
+  assert.match(pages.history, /Nothing yet for: /);                    // kinds with no answers are one line
+  assert.doesNotMatch(pages.loops, /Said I would\s*The bot said it would/);   // one badge for whose it is
   assert.match(pages.history, /used 140 tokens/);
   // Settings: the clock it uses, and the two switches for where finds go.
   assert.match(pages.settings, /America\/Chicago/);

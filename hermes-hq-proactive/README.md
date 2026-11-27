@@ -73,6 +73,16 @@ Times (quiet hours, the brief hour, "by tonight") are read on the clock Hermes i
 - The page is in plain words, a cleared number field is no longer saved as 0, "Copy Draft" only marks done when the copy worked, items can be edited, dropped items can be found, and "Check Now" no longer times out on a phone.
 - `/proactivity` and `hermes proactivity` are one set of words, with `mode`.
 
+### 0.3.0-beta.2
+
+A pass over how the page looks, on an iPhone and a Mac, light and dark.
+
+- The tabs and the filters stay on one row and slide sideways on a narrow phone.
+- No stock "Quick checklist" under a suggestion. Without a model there is a draft only where there is something to draft.
+- The brief says "you said you would" and "waiting on someone", and gives the day as "Fri, Nov 27".
+- History lists a kind only once you have answered one of its suggestions, and a settings change reads "Proactivity on", not `enabled=True`.
+- An item the bot said it would do carries one label, not two.
+
 ## Testing
 
 ```bash

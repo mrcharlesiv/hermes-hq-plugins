@@ -313,6 +313,44 @@ def _sanitize_settings_patch(patch: Mapping[str, Any]) -> Dict[str, Any]:
     return clean
 
 
+# A setting, as the Activity list names it.
+_SETTING_WORDS = {
+    "enabled": "Proactivity",
+    "autonomy_mode": "how much it does",
+    "in_turn_enabled": "going one step further in chats",
+    "loop_radar_enabled": "keeping track of what is left open",
+    "idle_sweep_enabled": "the hourly check",
+    "daily_brief_enabled": "the morning brief",
+    "pattern_detection_enabled": "noticing repeated requests",
+    "allow_llm_in_sweep": "letting the check use a model",
+    "scan_recent_chats": "reading your recent chats",
+    "scan_lookback_hours": "hours of chats read the first time",
+    "ideas_inbox": "sending suggestions to Tasks › Ideas",
+    "daily_offer_budget": "most suggestions a day",
+    "daily_interrupt_budget": "most Time-sensitive ones a day",
+    "quiet_start": "quiet hours start",
+    "quiet_end": "quiet hours end",
+    "brief_hour": "morning brief hour",
+    "stale_waiting_days": "days before a nudge",
+    "max_context_loops": "open items mentioned per message",
+    "focus_note": "what to watch for",
+    "skip_note": "what to leave alone",
+}
+_MODE_WORDS = {"observe": "only keep track", "prep": "keep track and suggest", "full": "suggest and mark overdue ones"}
+
+
+def _setting_words(key: str, value: Any) -> str:
+    """One changed setting in plain words: "Proactivity on", "most suggestions a day 4"."""
+    name = _SETTING_WORDS.get(key, key.replace("_", " "))
+    if isinstance(value, bool):
+        return f"{name} {'on' if value else 'off'}"
+    if key == "autonomy_mode":
+        return f"{name}: {_MODE_WORDS.get(str(value), str(value))}"
+    if key in ("focus_note", "skip_note"):
+        return f"{name} {'set' if str(value).strip() else 'cleared'}"
+    return f"{name} {value}"
+
+
 class ProactiveStore:
     """Thread-safe SQLite store for one Hermes profile."""
 
@@ -449,11 +487,10 @@ class ProactiveStore:
                         (key, json.dumps(val), now, 1 if mirrored[key] else 0),
                     )
                 conn.commit()
-        summary_keys = ", ".join(f"{k}={clean[k]!r}" for k in sorted(clean))
         self.log_audit(
             event_type="settings_updated",
             trigger=actor,
-            summary=f"Updated settings: {summary_keys}",
+            summary="Changed: " + "; ".join(_setting_words(k, clean[k]) for k in sorted(clean)) + ".",
             outcome="saved",
             details=clean,
         )
