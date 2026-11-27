@@ -5,6 +5,8 @@ on:
   push:
     paths:
       - 'hermes-hq-push/plugin.yaml'
+      - 'hermes-hq-push/push.py'
+      - 'hermes-hq-push/test_windows_reply_watcher.py'
       - 'hermes-hq-push/gateway_logins.py'
       - 'hermes-hq-push/windows_bridge.py'
       - 'hermes-hq-push/test_windows_gateway_bridge.py'
@@ -12,6 +14,8 @@ on:
   pull_request:
     paths:
       - 'hermes-hq-push/plugin.yaml'
+      - 'hermes-hq-push/push.py'
+      - 'hermes-hq-push/test_windows_reply_watcher.py'
       - 'hermes-hq-push/gateway_logins.py'
       - 'hermes-hq-push/windows_bridge.py'
       - 'hermes-hq-push/test_windows_gateway_bridge.py'
@@ -35,4 +39,4 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Exercise the host's real prompt transport
-        run: python -m unittest discover -s hermes-hq-push -p test_windows_gateway_bridge.py -v
+        run: python -m unittest discover -s hermes-hq-push -p "test_windows*.py" -v

@@ -1451,6 +1451,26 @@ class ReplyWatcher:
 _watcher_started = False
 
 
+def _reply_watcher_lock(path: Path):
+    """Hold one machine's watcher until this process closes its file handle."""
+    lock = open(path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            if lock.seek(0, os.SEEK_END) == 0:
+                lock.write(b"\0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BaseException:
+        lock.close()
+        raise
+    return lock
+
+
 def start_reply_watcher(root: Path | None = None) -> bool:
     """In the server Hermes HQ talks to (dashboard/plugin_api.py). One watcher per machine: a lock file, released
     when its process exits, keeps a second server from alerting twice."""
@@ -1461,9 +1481,7 @@ def start_reply_watcher(root: Path | None = None) -> bool:
         if root is None:
             from hermes_constants import get_default_hermes_root  # outside Hermes (the plugin's tests): no watcher
             root = get_default_hermes_root()
-        import fcntl
-        lock = open(data_dir() / "reply-watcher.lock", "w")
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock = _reply_watcher_lock(data_dir() / "reply-watcher.lock")
     except (OSError, ImportError):
         return False
     _watcher_started = True
