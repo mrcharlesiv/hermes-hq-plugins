@@ -196,6 +196,41 @@ class PluginHooks(unittest.TestCase):
         self.plugin.on_human_input_resolved(**request(), outcome="provided")
         self.assertEqual(self.queued, [])
 
+    def test_browser_ask_user_alerts_then_settles(self):
+        self.plugin._serves_app_sessions = lambda: True
+        self.plugin._named_site = lambda *a, **kw: None
+        self.plugin._live_step = lambda *a, **kw: None
+        self.plugin.pre_tool_call(
+            tool_name="browser_ask_user",
+            args={"reason": "Solve the CAPTCHA on checkout"},
+            session_id="sess-browser-1",
+            tool_call_id="call_bask_1",
+        )
+        self.plugin.transform_tool_result(
+            tool_name="browser_ask_user",
+            result='{"status": "handed_back"}',
+            session_id="sess-browser-1",
+            tool_call_id="call_bask_1",
+        )
+        self.assertEqual([(item.kind, item.settled) for item in self.queued], [("input", False), ("input", True)])
+        self.assertEqual(self.queued[0].ask, "browser_ask")
+        self.assertEqual(
+            self.queued[0].payload(True)["aps"]["alert"]["body"],
+            "Needs you in its browser: Solve the CAPTCHA on checkout",
+        )
+
+    def test_browser_ask_user_quiet_outside_app_server(self):
+        self.plugin._serves_app_sessions = lambda: False
+        self.plugin._named_site = lambda *a, **kw: None
+        self.plugin._live_step = lambda *a, **kw: None
+        self.plugin.pre_tool_call(
+            tool_name="browser_ask_user",
+            args={"reason": "Solve the CAPTCHA"},
+            session_id="sess-browser-2",
+            tool_call_id="call_bask_2",
+        )
+        self.assertEqual(self.queued, [])
+
     def test_registers_both_hooks(self):
         names = []
         ctx = types.SimpleNamespace(register_hook=lambda name, fn: names.append(name))

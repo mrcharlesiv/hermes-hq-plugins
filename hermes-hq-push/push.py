@@ -65,7 +65,7 @@ CHOICES = ("once", "deny")
 # Notification Center order, as the app's local alerts: what needs an answer first.
 RELEVANCE = {"approval": 1.0, "input": 1.0, "task": 0.8, "turnDone": 0.6}
 # on_human_input_request kinds an "input" alert covers: a bot waiting on a value (approvals have their own alert).
-ASKS = ("sudo", "clarify", "secret", "vault_unlock", "vault_save_login", "vault_code")
+ASKS = ("sudo", "clarify", "secret", "vault_unlock", "vault_save_login", "vault_code", "browser_ask")
 APP_PLATFORMS = {"desktop", "tui"}
 # Chats people have with a bot through another app (the desktop app's messaging sources). Their replies and approvals
 # alert only a device that turned Outside Chats on (kind "outside", off unless the app says so), titled with the app.
@@ -933,7 +933,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.88"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
+PLUGIN_VERSION = "0.9.89"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
 
 
 class Relay:

@@ -326,6 +326,9 @@ def ask_line(ask: str, detail: str = "") -> str:
         return f"Needs you to unlock {name}" if name else "Needs your password manager unlocked"
     if ask == "secret":
         return f"Needs a secret: {name}" if name else "Needs a secret"
+    if ask == "browser_ask":
+        reason = preview(detail)
+        return f"Needs you in its browser: {reason}" if reason else "Needs you in its browser"
     return "Is waiting for your answer"
 
 

@@ -428,6 +428,8 @@ def pre_tool_call(tool_name="", args=None, **kwargs):
     if verdict is None or (isinstance(verdict, dict) and verdict.get("action") == "approve"):
         _named_site(tool_name, args, kwargs.get("task_id"))
         _live_step(tool_name, args, kwargs)
+        if tool_name == "browser_ask_user":
+            _browser_ask_alert(args, kwargs)
     return verdict
 
 
@@ -531,7 +533,10 @@ def _draft_veto(tool_name, args, session_id):
 
 def transform_tool_result(tool_name="", result=None, task_id="", **kwargs):
     """[0.9.62] A browser_vault call is over: a sign-in frame it used is let go, and "no code field" says the person
-    can't type into the page (gateway_logins.vault_result). Every other tool's result is left alone."""
+    can't type into the page (gateway_logins.vault_result). [0.9.89] Ending browser_ask_user settles its push alert."""
+    if tool_name == "browser_ask_user":
+        _browser_ask_settle(kwargs)
+        return None
     if tool_name != "browser_vault":
         return None
     try:
@@ -539,6 +544,48 @@ def transform_tool_result(tool_name="", result=None, task_id="", **kwargs):
     except Exception:
         log.debug("hermes-hq-push: vault result left as it was", exc_info=True)
         return None
+
+
+_sent_browser_asks: dict = {}
+
+
+def _browser_ask_alert(args, kwargs):
+    """[0.9.89] Alert the phone when a bot hands its browser over with browser_ask_user so it doesn't time out unseen."""
+    try:
+        if not _serves_app_sessions():
+            return
+        reason = str((args or {}).get("reason") or "").strip()
+        if not reason:
+            return
+        profile = _profile()
+        info = _in_its_chat(kwargs, profile)
+        session = str(info.get("session_id") or info.get("task_id") or "")
+        if not session:
+            return
+        raw_id = str(kwargs.get("tool_call_id") or session)
+        req_id = "bask-" + "".join(ch for ch in raw_id if ch.isalnum() or ch in "_-")[:54]
+        item = push.input_push(
+            {"kind": "browser_ask", "platform": "desktop", "session_id": session,
+             "request_id": req_id, "prompt": reason},
+            profile, _sender(profile),
+        )
+        if item is not None:
+            push.remember_input(_sent_inputs, item)
+            _sent_browser_asks[str(kwargs.get("tool_call_id") or session)] = req_id
+            _dispatcher_for().submit(item)
+    except Exception:
+        log.debug("hermes-hq-push: browser_ask alert failed", exc_info=True)
+
+
+def _browser_ask_settle(kwargs):
+    """[0.9.89] Withdraw the browser_ask push alert once browser_ask_user returns (handed back or timed out)."""
+    try:
+        key = str(kwargs.get("tool_call_id") or kwargs.get("session_id") or kwargs.get("task_id") or "")
+        req_id = _sent_browser_asks.pop(key, None)
+        if req_id:
+            _dispatcher_for().submit(push.settled_input({"request_id": req_id}, _sent_inputs))
+    except Exception:
+        log.debug("hermes-hq-push: browser_ask settle failed", exc_info=True)
 
 
 def _named_site(tool_name, args, task_id):

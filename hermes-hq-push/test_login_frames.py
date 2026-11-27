@@ -98,8 +98,8 @@ class _Vault:
 
 
 class _Supervisor:
-    def evaluate_runtime(self, expression, *, return_by_value=True, await_promise=True, timeout=10.0):
-        return {"ok": True, "result": "the tab itself"}
+    def evaluate_runtime(self, expression, *, return_by_value=True, await_promise=True, timeout=10.0, session_id=None):
+        return {"ok": True, "result": "the tab itself", "session_id": session_id}
 
 
 @pytest.fixture
@@ -182,8 +182,11 @@ def test_the_vault_evaluates_in_the_kept_frame_for_that_call_only(logins, browse
     chrome, vault, supervisor, focus = browser([(SHOP, [(IDENTITY, True, True)])])
     assert logins.install_frames() == "installed" and logins.install_frames() == "already"
     assert supervisor.evaluate_runtime("location.href")["result"] == "the tab itself", "no frame kept yet"
+    assert supervisor.evaluate_runtime("location.href", session_id="pin-1") == {
+        "ok": True, "result": "the tab itself", "session_id": "pin-1",
+    }, "session_id kwarg forwarded to original evaluate_runtime (Hermes v0.23.4+)"
     assert _ask(logins, focus, IDENTITY) == IDENTITY
-    assert supervisor.evaluate_runtime("location.href") == {"ok": True, "result": IDENTITY + "/x", "result_type": "string"}
+    assert supervisor.evaluate_runtime("location.href", session_id="pin-1") == {"ok": True, "result": IDENTITY + "/x", "result_type": "string"}
     assert chrome.evaluated[-1][1] == 100, "in the frame's own world"
     assert type(supervisor)().evaluate_runtime("location.href")["result"] == "the tab itself", "another task's browser"
     session = logins._frames["t1"]["session"]

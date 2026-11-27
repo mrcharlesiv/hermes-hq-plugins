@@ -758,9 +758,12 @@ ASK_SCHEMA = {
     "description": ("Last resort: hand your browser to the user and wait until they give it back. Only for what you "
                     "can't do yourself: a CAPTCHA, approving a payment or purchase, or a sign-in form the "
                     "browser_vault tool can't reach. Never for an ordinary sign-in: sign in yourself with "
-                    "browser_vault fill, or browser_vault save_login to get the login from the user securely. They "
-                    "control your browser from the Hermes HQ app; your browser tools are paused while they do. Returns "
-                    "when they hand it back (take a fresh snapshot then), or after about six minutes if they haven't finished."),
+                    "browser_vault fill, or browser_vault save_login to get the login from the user securely. "
+                    "If you hand over a checkout page so the user can enter payment details manually, tell them to "
+                    "finish by tapping Place Order / Pay themself rather than handing the browser back just for you "
+                    "to click submit. They control your browser from the Hermes HQ app; your browser tools are "
+                    "paused while they do. Returns when they hand it back (take a fresh snapshot then), or after "
+                    "about six minutes if they haven't finished."),
     "parameters": {"type": "object", "properties": {
         "reason": {"type": "string", "description": "What you need them to do, in a short sentence (shown to the user)."},
         "user_asked": {"type": "boolean", "description": "True only when the user said they want to do this themself."},
