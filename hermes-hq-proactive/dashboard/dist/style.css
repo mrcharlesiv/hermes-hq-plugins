@@ -294,20 +294,6 @@
   box-sizing: border-box;
 }
 
-.hq-pro-meter {
-  width: 100%;
-  height: 7px;
-  border-radius: 999px;
-  background: var(--hq-bg, var(--background, rgba(128, 128, 128, 0.18)));
-  overflow: hidden;
-}
-
-.hq-pro-meter-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--hq-tint, var(--primary, #0a84ff));
-}
-
 .hq-pro-off-card {
   display: flex;
   flex-direction: column;
@@ -344,4 +330,35 @@
   margin: 0;
   font-size: 13px;
   color: var(--hq-label2, var(--muted-foreground, #9a9aa3));
+}
+
+.hq-pro-text {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.hq-pro-text.is-soft {
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.hq-pro-strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.hq-pro-strong.is-plain {
+  font-weight: 500;
+}
+
+/* One quiet line that says what will happen, or where something went. */
+.hq-pro-note {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--hq-label2, var(--muted-foreground, #9a9aa3));
+}
+
+.hq-pro-field.is-end {
+  justify-content: flex-end;
 }

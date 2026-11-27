@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional
 
-BETA_VERSION = "0.2.0-beta.2"
+BETA_VERSION = "0.3.0-beta.1"   # keep in step with plugin.yaml and dashboard/manifest.json (test_versions_agree)
 BETA_LABEL = "Beta"
 
 AUTONOMY_MODES = ("observe", "prep", "full")
@@ -29,13 +29,13 @@ LOOP_KINDS = ("commitment", "waiting_on", "follow_up", "pre_event", "watch")
 LOOP_OWNERS = ("user", "bot", "external")
 LOOP_STATUSES = ("open", "snoozed", "resolved", "dropped")
 OFFER_STATUSES = ("pending", "accepted", "edited_accepted", "snoozed", "dismissed", "expired")
-WATCH_KINDS = ("deadline", "stale_loop", "file_change", "git_branch", "custom_timer")
+WATCH_KINDS = ("deadline", "file_change", "custom_timer")   # every kind listed here is one the check can fire
 
 # Tier semantics:
-#   0 = Silent Prep (drafted/verified in background; no alert, lands in Ready/Brief)
-#   1 = Offer / Digest (structured card or daily brief item; counts toward daily_offer_budget)
-#   2 = Urgent Interrupt (time-sensitive blocker/deadline; counts toward daily_interrupt_budget,
-#       requires autonomy_mode == "full" and outside quiet hours)
+#   0 = Quiet (kept on the Proactivity page and in the morning brief; never an idea or an alert)
+#   1 = Suggestion (goes to Tasks › Ideas, or the page when Ideas is off; counts toward daily_offer_budget)
+#   2 = Time-sensitive (a suggestion marked urgent; counts toward daily_interrupt_budget,
+#       needs autonomy_mode == "full" and to be outside quiet hours)
 VALID_TIERS = (0, 1, 2)
 
 DEFAULT_THRESHOLD = 0.55
@@ -43,11 +43,16 @@ MIN_THRESHOLD = 0.40
 MAX_THRESHOLD = 0.92
 AUTO_PAUSE_CONSECUTIVE_DISMISSALS = 3
 AUTO_PAUSE_DAYS = 7
+# A raised bar drifts back toward the default with time, so a few dismissals months ago cannot
+# silence a category for good. An untouched suggestion that ages out moves nothing at all.
+THRESHOLD_DECAY_PER_DAY = 0.02
+COOLDOWN_DECAY_PER_DAY = 0.10
 
-# ── Hard Safety Fence ──────────────────────────────────────────────────────────
-# Proactive background sweeps are STRICTLY read-only and draft-only. Any tool whose name
-# suggests an external side-effect, destructive mutation, payment, or message send is
-# blocked in `pre_tool_call` while a proactive sweep is active.
+# ── Read-only fence ────────────────────────────────────────────────────────────
+# The plugin's own checks never call tools at all (they read state.db and may ask a model for
+# text). The one run of its own where a bot does have tools is the "Proactivity brief" job, and
+# `pre_tool_call` keeps that run to reading: any tool whose name suggests an outside effect, a
+# change, a payment or a sent message is refused there.
 SWEEP_ALWAYS_ALLOWED_TOOLS = frozenset({
     "proactive_loop_track",
     "proactive_loop_list",
@@ -84,10 +89,20 @@ _FORBIDDEN_VERB_RE = re.compile(
     re.I,
 )
 
-_FORBIDDEN_ACTION_TEXT_RE = re.compile(
-    r"\b(?:auto[- ]?(?:send|pay|buy|book|post|delete|merge|push)|without asking)\b",
-    re.I,
+_OUTSIDE_VERBS = r"send|pay|buy|book|post|delete|merge|push|purchase|order|publish|cancel|submit|email|reply|transfer"
+# Text that says the thing happens with nobody asked: "auto-send", "sends the email for you",
+# "I've paid the invoice", "pay it without asking".
+_UNASKED_ACTION_RES = (
+    re.compile(rf"\bauto(?:matically)?[- ]?(?:{_OUTSIDE_VERBS})", re.I),
+    re.compile(rf"\b(?:{_OUTSIDE_VERBS})s?\b[^.!?\n]{{0,60}}\b(?:automatically|without\s+(?:asking|approval|confirm\w*|checking))", re.I),
+    re.compile(r"\b(?:sends|pays|buys|books|posts|deletes|merges|pushes|purchases|orders|publishes|cancels|submits|emails|"
+               r"transfers)\b[^.!?\n]{0,60}\b(?:for you|on your behalf|automatically)", re.I),
+    re.compile(r"\b(?:i|we)(?:['’]ve|\s+have|\s+already)?\s+(?:already\s+)?(?:sent|paid|bought|booked|posted|deleted|merged|"
+               r"pushed|purchased|ordered|published|cancell?ed|submitted|emailed|transferred)\b", re.I),
 )
+# A sentence that promises the opposite ("I will not send anything without asking you") is fine.
+_NEGATION_RE = re.compile(r"\b(?:not|never|no|won['’]?t|don['’]?t|doesn['’]?t|didn['’]?t|nothing|without\s+your)\b", re.I)
+_SENTENCE_RE = re.compile(r"[^.!?\n]+")
 
 _STOP_WORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by",
@@ -107,26 +122,33 @@ def is_tool_allowed_in_sweep(tool_name: str, args: Optional[Mapping[str, Any]] =
     """Return ``(allowed, reason)`` for a tool call attempted during a proactive sweep."""
     name = (tool_name or "").strip()
     if not name:
-        return False, "Empty tool name is not allowed during proactive sweeps."
+        return False, "A tool with no name is not allowed in the Proactivity brief run."
     if name in SWEEP_ALWAYS_ALLOWED_TOOLS:
         return True, ""
     if name in SWEEP_ALWAYS_BLOCKED_TOOLS:
-        return False, f"Hard safety fence: '{name}' is blocked during autonomous proactive sweeps (read-only & drafts only)."
+        return False, f"'{name}' is not allowed in the Proactivity brief run, which only reads."
     if name == "memory":
         action = str((args or {}).get("action") or "").strip().lower()
         if action in ("", "read", "get", "list", "search"):
             return True, ""
-        return False, f"Hard safety fence: memory.{action} is blocked during proactive sweeps."
+        return False, f"memory.{action} is not allowed in the Proactivity brief run, which only reads."
     if _FORBIDDEN_VERB_RE.search(name):
-        return False, f"Hard safety fence: mutating/external tool '{name}' is blocked during proactive sweeps."
+        return False, f"'{name}' changes or sends something, so it is not allowed in the Proactivity brief run."
     return True, ""
 
 
 def validate_offer_safety(title: str, summary: str, suggested_action: str = "") -> tuple[bool, str]:
-    """Ensure an offer describes a reviewable draft/proposal, never an unconsented auto-execution."""
-    combined = f"{title}\n{summary}\n{suggested_action}"
-    if _FORBIDDEN_ACTION_TEXT_RE.search(combined):
-        return False, "Proactive offers must stop at human approval (never claim to auto-send, pay, book, or delete without asking)."
+    """A suggestion describes something to review. One that says it sends, pays, books or deletes
+    with nobody asked (or already did) is refused; one that promises not to is fine."""
+    for sentence in _SENTENCE_RE.findall(f"{title}\n{summary}\n{suggested_action}"):
+        for pattern in _UNASKED_ACTION_RES:
+            match = pattern.search(sentence)
+            if match is None:
+                continue
+            if _NEGATION_RE.search(sentence[: match.start()]):
+                continue   # "I will not send anything without asking you"
+            return False, ("A suggestion has to stop for your OK. This one says it sends, pays, books or deletes "
+                           "something by itself.")
     return True, ""
 
 
@@ -258,7 +280,8 @@ def update_calibration(
     - ``snoozed``: right idea, wrong time — neutral on threshold, clears consecutive dismissals.
     - ``dismissed``: raises threshold (+0.07), bumps cooldown multiplier, and auto-pauses
       the category for ``AUTO_PAUSE_DAYS`` after ``AUTO_PAUSE_CONSECUTIVE_DISMISSALS``.
-    - ``ignored`` / ``expired``: mild upward nudge (+0.03) without hard pause.
+    - ``ignored`` / ``expired``: counted and nothing else. A suggestion nobody saw says nothing
+      about whether it was wanted, so it must not raise the bar (0.2.0 did, and silenced itself).
     """
     now = now or utc_now()
     accepted = int(current.get("accepted", 0))
@@ -303,9 +326,7 @@ def update_calibration(
             reason = f"Raised confidence bar to {int(threshold * 100)}% after dismissal."
     elif outcome in ("ignored", "expired"):
         ignored += 1
-        threshold = min(MAX_THRESHOLD, round(threshold + 0.03, 3))
-        cooldown_mult = min(4.0, round(cooldown_mult * 1.15, 2))
-        reason = f"Slightly raised threshold to {int(threshold * 100)}% after untouched offer expired."
+        reason = reason or "A suggestion aged out untouched; nothing was changed."
 
     return CalibrationUpdate(
         accepted=accepted,
@@ -321,10 +342,28 @@ def update_calibration(
     )
 
 
+def effective_calibration(row: Optional[Mapping[str, Any]], *, now: Optional[datetime] = None) -> dict:
+    """*row* as it counts today: a raised bar and a stretched cooldown ease back toward the
+    defaults for every day since the last answer. A lowered bar (earned by accepts) stays."""
+    cal = dict(row or {})
+    threshold = float(cal.get("threshold", DEFAULT_THRESHOLD))
+    cooldown = float(cal.get("cooldown_multiplier", 1.0))
+    since = parse_iso(cal.get("updated_at"))
+    days = max(0.0, ((now or utc_now()) - since).total_seconds() / 86400.0) if since is not None else 0.0
+    if threshold > DEFAULT_THRESHOLD:
+        threshold = max(DEFAULT_THRESHOLD, round(threshold - THRESHOLD_DECAY_PER_DAY * days, 3))
+    if cooldown > 1.0:
+        cooldown = max(1.0, round(cooldown - COOLDOWN_DECAY_PER_DAY * days, 2))
+    cal["threshold"] = threshold
+    cal["cooldown_multiplier"] = cooldown
+    return cal
+
+
 def acceptance_rate(row: Mapping[str, Any]) -> Optional[float]:
-    """Return ``(accepted + edited) / decided`` or ``None`` when no decisions yet."""
+    """Return ``(accepted + edited) / answered`` or ``None`` when nothing was answered yet.
+    Suggestions that aged out unseen are not answers."""
     pos = int(row.get("accepted", 0)) + int(row.get("edited", 0))
-    neg = int(row.get("dismissed", 0)) + int(row.get("ignored", 0))
+    neg = int(row.get("dismissed", 0))
     total = pos + neg
     if total == 0:
         return None
@@ -354,7 +393,8 @@ def evaluate_offer_gate(
 ) -> GateDecision:
     """Decide whether an offer may be surfaced, downgraded to Tier 0/1, or suppressed."""
     now_utc = now_utc or utc_now()
-    now_local = now_local or datetime.now()
+    if now_local is None:   # callers pass the person's clock (clock.to_local); this is only a fallback
+        now_local = now_utc.astimezone()
 
     if not settings.get("enabled", False):
         return GateDecision(False, 0, "Proactivity (Beta) is turned off.")
@@ -363,13 +403,13 @@ def evaluate_offer_gate(
     if category in disabled_cats:
         return GateDecision(False, 0, f"Category '{category}' is disabled in settings.")
 
-    cal = calibration or {}
+    cal = effective_calibration(calibration, now=now_utc)
     paused_until = parse_iso(cal.get("auto_paused_until"))
     if paused_until is not None and paused_until > now_utc:
         return GateDecision(
             False,
             0,
-            f"Category '{category}' is auto-cooled until {cal.get('auto_paused_until')} due to prior dismissals.",
+            f"'{category}' is paused until {str(cal.get('auto_paused_until'))[:10]} after repeated dismissals.",
         )
 
     threshold = float(cal.get("threshold", DEFAULT_THRESHOLD))
@@ -377,7 +417,7 @@ def evaluate_offer_gate(
         return GateDecision(
             False,
             0,
-            f"Confidence {int(confidence * 100)}% is below calibrated threshold {int(threshold * 100)}% for '{category}'.",
+            f"Sureness {int(confidence * 100)}% is under the {int(threshold * 100)}% needed for '{category}'.",
         )
 
     mode = str(settings.get("autonomy_mode") or "prep").lower()
@@ -406,11 +446,11 @@ def evaluate_offer_gate(
     if tier >= 1 and offers_last_24h >= offer_budget:
         # Downgrade to Tier 0 silent prep if it fits as quiet preparation, else suppress.
         if mode in ("prep", "full") and category in ("pre_event", "prepared_draft"):
-            return GateDecision(True, 0, "Daily offer budget reached; staged quietly as Tier-0 prep.")
+            return GateDecision(True, 0, "Today's limit is reached, so this is kept quietly on the page.")
         return GateDecision(
             False,
             0,
-            f"Daily offer budget reached ({offers_last_24h}/{offer_budget} in the last 24h).",
+            f"Today's limit is reached ({offers_last_24h} of {offer_budget} in the last 24 hours).",
         )
 
     return GateDecision(True, tier, "Admitted.")

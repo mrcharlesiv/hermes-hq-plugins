@@ -4,9 +4,11 @@ Mounted by the Hermes web server at ``/api/plugins/hermes-hq-proactive/``.
 Resolves the active profile's data directory per request (supporting multi-profile
 ``?profile=`` scoping automatically through ``HERMES_HOME``).
 """
+import contextvars
 import importlib.util
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,25 +46,77 @@ def _policy():
     return _sibling("hermes_hq_proactive_policy", "policy.py")
 
 
+def _clock():
+    return _sibling("hermes_hq_proactive_clock", "clock.py")
+
+
 def _store_mod():
     _policy()
+    _clock()
     return _sibling("hermes_hq_proactive_store", "store.py")
 
 
 def _radar():
     _policy()
+    _clock()
     return _sibling("hermes_hq_proactive_radar", "radar.py")
+
+
+def _inbox_mod():
+    _store_mod()
+    return _sibling("hermes_hq_proactive_inbox", "inbox.py")
 
 
 def _sweep():
     _store_mod()
     _radar()
+    _sibling("hermes_hq_proactive_origin", "origin.py")
     _sibling("hermes_hq_proactive_session_scan", "session_scan.py")
+    _inbox_mod()
     return _sibling("hermes_hq_proactive_sweep", "sweep.py")
+
+
+def _brief_job():
+    _store_mod()
+    return _sibling("hermes_hq_proactive_brief_job", "brief_job.py")
 
 
 def _store():
     return _store_mod().ProactiveStore()
+
+
+def _bot() -> str:
+    """The bot this request is for (the page is opened per bot)."""
+    try:
+        from hermes_cli.profiles import current_profile_name
+
+        return str(current_profile_name("default") or "default")
+    except Exception:
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            return str(get_active_profile_name() or "default")
+        except Exception:
+            return "default"
+
+
+def _inbox():
+    return _inbox_mod().Inbox(_bot())
+
+
+def _where(store) -> Dict[str, Any]:
+    """Where finds are going right now, for the page."""
+    mod = _inbox_mod()
+    return mod.describe(store, _inbox())
+
+
+def _due(raw: Optional[str]) -> Optional[str]:
+    """A date typed on the page: ISO, or words like 'tomorrow' and 'by Friday' on the person's clock."""
+    if not raw or not raw.strip():
+        return None
+    pol = _policy()
+    parsed = pol.parse_iso(raw)
+    return pol.iso_utc(parsed) if parsed else _radar().resolve_relative_due(raw)
 
 
 def _optional_llm():
@@ -106,6 +160,7 @@ class SettingsPatch(BaseModel):
     focus_note: Optional[str] = None
     skip_note: Optional[str] = None
     disabled_categories: Optional[List[str]] = None
+    ideas_inbox: Optional[bool] = None
 
 
 class OfferRespondBody(BaseModel):
@@ -128,8 +183,11 @@ class LoopPatchBody(BaseModel):
     snooze_hours: Optional[float] = None
     prep_artifact: Optional[str] = None
     detail: Optional[str] = None
-    due_at: Optional[str] = None
+    due_at: Optional[str] = None      # "" clears the date
     priority: Optional[int] = None
+    title: Optional[str] = None
+    kind: Optional[str] = None
+    counterparty: Optional[str] = None
 
 
 class WatchCreateBody(BaseModel):
@@ -153,43 +211,53 @@ class CalibrationResetBody(BaseModel):
 
 @router.get("/status")
 def get_status() -> Dict[str, Any]:
-    return _store().get_status()
+    st = _store()
+    return st.get_status(inbox=_where(st))
 
 
 @router.get("/overview")
 def get_overview() -> Dict[str, Any]:
-    return _store().get_overview()
+    st = _store()
+    out = st.get_overview(inbox=_where(st))
+    out["check"] = _check_state(st)
+    return out
 
 
 @router.patch("/settings")
 def patch_settings(body: SettingsPatch) -> Dict[str, Any]:
     patch = body.model_dump(exclude_none=True)
+    st = _store()
     try:
-        settings = _store().update_settings(patch, actor="dashboard")
+        settings = st.update_settings(patch, actor="dashboard")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "settings": settings, "status": _store().get_status()}
+    # The morning message is a scheduled job: it follows on/off, the brief switch and the hour.
+    if {"enabled", "daily_brief_enabled", "brief_hour"} & set(patch):
+        job = _brief_job()
+        job.reconcile(st, home=job.bot_home())
+    return {"ok": True, "settings": settings, "status": st.get_status(inbox=_where(st))}
 
 
 @router.post("/offers/{offer_id}/respond")
 def respond_offer(offer_id: str, body: OfferRespondBody) -> Dict[str, Any]:
+    st = _store()
     try:
-        result = _store().respond_to_offer(offer_id, body.action, snooze_hours=body.snooze_hours)
+        result = st.respond_to_offer(offer_id, body.action, snooze_hours=body.snooze_hours)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
-        raise HTTPException(status_code=404, detail="Offer not found.")
+        raise HTTPException(status_code=404, detail="Suggestion not found.")
+    if result["offer"].get("status") == "dismissed":
+        # Dismissed here: take it out of Tasks › Ideas too, so it is not answered twice.
+        try:
+            _inbox_mod().withdraw(st, result["offer"], _inbox())
+        except Exception:
+            pass
     return {"ok": True, **result}
 
 
 @router.post("/loops")
 def create_loop(body: LoopCreateBody) -> Dict[str, Any]:
-    pol = _policy()
-    rad = _radar()
-    due_iso = None
-    if body.due_at and body.due_at.strip():
-        parsed = pol.parse_iso(body.due_at)
-        due_iso = pol.iso_utc(parsed) if parsed else rad.resolve_relative_due(body.due_at)
     try:
         loop, created = _store().add_loop(
             kind=body.kind,
@@ -198,7 +266,7 @@ def create_loop(body: LoopCreateBody) -> Dict[str, Any]:
             owner=body.owner,
             counterparty=body.counterparty,
             priority=body.priority,
-            due_at=due_iso,
+            due_at=_due(body.due_at),
             source_session="dashboard",
         )
     except ValueError as exc:
@@ -208,6 +276,13 @@ def create_loop(body: LoopCreateBody) -> Dict[str, Any]:
 
 @router.patch("/loops/{loop_id}")
 def patch_loop(loop_id: str, body: LoopPatchBody) -> Dict[str, Any]:
+    due_at = body.due_at
+    if due_at is not None and due_at.strip():
+        due_at = _due(due_at)
+        if due_at is None:
+            raise HTTPException(status_code=400, detail="That date was not understood. Try 2026-03-01, 'tomorrow' or 'by Friday'.")
+    elif due_at is not None:
+        due_at = ""
     try:
         updated = _store().update_loop(
             loop_id,
@@ -215,28 +290,31 @@ def patch_loop(loop_id: str, body: LoopPatchBody) -> Dict[str, Any]:
             snooze_hours=body.snooze_hours,
             prep_artifact=body.prep_artifact,
             detail=body.detail,
-            due_at=body.due_at,
+            due_at=due_at,
             priority=body.priority,
+            title=body.title,
+            kind=body.kind,
+            counterparty=body.counterparty,
+            resolved_by="user",
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated is None:
-        raise HTTPException(status_code=404, detail="Loop not found.")
+        raise HTTPException(status_code=404, detail="Item not found.")
     return {"ok": True, "loop": updated}
 
 
 @router.post("/watches")
 def create_watch(body: WatchCreateBody) -> Dict[str, Any]:
-    pol = _policy()
-    rad = _radar()
     cond: Dict[str, Any] = {}
     if body.warn_hours is not None:
         cond["warn_hours"] = body.warn_hours
     if body.every_hours is not None:
         cond["every_hours"] = body.every_hours
-    if body.kind == "deadline" and body.target.strip():
-        parsed = pol.parse_iso(body.target)
-        cond["at"] = pol.iso_utc(parsed) if parsed else rad.resolve_relative_due(body.target)
+    if body.kind == "deadline":
+        cond["at"] = _due(body.target)
+        if cond["at"] is None:
+            raise HTTPException(status_code=400, detail="Give the date to watch: 2026-03-01, 'tomorrow' or 'by Friday'.")
     try:
         watch = _store().add_watch(
             kind=body.kind,
@@ -257,20 +335,92 @@ def remove_watch(watch_id: str) -> Dict[str, Any]:
     return {"ok": True}
 
 
+# A check reads chats and may ask a model, which can take a minute: longer than a phone waits
+# for one request. So the page starts it, gets an answer at once, and asks how it went.
+_CHECKS: Dict[str, Dict[str, Any]] = {}
+_CHECKS_LOCK = threading.Lock()
+_CHECK_STALE_SECONDS = 15 * 60
+
+
+def _check_state(store) -> Dict[str, Any]:
+    with _CHECKS_LOCK:
+        state = dict(_CHECKS.get(str(store.db_path)) or {})
+    running = bool(state.get("running"))
+    if running and time.time() - float(state.get("started") or 0) > _CHECK_STALE_SECONDS:
+        running = False   # the worker died without reporting; do not show "checking" forever
+    return {
+        "running": running,
+        "started_at": state.get("started_at"),
+        "finished_at": state.get("finished_at"),
+        "result": state.get("result"),
+        "error": state.get("error"),
+    }
+
+
+def _run_check(store, force_brief: bool, key: str) -> None:
+    pol = _policy()
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    try:
+        result = _sweep().run_signal_sweep(
+            store,
+            llm=_optional_llm(),
+            redact_fn=_optional_redact,
+            force_brief=force_brief,
+            trigger="manual",
+            inbox=_inbox(),
+        )
+        result.pop("brief", None)   # the page reads the brief from the overview
+    except Exception as exc:   # report it on the page instead of losing it in a thread
+        error = f"The check stopped: {type(exc).__name__}: {exc}"[:300]
+    with _CHECKS_LOCK:
+        _CHECKS[key] = {
+            **(_CHECKS.get(key) or {}),
+            "running": False,
+            "finished_at": pol.iso_utc(),
+            "result": result,
+            "error": error,
+        }
+
+
 @router.post("/sweep")
 def trigger_sweep(body: Optional[SweepRunBody] = None) -> Dict[str, Any]:
     st = _store()
     if not st.is_enabled():
-        raise HTTPException(status_code=400, detail="Enable Proactivity (Beta) before running a check.")
+        raise HTTPException(status_code=400, detail="Turn Proactivity (Beta) on before running a check.")
     force_brief = bool(body.force_brief) if body is not None else False
-    result = _sweep().run_signal_sweep(
-        st,
-        llm=_optional_llm(),
-        redact_fn=_optional_redact,
-        force_brief=force_brief,
-        trigger="manual",
-    )
-    return {"ok": True, **result, "overview": st.get_overview()}
+    key = str(st.db_path)
+    with _CHECKS_LOCK:
+        current = _CHECKS.get(key) or {}
+        if current.get("running") and time.time() - float(current.get("started") or 0) <= _CHECK_STALE_SECONDS:
+            return {"ok": True, "started": False, "check": _check_state_unlocked(current)}
+        _CHECKS[key] = {"running": True, "started": time.time(), "started_at": _policy().iso_utc(),
+                        "finished_at": None, "result": None, "error": None}
+    # A store bound to this bot's folder, and this request's context (which bot it is for),
+    # so the worker thread reads the same bot's chats and settings.
+    bound = _store_mod().ProactiveStore(data_dir=st.data_dir, state_db_path=st.resolve_state_db_path())
+    run_ctx = contextvars.copy_context()
+    threading.Thread(
+        target=run_ctx.run, args=(_run_check, bound, force_brief, key),
+        name="hq-proactive-check", daemon=True,
+    ).start()
+    return {"ok": True, "started": True, "check": _check_state(st)}
+
+
+def _check_state_unlocked(state: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "running": bool(state.get("running")),
+        "started_at": state.get("started_at"),
+        "finished_at": state.get("finished_at"),
+        "result": state.get("result"),
+        "error": state.get("error"),
+    }
+
+
+@router.get("/sweep")
+def sweep_state() -> Dict[str, Any]:
+    st = _store()
+    return {"ok": True, "check": _check_state(st)}
 
 
 @router.post("/calibration/reset")
