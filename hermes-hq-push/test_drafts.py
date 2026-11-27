@@ -152,6 +152,46 @@ def test_a_draft_carries_the_conversation_it_answers():
     assert drafts.blocked_message("draft_message", {"body": BODY, "thread": thread}, "s1") is None
 
 
+def emailed(**extra):
+    return json.loads(drafts.take({"app": "Email", "to": "dana@example.com", "subject": "Q3", "body": BODY, **extra},
+                                  "s1"))
+
+
+def test_an_email_draft_keeps_its_cc_and_bcc():
+    plain = emailed()
+    assert "cc" not in plain and "bcc" not in plain
+    # A list is joined as the card shows it (the app's DraftCards.recipients); one text is kept as it is, trimmed.
+    both = emailed(cc=[" sam@example.com ", "", "lee@example.com"], bcc="boss@example.com ")
+    assert both["draft"] == "waiting"
+    assert both["cc"] == "sam@example.com, lee@example.com" and both["bcc"] == "boss@example.com"
+    assert emailed(cc=[], bcc="")["draft"] == "waiting" and "cc" not in emailed(cc=[])
+    # The copies are not part of the id: the app's DraftCards.id(app:to:subject:body:) hashes the four words only.
+    assert both["id"] == plain["id"] == drafts.draft_id("Email", "dana@example.com", "Q3", BODY)
+
+
+@pytest.mark.parametrize("change, words", [
+    ({"cc": 5}, "`cc` is a list of addresses"),
+    ({"bcc": [{"address": "sam@example.com"}]}, "`bcc` is a list of addresses"),
+    ({"cc": [f"p{i}@example.com" for i in range(51)]}, "takes 50"),
+    ({"bcc": ["x" * 301 + "@example.com"]}, "300 characters"),
+    ({"cc": [("y" * 250) + "@example.com"] * 10}, "characters in all"),
+])
+def test_wrong_copies_are_refused_and_keep_nothing(change, words):
+    reply = emailed(**change)
+    assert reply["status"] == "failed" and words in reply["error"], reply
+    assert drafts._drafts == {}
+
+
+def test_the_bot_is_told_to_send_to_exactly_the_cards_people():
+    props = drafts.SCHEMA["parameters"]["properties"]
+    assert props["cc"]["type"] == props["bcc"]["type"] == "array"
+    assert "Email only" in props["cc"]["description"] and "Email only" in props["bcc"]["description"]
+    text = drafts.SCHEMA["description"]
+    for words in ("\"Cc: …\"", "\"Bcc: …\"", "exactly the To, Cc and Bcc", "nobody added or dropped"):
+        assert words in text, words
+    assert "exactly that To, Cc and Bcc" in drafts.WAITING_NOTE
+
+
 def test_a_send_naming_an_unknown_draft_lets_the_chats_drafts_out():
     taken("s1")
     other = taken("s2", body=BODY + " And one for the other chat.")

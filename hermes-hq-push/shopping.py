@@ -184,7 +184,12 @@ ORDER_SCHEMA = {
         "the store, items, charges, total, where it ships and how it is paid, with two buttons, Cancel and Pay. Call "
         "it only on the checkout's final page, one step before the store's place-order or pay button, with `total` "
         "exactly as that page says will be charged (after shipping, tax and discounts), and only for something the "
-        "user asked you to buy. This tool pays for nothing: it returns {order: \"waiting\", id} at once. Then end "
+        "user asked you to buy. Get there without stopping to ask about what you already know: use the shipping "
+        "address, contact details and payment method the user has saved or already given you, and go on to the "
+        "final total. Ask before the card only when the checkout needs something you don't have, or a choice is "
+        "really theirs (two addresses, a substitute). The card is the one ask: it covers the items, the total, the "
+        "address and how it is paid together, so never ask about them one at a time first. "
+        "This tool pays for nothing: it returns {order: \"waiting\", id} at once. Then end "
         "your reply with one short line saying the order is ready for their OK, and stop: no more tool calls, and "
         "never press the store's final button. From then until they tap Pay or Cancel, every browser action in this "
         "chat is refused. Place the order only after a message starting "
@@ -208,7 +213,17 @@ ORDER_SCHEMA = {
                               "qty": {"type": "integer", "description": "How many (default 1)."},
                               "price": {"type": "number",
                                         "description": "Optional: the line's amount as the checkout lists it."},
-                              "image": {"type": "string", "description": "Optional https link to its photo."}},
+                              "image": {"type": "string", "description": "Optional https link to its photo."},
+                              "url": {"type": "string",
+                                      "description": "Optional https link to this item's own product page at the "
+                                                     "store (the card opens it on a tap): the page you chose it on."},
+                              "options": {
+                                  "type": "array",
+                                  "description": f"Optional, up to {MAX_OPTIONS}: the options in the order, one value "
+                                                 "per name, as the checkout lists them (Colour: Navy, Size: M).",
+                                  "items": {"type": "object",
+                                            "properties": {"name": {"type": "string"}, "value": {"type": "string"}},
+                                            "required": ["name", "value"]}}},
                           "required": ["title"]}},
             "charges": {
                 "type": "array",
@@ -591,6 +606,9 @@ def check_order(args) -> tuple[list[str], str, list[str], dict]:
         price = c.number(item, "price", where)
         if item.get("image") not in (None, ""):
             c.url(item, "image", where)
+        if item.get("url") not in (None, ""):   # 0.9.86: the item's own page, which the card opens
+            c.url(item, "url", where)
+        c.pairs(item, "options", where, ("name", "value"), MAX_OPTIONS)
         if title:
             lines.append((int(qty), title))
         if price is not None:

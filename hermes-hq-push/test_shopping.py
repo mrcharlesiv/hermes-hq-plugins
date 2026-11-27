@@ -241,6 +241,35 @@ def test_each_wrong_order_is_refused_in_words(change, words):
     assert orders() == {}
 
 
+def test_an_order_item_can_name_its_own_page_and_options():
+    # 0.9.86: the card opens an item's product page on a tap (the app's ShoppingCards.product(for:in:)).
+    items = [{"title": "Trail Runner 2", "detail": "Navy, 10", "qty": 1, "price": 129.99,
+              "url": "https://example.com/p/trail-runner-2",
+              "options": [{"name": "Colour", "value": "Navy"}, {"name": "Size", "value": "10"}]},
+             {"title": "Wool Socks", "qty": 2, "price": 0}]
+    reply = ordered(items=items)
+    assert reply["order"] == "waiting"
+    # The order id hashes the store, total, currency and each item's `qty x title` only, on both sides.
+    assert reply["id"] == ORDER_ID
+    props = shopping.ORDER_SCHEMA["parameters"]["properties"]["items"]["items"]["properties"]
+    assert {"url", "options"} <= set(props) and props["options"]["items"]["required"] == ["name", "value"]
+
+
+@pytest.mark.parametrize("item, words", [
+    ({"url": "http://example.com/p/1"}, "only a full https:// link"),
+    ({"url": "/p/trail-runner-2"}, "only a full https:// link"),
+    ({"url": "https://example.com/" + "a" * 2100}, "longer than 2048"),
+    ({"options": {"Colour": "Navy"}}, "`options` is a list of"),
+    ({"options": [{"name": "Colour"}]}, "with both filled in"),
+    ({"options": [{"name": f"N{i}", "value": "v"} for i in range(5)]}, "`options` has 5"),
+    ({"options": [{"name": "Colour", "value": "Navy"}, {"name": "colour", "value": "Red"}]}, "the same option twice"),
+])
+def test_a_wrong_items_page_or_options_are_refused(item, words):
+    error = refusal(ordered(items=[{"title": "Trail Runner 2", **item}], charges=None))
+    assert words in error, error
+    assert orders() == {}
+
+
 def test_the_sum_check_takes_a_line_amount_or_a_price_each_and_a_discount():
     items = [{"title": "Trail Runner 2", "qty": 1, "price": 129.99}, {"title": "Wool Socks", "qty": 2, "price": 6.0}]
     each = [{"label": "Tax", "amount": 10.4}, {"label": "Code SAVE12", "amount": -12.0}]
@@ -350,7 +379,8 @@ def test_the_teaching_text_says_what_matters():
     order = shopping.ORDER_SCHEMA["description"]
     for words in ("last step of checkout", "exactly as that page says", "only for something the user asked",
                   "never press the store's final button", "[Hermes HQ order <id>: pay]", "exact id",
-                  "[Hermes HQ order <id>: cancel]", "call order_card again", "new card"):
+                  "[Hermes HQ order <id>: cancel]", "call order_card again", "new card",
+                  "without stopping to ask about what you already know", "The card is the one ask"):   # 0.9.82
         assert words in order, words
     for schema in (shopping.PRODUCTS_SCHEMA, shopping.ORDER_SCHEMA):
         assert set(schema["parameters"]["required"]) <= set(schema["parameters"]["properties"])

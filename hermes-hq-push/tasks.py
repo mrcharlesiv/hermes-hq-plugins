@@ -2341,7 +2341,10 @@ def status() -> dict:
 # 0.9.53: a task that is the bot's alone (``who: "bot"``) comes with this as ``how``: it finishes what it safely can.
 OWN_RULE = ("This task is yours alone, start to finish: do the work and finish it if you can, not only research and "
             "drafts. Still never send, book, buy, pay, post or delete anything for the user without asking: when it "
-            "comes to that, or you need a decision, set status needs_you with one question and up to 3 choices. End "
+            "comes to that, or you need a decision, set status needs_you with one question and up to 3 choices. Ask "
+            "once: first get everything else ready and find out what you can yourself (what they already told you "
+            "or have saved, the total with shipping and tax, how it would be paid), so the one question covers all "
+            "of it and never comes one detail at a time. End "
             "this run by saying where it stands: status done (what you did goes in made or on its page), needs_you, "
             "ready, or next_check for when you'll look again. Don't leave it working.")
 PREP_JOB_NAME = "Task prep"
@@ -2359,7 +2362,12 @@ PREP_JOB_PROMPT = (
     "at 3:12pm with the signed contract\") with what they need in made; if not, get their next move ready (a short draft they "
     "can send) and say so (\"No reply yet; a nudge is drafted\"). Then call tasks_next_prep again, and keep going "
     "until it says stop. If the task you get has next_check, it's a check you promised: look again, and set "
-    "next_check again if it still waits. When it needs them, give up to 3 short choices they can tap."
+    "next_check again if it still waits. If what the task was waiting on has now come through (a payment they "
+    "approved, a confirmation, a reply) and the next step is one you must not take here (send, book, buy, pay, post "
+    "or delete), don't mark it ready and don't end quietly: set status to 'needs_you', say in status_note that it "
+    "came through and what is left (\"Payment approved; the order isn't placed yet\") and give choices such as "
+    "[\"Finish it now\", \"Hold off\"], so they hear about it and can finish it with one tap. "
+    "When it needs them, give up to 3 short choices they can tap."
 )
 CHECK_JOB_NAME = "Task check"   # 0.9.37: one run at the time the next watched task's check is due
 PREP_JOB_MARK = "tasks_next_prep"   # in every version's Task prep and Task check instruction: how an old one is told

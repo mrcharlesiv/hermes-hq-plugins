@@ -712,6 +712,15 @@ def bot_chat(session_key: str) -> bool:
     return len(parts) >= 5 and parts[0] == "agent" and parts[2] == "local" and parts[3] == "dm"
 
 
+# 0.9.82: the approval surfaces that alert. A name ending in "/" covers every surface under it ("mcp-trust/files").
+CONFIRM_SURFACES = ("gateway", "vault-payment", "mcp-elicitation", "mcp-elicitation/", "mcp-trust", "mcp-trust/")
+
+
+def _surface_allowed(surface: object, surfaces: tuple) -> bool:
+    s = str(surface or "")
+    return any(s == item or (item.endswith("/") and s.startswith(item)) for item in surfaces)
+
+
 def approval_push(kwargs: dict, pending: Iterable[dict], root: Path, profile: str, sender: str = "",
                   outside: str = "", answerable: bool = True, surfaces: tuple = ("gateway",)) -> Push | None:
     """``pre_approval_request`` has no request id; the queued entry does (queued before the hook fires). ``outside``:
@@ -720,7 +729,7 @@ def approval_push(kwargs: dict, pending: Iterable[dict], root: Path, profile: st
     ``surfaces``: the approval surfaces that alert. A Bot Chat Hermes made itself reports ``cli`` (its session's
     platform), so a job's turn there that nobody can answer passes ``("gateway", "cli")`` (0.9.57); the alert's
     ``session`` opens that chat."""
-    if kwargs.get("surface") not in surfaces or kwargs.get("coalesced"):
+    if not _surface_allowed(kwargs.get("surface"), surfaces) or kwargs.get("coalesced"):
         return None
     session_key = str(kwargs.get("session_key") or "")
     if not session_key:
@@ -924,7 +933,7 @@ class DirectAPNs:
         return DeliveryError(code, f"APNs {code} {reason or (stderr or '').strip()[:120]}".strip(), transient)
 
 
-PLUGIN_VERSION = "0.9.86"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
+PLUGIN_VERSION = "0.9.88"   # keep in step with plugin.yaml (test_tasks.py: test_the_reported_version_is_the_manifests)
 
 
 class Relay:

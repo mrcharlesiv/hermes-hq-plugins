@@ -54,6 +54,11 @@ to reading only, and nothing becomes a task until the user adds it. 0.9.66: bots
 and helpers, the plan and the weekly check-in as offer cards, tools goals_list, goals_offer, goals_update and
 goals_next_review (toolset hq_goals), a note naming the person's goals, one "Goal check-in" job per lead bot (kept to
 research and drafts by pre_tool_call), and the Goal Page (GET /goals/{id}/page; skills/goal-page).
+0.9.86: travel.py shows flights and hotels as cards (show_flights, show_hotels; toolset hq_travel), and
+tool_permissions.py makes a connector tool's level from the app's Connectors real: pre_tool_call asks the person
+through Hermes's own approval before a tool set to ask runs (last, so every refusal above stands).
+0.9.87: show_cards.py tells a bot in an app chat to show the flights, hotels and products it finds with those card
+tools instead of a table (Hermes's tool search keeps add-on tools out of a busy bot's tool list).
 """
 import importlib.util
 import logging
@@ -74,6 +79,9 @@ _own_spec.loader.exec_module(own_chats)
 _ask_spec = importlib.util.spec_from_file_location("hermes_hq_push_ask_cards", Path(__file__).with_name("ask_cards.py"))
 ask_cards = importlib.util.module_from_spec(_ask_spec)
 _ask_spec.loader.exec_module(ask_cards)
+_cards_spec = importlib.util.spec_from_file_location("hermes_hq_push_show_cards", Path(__file__).with_name("show_cards.py"))
+show_cards = importlib.util.module_from_spec(_cards_spec)
+_cards_spec.loader.exec_module(show_cards)
 _pages_spec = importlib.util.spec_from_file_location("hermes_hq_push_page_previews", Path(__file__).with_name("page_previews.py"))
 page_previews = importlib.util.module_from_spec(_pages_spec)
 _pages_spec.loader.exec_module(page_previews)
@@ -119,6 +127,21 @@ else:
     shopping = importlib.util.module_from_spec(_shopping_spec)
     sys.modules["hermes_hq_shopping"] = shopping
     _shopping_spec.loader.exec_module(shopping)
+if "hermes_hq_travel" in sys.modules:   # [travel] 0.9.86: one copy for this process: the tools and the route share it
+    travel = sys.modules["hermes_hq_travel"]
+else:
+    _travel_spec = importlib.util.spec_from_file_location("hermes_hq_travel", Path(__file__).with_name("travel.py"))
+    travel = importlib.util.module_from_spec(_travel_spec)
+    sys.modules["hermes_hq_travel"] = travel
+    _travel_spec.loader.exec_module(travel)
+if "hermes_hq_tool_permissions" in sys.modules:   # [tool-permissions] 0.9.86: shared with the status route
+    tool_permissions = sys.modules["hermes_hq_tool_permissions"]
+else:
+    _perms_spec = importlib.util.spec_from_file_location("hermes_hq_tool_permissions",
+                                                         Path(__file__).with_name("tool_permissions.py"))
+    tool_permissions = importlib.util.module_from_spec(_perms_spec)
+    sys.modules["hermes_hq_tool_permissions"] = tool_permissions
+    _perms_spec.loader.exec_module(tool_permissions)
 if "hermes_hq_tasks" in sys.modules:   # one copy for this process: ideas.py and the dashboard routes share it
     tasks = sys.modules["hermes_hq_tasks"]
 else:
@@ -212,8 +235,12 @@ def pre_approval_request(**kwargs):
         job = bot_chat and _job_approval(kwargs, key)
         profile = _profile()
         kwargs = _in_its_chat(kwargs, profile)
+        # 0.9.82: a card fill to confirm (browser_vault's "vault-payment") and an MCP server's question or trust
+        # prompt ("mcp-elicitation/<server>", "mcp-trust/<server>") wait on the same timer as a command, so they
+        # alert too. They used to wait unseen until they timed out.
+        surfaces = push.CONFIRM_SURFACES + (("cli",) if job else ())
         item = push.approval_push(kwargs, list_gateway_approvals(key), push.data_dir(), profile, _sender(profile),
-                                  outside, answerable=serves, surfaces=("gateway", "cli") if job else ("gateway",))
+                                  outside, answerable=serves, surfaces=surfaces)
         if item is not None:
             push.remember_approval(_sent_approvals, kwargs, item)
             _dispatcher_for().submit(item)
@@ -323,6 +350,16 @@ def pre_llm_call(platform="", parent_session_id="", user_message=None, conversat
             notes.append(note)
     except Exception:
         log.debug("hermes-hq-push: ask-cards note skipped", exc_info=True)
+    try:  # [show-cards] 0.9.87: flights, hotels and products go in their card tools, not in a table (show_cards.py)
+        root = push.data_dir()
+        note = show_cards.context_for(
+            data_dir=root, travel=travel.switched_on(root) and travel.cards_shown(root),
+            shopping=shopping.switched_on(root) and shopping.cards_shown(root), platform=platform,
+            parent_session_id=parent_session_id, user_message=user_message, conversation_history=conversation_history)
+        if note:
+            notes.append(note)
+    except Exception:
+        log.debug("hermes-hq-push: show-cards note skipped", exc_info=True)
     try:
         note = tasks.context_for(store=_tasks_store(), profile=_profile(), platform=platform,
                                  parent_session_id=parent_session_id, user_message=user_message,
@@ -386,10 +423,28 @@ def pre_tool_call(tool_name="", args=None, **kwargs):
                or _goals_veto(tool_name, kwargs.get("session_id"))
                or _draft_veto(tool_name, args, kwargs.get("session_id"))
                or _pay_block(tool_name, args, kwargs.get("session_id")) or _show_first(tool_name, args, kwargs)
-               or _job_clarify(tool_name))
-    if verdict is None:
+               or _job_clarify(tool_name)
+               or _connector_level(tool_name, args))
+    if verdict is None or (isinstance(verdict, dict) and verdict.get("action") == "approve"):
         _named_site(tool_name, args, kwargs.get("task_id"))
         _live_step(tool_name, args, kwargs)
+    return verdict
+
+
+def _connector_level(tool_name, args):
+    """[tool-permissions] 0.9.86: a connector tool set to ask in the app's Connectors (tools.permissions in the bot's
+    config.yaml) asks the person through Hermes's own approval, or is refused where this Hermes can't ask
+    (tool_permissions.check). Last, so every refusal above stands as it was: Hermes takes any block over an approve.
+    One prefix test for a tool that isn't a connector's; never raises, never logs the call's arguments."""
+    if not isinstance(tool_name, str) or not tool_name.startswith("mcp_"):
+        return None
+    try:
+        verdict = tool_permissions.check(tool_name, args)
+    except Exception:
+        return None
+    if verdict:
+        log.info("hermes-hq-push: %s %s: its connector level asks first", tool_name,
+                 "asked" if verdict["action"] == "approve" else "refused")
     return verdict
 
 
@@ -865,6 +920,13 @@ def _shopping_tools(ctx):
         log.warning("hermes-hq-push: shopping tools not registered", exc_info=True)
 
 
+def _travel_tools(ctx):
+    try:
+        travel.register_tool(ctx, push.data_dir, _serves_app_sessions)
+    except Exception:
+        log.warning("hermes-hq-push: travel tools not registered", exc_info=True)
+
+
 def _tasks_prep_job():
     """Startup safety net: reconcile this bot's "Task prep" job against its tasks.db right now, in case it fell
     out of sync (the job was removed by hand while prep tasks are still open, or vice versa)."""
@@ -899,6 +961,7 @@ def register(ctx):
     _tasks_tools(ctx)
     _draft_tool(ctx)
     _shopping_tools(ctx)
+    _travel_tools(ctx)
     _ask_tool(ctx)
     _dashboard_skill(ctx)
     _task_page_skill(ctx)
