@@ -57,6 +57,8 @@ research and drafts by pre_tool_call), and the Goal Page (GET /goals/{id}/page; 
 0.9.86: travel.py shows flights and hotels as cards (show_flights, show_hotels; toolset hq_travel), and
 tool_permissions.py makes a connector tool's level from the app's Connectors real: pre_tool_call asks the person
 through Hermes's own approval before a tool set to ask runs (last, so every refusal above stands).
+0.9.87: show_cards.py tells a bot in an app chat to show the flights, hotels and products it finds with those card
+tools instead of a table (Hermes's tool search keeps add-on tools out of a busy bot's tool list).
 """
 import importlib.util
 import logging
@@ -77,6 +79,9 @@ _own_spec.loader.exec_module(own_chats)
 _ask_spec = importlib.util.spec_from_file_location("hermes_hq_push_ask_cards", Path(__file__).with_name("ask_cards.py"))
 ask_cards = importlib.util.module_from_spec(_ask_spec)
 _ask_spec.loader.exec_module(ask_cards)
+_cards_spec = importlib.util.spec_from_file_location("hermes_hq_push_show_cards", Path(__file__).with_name("show_cards.py"))
+show_cards = importlib.util.module_from_spec(_cards_spec)
+_cards_spec.loader.exec_module(show_cards)
 _pages_spec = importlib.util.spec_from_file_location("hermes_hq_push_page_previews", Path(__file__).with_name("page_previews.py"))
 page_previews = importlib.util.module_from_spec(_pages_spec)
 _pages_spec.loader.exec_module(page_previews)
@@ -345,6 +350,16 @@ def pre_llm_call(platform="", parent_session_id="", user_message=None, conversat
             notes.append(note)
     except Exception:
         log.debug("hermes-hq-push: ask-cards note skipped", exc_info=True)
+    try:  # [show-cards] 0.9.87: flights, hotels and products go in their card tools, not in a table (show_cards.py)
+        root = push.data_dir()
+        note = show_cards.context_for(
+            data_dir=root, travel=travel.switched_on(root) and travel.cards_shown(root),
+            shopping=shopping.switched_on(root) and shopping.cards_shown(root), platform=platform,
+            parent_session_id=parent_session_id, user_message=user_message, conversation_history=conversation_history)
+        if note:
+            notes.append(note)
+    except Exception:
+        log.debug("hermes-hq-push: show-cards note skipped", exc_info=True)
     try:
         note = tasks.context_for(store=_tasks_store(), profile=_profile(), platform=platform,
                                  parent_session_id=parent_session_id, user_message=user_message,
