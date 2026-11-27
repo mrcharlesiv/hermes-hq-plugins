@@ -56,6 +56,8 @@ def _radar():
 
 def _sweep():
     _store_mod()
+    _radar()
+    _sibling("hermes_hq_proactive_session_scan", "session_scan.py")
     return _sibling("hermes_hq_proactive_sweep", "sweep.py")
 
 
@@ -92,6 +94,8 @@ class SettingsPatch(BaseModel):
     daily_brief_enabled: Optional[bool] = None
     pattern_detection_enabled: Optional[bool] = None
     allow_llm_in_sweep: Optional[bool] = None
+    scan_recent_chats: Optional[bool] = None
+    scan_lookback_hours: Optional[int] = None
     daily_offer_budget: Optional[int] = None
     daily_interrupt_budget: Optional[int] = None
     quiet_start: Optional[str] = None

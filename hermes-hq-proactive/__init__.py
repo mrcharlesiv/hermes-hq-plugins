@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 if __package__:
-    from . import policy, radar, sweep
+    from . import policy, radar, session_scan, sweep
     from .store import PLUGIN_ID, ProactiveStore
 else:  # pragma: no cover - loaded via spec_from_file_location / hyphenated dir
     def _load_sibling(mod_name: str, filename: str):
@@ -38,6 +38,7 @@ else:  # pragma: no cover - loaded via spec_from_file_location / hyphenated dir
     PLUGIN_ID = _store_mod.PLUGIN_ID
     ProactiveStore = _store_mod.ProactiveStore
     radar = _load_sibling("hermes_hq_proactive_radar", "radar.py")
+    session_scan = _load_sibling("hermes_hq_proactive_session_scan", "session_scan.py")
     sweep = _load_sibling("hermes_hq_proactive_sweep", "sweep.py")
 
 logger = logging.getLogger(PLUGIN_ID)
@@ -50,7 +51,7 @@ def _json(payload: Dict[str, Any]) -> str:
 def _disabled_reply() -> str:
     return _json({
         "ok": False,
-        "error": "Proactivity (Beta) is currently turned off. Enable it in the Proactivity (Beta) page or via `/proactive on`.",
+        "error": "Proactivity (Beta) is currently turned off. Enable it in the Proactivity (Beta) page or via `/proactivity on`.",
     })
 
 
@@ -437,7 +438,7 @@ def register(ctx) -> None:
             emoji=emoji,
         )
 
-    # 4. In-Session Slash Command (/proactive) ---------------------------------
+    # 4. In-Session Slash Command (/proactivity) -------------------------------
 
     def _run_sweep_with_ctx(*, force_brief: bool = False, trigger: str = "manual") -> Dict[str, Any]:
         return sweep.run_signal_sweep(
@@ -473,7 +474,7 @@ def register(ctx) -> None:
             return f"Proactivity (Beta) autonomy mode set to '{target}'."
         if cmd == "brief":
             if not _enabled():
-                return "Proactivity (Beta) is OFF. Run `/proactive on` to opt in."
+                return "Proactivity (Beta) is OFF. Run `/proactivity on` to opt in."
             out = _run_sweep_with_ctx(force_brief=True, trigger="manual")
             brief = out.get("brief") or store.get_latest_brief()
             if not brief:
@@ -492,11 +493,16 @@ def register(ctx) -> None:
             )
         if cmd == "sweep":
             if not _enabled():
-                return "Proactivity (Beta) is OFF. Run `/proactive on` first."
+                return "Proactivity (Beta) is OFF. Run `/proactivity on` first."
             res = _run_sweep_with_ctx(force_brief=False, trigger="manual")
+            scan_part = (
+                f", {res.get('chats_scanned', 0)} chat(s) scanned, {res.get('loops_captured', 0)} loop(s) captured"
+                if res.get("chats_scanned")
+                else ""
+            )
             return (
                 f"Proactivity sweep done: {res.get('signals_detected', 0)} signal(s), "
-                f"{res.get('created_offers', 0)} new offer(s), {res.get('tokens_used', 0)} tokens."
+                f"{res.get('created_offers', 0)} new offer(s){scan_part}, {res.get('tokens_used', 0)} tokens."
             )
         if cmd == "reset-calibration":
             store.reset_calibration()
@@ -512,11 +518,11 @@ def register(ctx) -> None:
             f"{st['counts']['active_watches']} watch(es)\n"
             f"24h Budget: {st['budgets']['offers_used_24h']}/{st['budgets']['offers_limit_24h']} offers · "
             f"{st['budgets']['interrupts_used_24h']}/{st['budgets']['interrupts_limit_24h']} interrupts\n"
-            "Commands: /proactive on | off | mode <observe|prep|full> | brief | loops | sweep | reset-calibration"
+            "Commands: /proactivity on | off | mode <observe|prep|full> | brief | loops | sweep | reset-calibration"
         )
 
     ctx.register_command(
-        "proactive",
+        "proactivity",
         _slash_proactive,
         description="Manage Proactivity (Beta): status, on/off toggle, autonomy mode, daily brief, open loops.",
         args_hint="[status|on|off|mode|brief|loops|sweep]",

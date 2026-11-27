@@ -39,7 +39,8 @@ _LOOP_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "waiting_on",
         "external",
         re.compile(
-            r"\b(?:i['’]?m\s+|we['’]?re\s+|still\s+)?(?:waiting\s+on|waiting\s+for|blocked\s+on|pending\s+from)\s+"
+            r"\b(?:(?:i['’]?m\s+|we['’]?re\s+|still\s+)?(?:waiting\s+on|waiting\s+for|blocked\s+on|pending\s+from)|"
+            r"(?:haven['’]?t|have\s+not)\s+heard\s+back\s+from)\s+"
             r"(?P<body>[^.!?\n]{8,140})",
             re.I,
         ),
@@ -48,9 +49,10 @@ _LOOP_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "follow_up",
         "user",
         re.compile(
-            r"\b(?:need\s+to|should|gotta|have\s+to|remind\s+me\s+to|don['’]?t\s+let\s+me\s+forget\s+to|"
-            r"i['’]?ll|we\s+should)\s+(?:follow\s+up\s+(?:with|on)|check\s+(?:back\s+)?(?:in\s+)?(?:with|on)|"
-            r"circle\s+back\s+(?:with|on)|ping|revisit)\s+(?P<body>[^.!?\n]{6,140})",
+            r"\b(?:need\s+to|should|gotta|have\s+to|remind\s+me\s+to|don['’]?t\s+(?:let\s+me\s+)?forget\s+to|"
+            r"i['’]?ll|we\s+should|let['’]?s)\s+(?:follow\s+up\s+(?:with|on)|get\s+back\s+to|"
+            r"check\s+(?:back\s+)?(?:in\s+)?(?:with|on)|circle\s+back\s+(?:with|on)|ping|revisit)\s+"
+            r"(?P<body>[^.!?\n]{6,140})",
             re.I,
         ),
     ),
@@ -67,7 +69,7 @@ _LOOP_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "commitment",
         "user",
         re.compile(
-            r"\b(?:i['’]?ll|i\s+will|i\s+need\s+to|remind\s+me\s+to|let['’]?s\s+make\s+sure\s+to)\s+"
+            r"\b(?:i['’]?ll|i\s+will|i\s+need\s+to|remind\s+me\s+to|don['’]?t\s+forget\s+to|let['’]?s\s+make\s+sure\s+to)\s+"
             r"(?P<body>(?:send|review|finish|ship|submit|draft|update|renew|cancel|schedule|compare|verify|audit)\s+[^.!?\n]{6,130})",
             re.I,
         ),
