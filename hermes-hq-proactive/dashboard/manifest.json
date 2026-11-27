@@ -1,0 +1,14 @@
+{
+  "name": "hermes-hq-proactive",
+  "label": "Proactivity (Beta)",
+  "description": "Opt-in Beta proactivity engine (off by default): open-loop radar, prepared drafts, daily brief, hard safety guardrails, and adaptive calibration.",
+  "icon": "Sparkles",
+  "version": "0.1.0-beta.1",
+  "tab": {
+    "path": "/proactive",
+    "position": "after:sessions"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}
