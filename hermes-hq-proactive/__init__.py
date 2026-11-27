@@ -431,6 +431,8 @@ def register(ctx) -> None:
             return _json({"ok": False, "error": str(exc)})
         if updated is None:
             return _json({"ok": False, "error": f"Unknown loop_id: {loop_id}"})
+        if updated.get("status") in ("resolved", "dropped"):
+            inbox.settle_closed(store, ideas_inbox)
         return _json({"ok": True, "loop": updated})
 
     def _handle_loop_list(args: Dict[str, Any], **kwargs) -> str:

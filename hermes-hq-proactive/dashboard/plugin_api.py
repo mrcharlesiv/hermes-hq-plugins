@@ -301,6 +301,9 @@ def patch_loop(loop_id: str, body: LoopPatchBody) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail="Item not found.")
+    if updated.get("status") in ("resolved", "dropped"):
+        # Done or dropped: its suggestion goes with it, on this page and in Tasks › Ideas.
+        _inbox_mod().settle_closed(_store(), _inbox())
     return {"ok": True, "loop": updated}
 
 

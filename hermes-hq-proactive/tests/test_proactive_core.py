@@ -928,6 +928,35 @@ def test_dismissing_on_the_page_takes_the_idea_away_too(tmp_path):
     assert [row["state"] for row in ideas.rows.values()] == ["dismissed"]
 
 
+def test_an_item_that_is_done_takes_its_idea_with_it(tmp_path):
+    """Seen live: the chats closed an item seconds after a suggestion for it went to Ideas."""
+    st = _on(tmp_path, scan_recent_chats=False)
+    box, ideas = _fake_inbox()
+    _due_soon(st, "Renew the parking permit")
+    _due_soon(st, "Send the signed lease back")
+    sweep.run_signal_sweep(st, inbox=box, now_utc=NOW_UTC, now_local=NOW_LOCAL)
+    offers = {of["title"]: of for of in st.list_offers(status="pending")}
+    assert len(offers) == 2 and all(of["delivered_to"] == "ideas" for of in offers.values())
+    bar_before = st.get_calibration("prepared_draft")["threshold"]
+
+    permit = next(of for title, of in offers.items() if "parking permit" in title)
+    st.update_loop(permit["loop_id"], status="resolved", resolved_by="scan")
+    assert inbox.settle_closed(st, box) == 1
+    assert st.get_offer(permit["id"])["status"] == "expired"
+    states = {row["title"]: row["state"] for row in ideas.rows.values()}
+    assert states == {"Renew the parking permit": "dismissed", "Send the signed lease back": "new"}
+    # Closing it this way is no answer: the kind's bar stays where it was.
+    assert st.get_calibration("prepared_draft")["threshold"] == bar_before
+    assert inbox.settle_closed(st, box) == 0
+
+    # One the person already added in Ideas counts as taken up, not as closed unseen.
+    lease = next(of for title, of in offers.items() if "lease" in title)
+    next(row for row in ideas.rows.values() if "lease" in row["title"])["state"] = "added"
+    st.update_loop(lease["loop_id"], status="dropped", resolved_by="user")
+    inbox.settle_closed(st, box)
+    assert st.get_offer(lease["id"])["status"] == "accepted"
+
+
 def test_without_ideas_a_find_stays_on_the_page_and_says_why(tmp_path):
     for label, box, state in (
         ("ideas off in the app", _fake_inbox(on=False)[0], "off"),

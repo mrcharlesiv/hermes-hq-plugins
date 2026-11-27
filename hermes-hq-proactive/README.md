@@ -83,6 +83,10 @@ A pass over how the page looks, on an iPhone and a Mac, light and dark.
 - History lists a kind only once you have answered one of its suggestions, and a settings change reads "Proactivity on", not `enabled=True`.
 - An item the bot said it would do carries one label, not two.
 
+### 0.3.0-beta.3
+
+- An item that is done or dropped takes its suggestion with it, off the page and out of Tasks › Ideas. Found on the first live check: the chats closed an item a few seconds after a suggestion for it went to Ideas, and the suggestion stayed.
+
 ## Testing
 
 ```bash

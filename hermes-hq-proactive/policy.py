@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional
 
-BETA_VERSION = "0.3.0-beta.2"   # keep in step with plugin.yaml and dashboard/manifest.json (test_versions_agree)
+BETA_VERSION = "0.3.0-beta.3"   # keep in step with plugin.yaml and dashboard/manifest.json (test_versions_agree)
 BETA_LABEL = "Beta"
 
 AUTONOMY_MODES = ("observe", "prep", "full")
