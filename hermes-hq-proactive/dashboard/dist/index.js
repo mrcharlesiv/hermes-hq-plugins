@@ -763,6 +763,18 @@
                 value: String(draft.stale_waiting_days),
                 onChange: function (e) { setField("stale_waiting_days", Number(e.target.value)); },
               })
+            ),
+            h(
+              "div",
+              { className: "hq-pro-field" },
+              h(Label, null, "Chat Scan Lookback (Hours)"),
+              h(Input, {
+                type: "number",
+                min: 1,
+                max: 336,
+                value: String(draft.scan_lookback_hours || 72),
+                onChange: function (e) { setField("scan_lookback_hours", Number(e.target.value)); },
+              })
             )
           ),
           h(
@@ -771,6 +783,7 @@
             [
               ["in_turn_enabled", "In-turn next-step anticipation"],
               ["loop_radar_enabled", "Automatic open-loop & commitment radar"],
+              ["scan_recent_chats", "Scan recent chats for open loops & follow-ups (read-only)"],
               ["idle_sweep_enabled", "Signal-gated idle sweeps (zero tokens when quiet)"],
               ["daily_brief_enabled", "Unified daily brief"],
               ["pattern_detection_enabled", "Repetition-to-automation spotter"],
@@ -928,10 +941,16 @@
           .then(function (res) {
             if (res && res.overview) setOverview(res.overview);
             else return load();
+            const parts = [];
+            if (res.chats_scanned > 0) parts.push(res.chats_scanned + " chat(s) scanned");
+            if (res.loops_captured > 0) parts.push(res.loops_captured + " loop(s) captured");
+            parts.push((res.created_offers || 0) + " new offer(s)");
             showToast(
               res.quiet
-                ? "Signal check quiet — nothing crossed threshold (0 tokens)."
-                : "Sweep complete: " + (res.created_offers || 0) + " new offer(s).",
+                ? res.chats_scanned > 0
+                  ? "Checked " + res.chats_scanned + " recent chat(s) — nothing crossed threshold."
+                  : "Signal check quiet — nothing crossed threshold (0 tokens)."
+                : "Sweep complete: " + parts.join(", ") + ".",
               "success"
             );
           })

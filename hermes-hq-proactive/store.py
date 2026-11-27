@@ -43,6 +43,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "daily_brief_enabled": True,
     "pattern_detection_enabled": True,
     "allow_llm_in_sweep": True,
+    "scan_recent_chats": True,
+    "scan_lookback_hours": 72,
     "daily_offer_budget": 6,
     "daily_interrupt_budget": 2,
     "quiet_start": "22:00",
@@ -255,8 +257,11 @@ def _sanitize_settings_patch(patch: Mapping[str, Any]) -> Dict[str, Any]:
             "daily_brief_enabled",
             "pattern_detection_enabled",
             "allow_llm_in_sweep",
+            "scan_recent_chats",
         ):
             clean[key] = bool(val)
+        elif key == "scan_lookback_hours":
+            clean[key] = max(1, min(336, int(val)))
         elif key == "autonomy_mode":
             mode = str(val or "").strip().lower()
             if mode not in policy.AUTONOMY_MODES:
@@ -289,9 +294,54 @@ def _sanitize_settings_patch(patch: Mapping[str, Any]) -> Dict[str, Any]:
 class ProactiveStore:
     """Thread-safe SQLite store for one Hermes profile."""
 
-    def __init__(self, data_dir: Optional[Path] = None, *, sync_hermes_config: bool = True) -> None:
+    def __init__(
+        self,
+        data_dir: Optional[Path] = None,
+        *,
+        sync_hermes_config: bool = True,
+        state_db_path: Optional[Path] = None,
+    ) -> None:
         self._explicit_dir = Path(data_dir) if data_dir is not None else None
         self._sync_hermes_config = sync_hermes_config
+        self._state_db_path = Path(state_db_path) if state_db_path is not None else None
+
+    def resolve_state_db_path(self) -> Optional[Path]:
+        """Return the active profile's ``state.db`` path for read-only scanning, or None."""
+        if self._state_db_path is not None:
+            return self._state_db_path if self._state_db_path.is_file() else None
+        if self._explicit_dir is not None:
+            # Isolated/test stores never implicitly reach into the host ~/.hermes/state.db.
+            return None
+        try:
+            from hermes_constants import get_hermes_home
+
+            candidate = Path(get_hermes_home()) / "state.db"
+            return candidate if candidate.is_file() else None
+        except Exception:
+            pass
+        hermes_home = os.environ.get("HERMES_HOME")
+        base = Path(hermes_home) if hermes_home else (Path.home() / ".hermes")
+        candidate = base / "state.db"
+        return candidate if candidate.is_file() else None
+
+    def get_meta(self, key: str) -> Optional[str]:
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return None
+            with closing(conn):
+                row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+                return str(row["value"]) if row is not None else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with _lock_for(self.db_path):
+            with closing(self._connect(create=True)) as conn:
+                conn.execute(
+                    "INSERT INTO meta(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, str(value)),
+                )
+                conn.commit()
 
     @property
     def data_dir(self) -> Path:

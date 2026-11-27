@@ -1,5 +1,5 @@
 name: hermes-hq-proactive
-version: "0.1.0-beta.1"
+version: "0.2.0-beta.1"
 manifest_version: 2
 kind: standalone
 label: "Proactivity (Beta)"
@@ -62,6 +62,16 @@ config_schema:
     default: true
     label: "Allow Bounded LLM Drafting in Sweeps"
     description: "When a signal trips during an idle sweep, allow a small read-only completion via ctx.llm to draft follow-ups or polish the daily brief."
+  scan_recent_chats:
+    type: bool
+    default: true
+    label: "Scan Recent Chats During Checks (Read-Only)"
+    description: "During signal checks and idle sweeps, scan recent non-cron chats in state.db (read-only) to capture open loops and draft timely follow-ups."
+  scan_lookback_hours:
+    type: int
+    default: 72
+    label: "Chat Scan Lookback (Hours)"
+    description: "Maximum lookback window (in hours) on the initial recent-chat scan. Later checks only scan messages newer than the last watermark."
   daily_offer_budget:
     type: int
     default: 6

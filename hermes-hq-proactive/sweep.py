@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional
 
 try:
-    from . import policy
+    from . import policy, radar, session_scan
     from .store import ProactiveStore
 except ImportError:  # pragma: no cover - loaded via spec_from_file_location
     import importlib.util
@@ -36,6 +36,8 @@ except ImportError:  # pragma: no cover - loaded via spec_from_file_location
         return mod
 
     policy = _load("hermes_hq_proactive_policy", "policy.py")
+    radar = _load("hermes_hq_proactive_radar", "radar.py")
+    session_scan = _load("hermes_hq_proactive_session_scan", "session_scan.py")
     ProactiveStore = _load("hermes_hq_proactive_store", "store.py").ProactiveStore
 
 logger = logging.getLogger("hermes-hq-proactive")
@@ -248,11 +250,11 @@ def evaluate_signals(
     if settings.get("daily_brief_enabled", True):
         brief_hour = int(settings.get("brief_hour", 8))
         existing_brief = store.get_brief_for_date(today_str)
-        if force_brief or (existing_brief is None and now_local.hour >= brief_hour):
-            # Only generate a brief if there's actually something worth summarizing (or forced).
-            pending_count = len(store.list_offers(status="pending", limit=20))
-            if force_brief or open_loops or pending_count > 0 or signals:
-                brief_due = True
+        existing_empty = existing_brief is not None and not existing_brief.get("highlights")
+        pending_count = len(store.list_offers(status="pending", limit=20))
+        has_material = bool(open_loops or pending_count > 0 or signals)
+        if force_brief or ((existing_brief is None or existing_empty) and now_local.hour >= brief_hour and has_material):
+            brief_due = True
 
     return {
         "signals": signals,
@@ -416,6 +418,271 @@ def _generate_daily_brief(
     return brief, tokens_used, cost_usd
 
 
+def _extract_from_chats_with_llm(
+    llm: Any,
+    digest_text: str,
+    *,
+    focus_note: str = "",
+    skip_note: str = "",
+    redact_fn: Optional[Callable[[str], str]] = None,
+) -> tuple[Dict[str, Any], int, Optional[float]]:
+    """Run one bounded, redacted structured extraction over recent chat excerpts."""
+    payload = digest_text
+    if redact_fn is not None:
+        payload = redact_fn(payload)
+
+    instructions = (
+        "You are a restrained proactivity engine reviewing recent chat excerpts. "
+        "Extract ONLY genuinely unresolved open loops (waiting on someone, pending follow-up, "
+        "upcoming meeting/deadline prep, or explicit user commitment not yet completed in the chat) "
+        "and at most 2 high-value read-only proactive offers (prepared follow-up draft, prep checklist, "
+        "or concrete next step). Return empty arrays when chats are already resolved or casual. "
+        "Never propose auto-sending, paying, booking, posting, or deleting without explicit approval."
+    )
+    if focus_note:
+        instructions += f" User focus preference: {focus_note[:200]}"
+    if skip_note:
+        instructions += f" User skip rules (NEVER extract or offer these): {skip_note[:200]}"
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "open_loops": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["waiting_on", "follow_up", "pre_event", "commitment"]},
+                        "title": {"type": "string"},
+                        "detail": {"type": "string"},
+                        "counterparty": {"type": "string"},
+                        "due_at": {"type": "string"},
+                        "priority": {"type": "integer"},
+                    },
+                    "required": ["kind", "title"],
+                },
+            },
+            "offers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "enum": ["follow_up", "pre_event", "prepared_draft", "next_step", "stale_check"],
+                        },
+                        "title": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "why": {"type": "string"},
+                        "draft_content": {"type": "string"},
+                        "suggested_action": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["category", "title", "summary"],
+                },
+            },
+        },
+        "required": ["open_loops", "offers"],
+    }
+
+    res = llm.complete_structured(
+        instructions=instructions,
+        input=[{"type": "text", "text": payload}],
+        json_schema=schema,
+        json_mode=True,
+        max_tokens=650,
+        timeout=30.0,
+        purpose="proactive_chat_scan",
+        task="proactive_sweep",
+    )
+    tokens = int(getattr(getattr(res, "usage", None), "total_tokens", 0) or 0)
+    cost = getattr(getattr(res, "usage", None), "cost_usd", None)
+    parsed = getattr(res, "parsed", None)
+    if not isinstance(parsed, dict):
+        return {"open_loops": [], "offers": []}, tokens, cost
+    loops_raw = parsed.get("open_loops") if isinstance(parsed.get("open_loops"), list) else []
+    offers_raw = parsed.get("offers") if isinstance(parsed.get("offers"), list) else []
+    return {"open_loops": loops_raw[:4], "offers": offers_raw[:2]}, tokens, cost
+
+
+def _scan_recent_chats(
+    store: ProactiveStore,
+    *,
+    settings: Mapping[str, Any],
+    state_db_path: Optional[Path],
+    use_llm: bool,
+    llm: Any,
+    redact_fn: Optional[Callable[[str], str]],
+    emit_fn: Optional[Callable[[str, dict], Any]],
+    trigger: str,
+    now_utc: datetime,
+    now_local: datetime,
+) -> Dict[str, Any]:
+    """Read-only incremental scan of recent chats in ``state.db``."""
+    empty = {
+        "sessions_scanned": 0,
+        "messages_scanned": 0,
+        "loops_captured": 0,
+        "offers_created": [],
+        "suppressed": 0,
+        "tokens_used": 0,
+        "cost_usd": None,
+    }
+    if not settings.get("scan_recent_chats", True):
+        return empty
+
+    db_path = state_db_path if state_db_path is not None else store.resolve_state_db_path()
+    if db_path is None:
+        return empty
+
+    since_ts: Optional[float] = None
+    raw_wm = store.get_meta("last_chat_scan_ts")
+    if raw_wm:
+        try:
+            since_ts = float(raw_wm)
+        except ValueError:
+            since_ts = None
+
+    lookback_h = int(settings.get("scan_lookback_hours", 72))
+    bundle = session_scan.read_recent_chats(
+        db_path,
+        lookback_hours=lookback_h,
+        since_ts=since_ts,
+        now_utc=now_utc,
+    )
+    if bundle.messages_scanned == 0:
+        return empty
+
+    loops_captured = 0
+    # Stage A: deterministic extraction over user turns (0 LLM tokens).
+    if settings.get("loop_radar_enabled", True):
+        for turn in bundle.user_turns:
+            turn_dt = datetime.fromtimestamp(turn.timestamp, tz=timezone.utc) if turn.timestamp > 0 else now_utc
+            for item in radar.extract_loops_from_text(turn.content, now=turn_dt, max_items=2):
+                _, created = store.add_loop(
+                    kind=item.kind,
+                    title=item.title,
+                    detail=item.detail,
+                    owner=item.owner,
+                    counterparty=item.counterparty,
+                    priority=item.priority,
+                    due_at=item.due_at,
+                    source_session=turn.session_id,
+                )
+                if created:
+                    loops_captured += 1
+
+    created_offers: List[Dict[str, Any]] = []
+    suppressed = 0
+    tokens_used = 0
+    cost_usd: Optional[float] = None
+
+    # Stage B: optional bounded, redacted LLM extraction over recent conversational excerpts.
+    if use_llm and llm is not None and bundle.digest_text:
+        try:
+            extracted, tok, cost = _extract_from_chats_with_llm(
+                llm,
+                bundle.digest_text,
+                focus_note=str(settings.get("focus_note") or ""),
+                skip_note=str(settings.get("skip_note") or ""),
+                redact_fn=redact_fn,
+            )
+            tokens_used += tok
+            if cost is not None:
+                cost_usd = float(cost)
+
+            if settings.get("loop_radar_enabled", True):
+                for raw_lp in extracted.get("open_loops", []):
+                    if not isinstance(raw_lp, Mapping):
+                        continue
+                    title = str(raw_lp.get("title") or "").strip()
+                    if len(title) < 6:
+                        continue
+                    kind = str(raw_lp.get("kind") or "commitment").strip().lower()
+                    if kind not in policy.LOOP_KINDS:
+                        kind = "commitment"
+                    due_raw = str(raw_lp.get("due_at") or "").strip()
+                    due_iso = None
+                    if due_raw:
+                        parsed_dt = policy.parse_iso(due_raw)
+                        due_iso = policy.iso_utc(parsed_dt) if parsed_dt else radar.resolve_relative_due(due_raw, now=now_utc)
+                    try:
+                        prio = int(raw_lp.get("priority") or 2)
+                    except (TypeError, ValueError):
+                        prio = 2
+                    _, created = store.add_loop(
+                        kind=kind,
+                        title=title,
+                        detail=str(raw_lp.get("detail") or "").strip(),
+                        owner="external" if kind == "waiting_on" else "user",
+                        counterparty=str(raw_lp.get("counterparty") or "").strip(),
+                        priority=prio,
+                        due_at=due_iso,
+                        source_session="chat_scan",
+                    )
+                    if created:
+                        loops_captured += 1
+
+            for raw_of in extracted.get("offers", []):
+                if not isinstance(raw_of, Mapping):
+                    continue
+                title = str(raw_of.get("title") or "").strip()
+                summary = str(raw_of.get("summary") or "").strip()
+                if len(title) < 5 or len(summary) < 8:
+                    continue
+                cat = str(raw_of.get("category") or "next_step").strip().lower()
+                if cat not in policy.OFFER_CATEGORIES:
+                    cat = "next_step"
+                try:
+                    conf = float(raw_of.get("confidence") if raw_of.get("confidence") is not None else 0.76)
+                except (TypeError, ValueError):
+                    conf = 0.76
+                res = store.create_offer(
+                    category=cat,
+                    title=title,
+                    summary=summary,
+                    why=str(raw_of.get("why") or "Discovered during read-only recent chat scan.").strip(),
+                    draft_content=str(raw_of.get("draft_content") or "").strip(),
+                    suggested_action=str(raw_of.get("suggested_action") or "").strip(),
+                    tier=1,
+                    confidence=conf,
+                    source_session="chat_scan",
+                    trigger=f"{trigger}:chat_scan",
+                    now_utc=now_utc,
+                    now_local=now_local,
+                )
+                if res.get("ok"):
+                    created_offers.append(res["offer"])
+                    if emit_fn is not None:
+                        try:
+                            emit_fn("offer_created", {
+                                "offer_id": res["offer"]["id"],
+                                "category": res["offer"]["category"],
+                                "tier": res["offer"]["tier"],
+                                "title": res["offer"]["title"],
+                            })
+                        except Exception:
+                            pass
+                elif res.get("status") == "suppressed":
+                    suppressed += 1
+        except Exception as exc:
+            logger.debug("proactive chat scan LLM fallback to deterministic: %s", exc)
+
+    if bundle.newest_ts is not None:
+        store.set_meta("last_chat_scan_ts", f"{bundle.newest_ts:.6f}")
+        store.set_meta("last_chat_scan_at", policy.iso_utc(now_utc))
+
+    return {
+        "sessions_scanned": bundle.sessions_scanned,
+        "messages_scanned": bundle.messages_scanned,
+        "loops_captured": loops_captured,
+        "offers_created": created_offers,
+        "suppressed": suppressed,
+        "tokens_used": tokens_used,
+        "cost_usd": cost_usd,
+    }
+
+
 def run_signal_sweep(
     store: ProactiveStore,
     *,
@@ -426,6 +693,7 @@ def run_signal_sweep(
     trigger: str = "idle_task",
     now_utc: Optional[datetime] = None,
     now_local: Optional[datetime] = None,
+    state_db_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Execute one signal-gated sweep. Zero LLM tokens spent if off, quiet, or no signals."""
     settings = store.get_settings()
@@ -443,27 +711,6 @@ def run_signal_sweep(
             now_local = now_local or datetime.now()
             quiet = policy.is_quiet_hours(now_local, settings["quiet_start"], settings["quiet_end"])
 
-            eval_out = evaluate_signals(store, now_utc=now_utc, now_local=now_local, force_brief=force_brief)
-            signals: List[DetectedSignal] = eval_out["signals"]
-            brief_due: bool = eval_out["brief_due"]
-
-            if not signals and not brief_due:
-                store.log_audit(
-                    event_type="sweep_quiet",
-                    trigger=trigger,
-                    summary="Signal check ran — nothing crossed threshold (0 LLM tokens).",
-                    outcome="quiet",
-                    tokens_used=0,
-                )
-                return {
-                    "ran": True,
-                    "quiet": True,
-                    "signals_detected": 0,
-                    "created_offers": 0,
-                    "brief_generated": False,
-                    "tokens_used": 0,
-                }
-
             use_llm = (
                 bool(settings.get("allow_llm_in_sweep", True))
                 and llm is not None
@@ -471,11 +718,64 @@ def run_signal_sweep(
                 and str(settings.get("autonomy_mode") or "prep") != "observe"
             )
 
-            created_offers: List[Dict[str, Any]] = []
-            suppressed_count = 0
-            total_tokens = 0
-            total_cost = 0.0
-            cost_seen = False
+            # 1. Incremental read-only scan of recent chats in state.db (if enabled & new messages exist).
+            scan_res = _scan_recent_chats(
+                store,
+                settings=settings,
+                state_db_path=state_db_path,
+                use_llm=use_llm,
+                llm=llm,
+                redact_fn=redact_fn,
+                emit_fn=emit_fn,
+                trigger=trigger,
+                now_utc=now_utc,
+                now_local=now_local,
+            )
+
+            # 2. Deterministic signal check over open loops, watches, and brief schedule.
+            eval_out = evaluate_signals(store, now_utc=now_utc, now_local=now_local, force_brief=force_brief)
+            signals: List[DetectedSignal] = eval_out["signals"]
+            brief_due: bool = eval_out["brief_due"]
+
+            created_offers: List[Dict[str, Any]] = list(scan_res["offers_created"])
+            suppressed_count = int(scan_res["suppressed"])
+            total_tokens = int(scan_res["tokens_used"])
+            total_cost = float(scan_res["cost_usd"]) if scan_res["cost_usd"] is not None else 0.0
+            cost_seen = scan_res["cost_usd"] is not None
+            chats_scanned = int(scan_res["sessions_scanned"])
+            messages_scanned = int(scan_res["messages_scanned"])
+            loops_captured = int(scan_res["loops_captured"])
+
+            if not signals and not brief_due and not created_offers and loops_captured == 0:
+                quiet_summary = (
+                    f"Checked {chats_scanned} recent chat(s) — nothing crossed threshold."
+                    if chats_scanned > 0
+                    else "Signal check ran — nothing crossed threshold (0 LLM tokens)."
+                )
+                store.log_audit(
+                    event_type="sweep_quiet",
+                    trigger=trigger,
+                    summary=quiet_summary,
+                    outcome="quiet",
+                    tokens_used=total_tokens,
+                    cost_usd=round(total_cost, 6) if cost_seen else None,
+                    details={
+                        "chats_scanned": chats_scanned,
+                        "messages_scanned": messages_scanned,
+                        "loops_captured": 0,
+                    },
+                )
+                return {
+                    "ran": True,
+                    "quiet": True,
+                    "signals_detected": 0,
+                    "created_offers": 0,
+                    "chats_scanned": chats_scanned,
+                    "messages_scanned": messages_scanned,
+                    "loops_captured": 0,
+                    "brief_generated": False,
+                    "tokens_used": total_tokens,
+                }
 
             for sig in signals[:4]:
                 draft_text = _build_deterministic_draft(sig)
@@ -547,17 +847,28 @@ def run_signal_sweep(
                     except Exception:
                         pass
 
+            parts = []
+            if chats_scanned > 0:
+                parts.append(f"scanned {chats_scanned} chat(s)")
+            if loops_captured > 0:
+                parts.append(f"captured {loops_captured} loop(s)")
+            parts.append(f"found {len(signals)} signal(s)")
+            parts.append(f"created {len(created_offers)} offer(s)")
+            if brief:
+                parts.append("refreshed daily brief")
+            summary_text = "Sweep " + ", ".join(parts) + "."
+
             store.log_audit(
                 event_type="sweep_completed",
                 trigger=trigger,
-                summary=(
-                    f"Sweep found {len(signals)} signal(s), created {len(created_offers)} offer(s)"
-                    + (", refreshed daily brief." if brief else ".")
-                ),
+                summary=summary_text,
                 outcome="completed",
                 tokens_used=total_tokens,
                 cost_usd=round(total_cost, 6) if cost_seen else None,
                 details={
+                    "chats_scanned": chats_scanned,
+                    "messages_scanned": messages_scanned,
+                    "loops_captured": loops_captured,
                     "signals_detected": len(signals),
                     "created_offers": len(created_offers),
                     "suppressed": suppressed_count,
@@ -568,6 +879,9 @@ def run_signal_sweep(
             return {
                 "ran": True,
                 "quiet": False,
+                "chats_scanned": chats_scanned,
+                "messages_scanned": messages_scanned,
+                "loops_captured": loops_captured,
                 "signals_detected": len(signals),
                 "created_offers": len(created_offers),
                 "suppressed": suppressed_count,

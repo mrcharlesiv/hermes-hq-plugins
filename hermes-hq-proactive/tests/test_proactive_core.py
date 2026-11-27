@@ -55,14 +55,40 @@ class _FakeLlmResult:
 
 
 class _FakeLlm:
-    def __init__(self, *, fail: bool = False):
+    def __init__(self, *, fail: bool = False, chat_scan_parsed: Optional[Dict[str, Any]] = None):
         self.fail = fail
+        self.chat_scan_parsed = chat_scan_parsed
         self.calls: List[Dict[str, Any]] = []
 
     def complete_structured(self, **kwargs):
         self.calls.append({"kind": "structured", **kwargs})
         if self.fail:
             raise RuntimeError("simulated llm failure")
+        if kwargs.get("purpose") == "proactive_chat_scan":
+            parsed = self.chat_scan_parsed if self.chat_scan_parsed is not None else {
+                "open_loops": [
+                    {
+                        "kind": "follow_up",
+                        "title": "Confirm design handoff with Jordan",
+                        "detail": "Mentioned in recent desktop chat.",
+                        "counterparty": "Jordan",
+                        "due_at": "tomorrow",
+                        "priority": 1,
+                    }
+                ],
+                "offers": [
+                    {
+                        "category": "follow_up",
+                        "title": "Draft follow-up to Jordan on design handoff",
+                        "summary": "Prepared a concise check-in based on yesterday's chat.",
+                        "why": "Unresolved handoff mentioned in recent conversation.",
+                        "draft_content": "Hi Jordan — checking in on the design handoff whenever you're ready.",
+                        "suggested_action": "Review and send if still open.",
+                        "confidence": 0.84,
+                    }
+                ],
+            }
+            return _FakeLlmResult(text=json.dumps(parsed), parsed=parsed)
         return _FakeLlmResult(
             text='{"draft":"Polished draft."}',
             parsed={"draft": "Hi — quick check-in on the Q2 vendor quote.", "checklist": ["Confirm timeline", "Check pricing"]},
@@ -150,17 +176,20 @@ def test_off_by_default_zero_overhead_and_beta_metadata(tmp_path):
     assert idle_fn(None) == "disabled"
     assert ctx.llm.calls == []
 
-    # Slash command clearly reports Beta + OFF by default.
-    slash = ctx.commands["proactive"]["handler"]
+    # Slash command clearly reports Beta + OFF by default (and uses /proactivity to avoid built-in collision).
+    assert "proactivity" in ctx.commands
+    assert "proactive" not in ctx.commands
+    slash = ctx.commands["proactivity"]["handler"]
     status_out = slash("status")
     assert "Beta" in status_out
     assert "OFF (default)" in status_out
+    assert "/proactivity" in status_out
 
 
 def test_toggle_on_and_off_via_slash_command(tmp_path):
     ctx = _FakeCtx(tmp_path / "p2")
     pkg.register(ctx)
-    slash = ctx.commands["proactive"]["handler"]
+    slash = ctx.commands["proactivity"]["handler"]
 
     on_reply = slash("on")
     assert "now ON" in on_reply
@@ -376,7 +405,7 @@ def test_open_loop_extraction_and_filtering():
 def test_loop_dedup_and_repetition_pattern_offer(tmp_path):
     ctx = _FakeCtx(tmp_path / "p4")
     pkg.register(ctx)
-    ctx.commands["proactive"]["handler"]("on")
+    ctx.commands["proactivity"]["handler"]("on")
     post = ctx.hooks["post_llm_call"][0]
 
     # Same commitment phrased slightly differently deduplicates to one loop.
@@ -577,3 +606,170 @@ def test_manifest_and_dashboard_contract_with_real_hermes():
     # Real Hermes install security scanner passes with verdict 'safe'!
     scan_res = scan_plugin(PLUGIN_DIR)
     assert scan_res.verdict == "safe", f"Scanner findings: {[(f.pattern_id, f.severity, f.file_path, f.line_number) for f in scan_res.findings]}"
+
+    # Verify new chat-scan settings fields exist and /proactivity does not collide with built-in commands.
+    assert "scan_recent_chats" in by_key
+    assert "scan_lookback_hours" in by_key
+    from hermes_cli.commands import COMMANDS, resolve_command
+    assert "/proactivity" not in COMMANDS
+    assert resolve_command("/proactivity") is None
+
+
+# ── 8. Read-Only Recent-Chat Scanning (state.db) ──────────────────────────────
+
+def _create_fake_state_db(path: Path, now_utc: datetime) -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            title TEXT,
+            parent_session_id TEXT,
+            started_at REAL NOT NULL,
+            ended_at REAL,
+            last_activity_at REAL,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            timestamp REAL NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            _compressed_summary INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    t_recent = (now_utc - timedelta(hours=4)).timestamp()
+    t_cron = (now_utc - timedelta(hours=2)).timestamp()
+    t_old = (now_utc - timedelta(hours=120)).timestamp()
+
+    # Interactive desktop session with a genuine open loop + a secret token that must be redacted.
+    conn.execute(
+        "INSERT INTO sessions(id, source, title, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?)",
+        ("sess_desktop_1", "desktop", "Q2 launch prep", t_recent - 60, t_recent),
+    )
+    conn.execute(
+        "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        ("sess_desktop_1", "user", "Haven't heard back from Acme legal on the NDA draft (ref sk-secret-token).", t_recent - 30),
+    )
+    conn.execute(
+        "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        ("sess_desktop_1", "assistant", "Got it, we can follow up once you're ready.", t_recent),
+    )
+
+    # Cron session that MUST be skipped.
+    conn.execute(
+        "INSERT INTO sessions(id, source, title, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?)",
+        ("sess_cron_1", "cron", "Morning job", t_cron - 10, t_cron),
+    )
+    conn.execute(
+        "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        ("sess_cron_1", "user", "I'm waiting on cron job output that should be ignored.", t_cron),
+    )
+
+    # Hidden session that MUST be skipped.
+    conn.execute(
+        "INSERT INTO sessions(id, source, title, started_at, last_activity_at, hidden) VALUES (?, ?, ?, ?, ?, 1)",
+        ("sess_hidden_1", "desktop", "Hidden chat", t_cron - 10, t_cron),
+    )
+    conn.execute(
+        "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        ("sess_hidden_1", "user", "Need to get back to hidden contact tomorrow.", t_cron),
+    )
+
+    # Old session outside 72h lookback that MUST be skipped.
+    conn.execute(
+        "INSERT INTO sessions(id, source, title, started_at, last_activity_at) VALUES (?, ?, ?, ?, ?)",
+        ("sess_old_1", "desktop", "Old chat", t_old - 10, t_old),
+    )
+    conn.execute(
+        "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+        ("sess_old_1", "user", "Need to get back to old contact next week.", t_old),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_recent_chat_scan_filters_redacts_watermarks_and_upgrades_empty_brief(tmp_path):
+    now_utc = datetime(2026, 11, 27, 15, 0, tzinfo=timezone.utc)
+    now_local = datetime(2026, 11, 27, 15, 0)
+    state_db = tmp_path / "state.db"
+    _create_fake_state_db(state_db, now_utc)
+
+    st = ProactiveStore(data_dir=tmp_path / "scan_data", sync_hermes_config=False, state_db_path=state_db)
+    st.update_settings({"enabled": True, "brief_hour": 8})
+    # Pre-seed an empty 'All clear today' brief to verify it auto-upgrades once chats yield real loops/offers.
+    st.save_brief(
+        brief_date="2026-11-27",
+        summary="All clear today — no overdue open loops.",
+        highlights=[],
+        loop_ids=[],
+        offer_ids=[],
+    )
+
+    llm = _FakeLlm()
+    res1 = sweep.run_signal_sweep(
+        st,
+        llm=llm,
+        redact_fn=lambda s: s.replace("sk-secret-token", "[REDACTED]"),
+        trigger="manual",
+        now_utc=now_utc,
+        now_local=now_local,
+    )
+    assert res1["ran"] is True
+    assert res1["quiet"] is False
+    assert res1["chats_scanned"] == 1
+    assert res1["messages_scanned"] == 2
+    assert res1["loops_captured"] >= 2  # deterministic 'Acme legal' + LLM 'Jordan'
+    assert res1["created_offers"] >= 1
+    assert res1["brief_generated"] is True
+    assert len(res1["brief"]["highlights"]) >= 1
+
+    # Confirm cron/hidden/old sessions were never captured and secret token was redacted before LLM.
+    titles = [lp["title"].lower() for lp in st.list_loops(status="open")]
+    assert any("acme legal" in t for t in titles)
+    assert any("jordan" in t for t in titles)
+    assert not any("cron job" in t for t in titles)
+    assert not any("hidden contact" in t for t in titles)
+    assert not any("old contact" in t for t in titles)
+    assert "sk-secret-token" not in str(llm.calls)
+
+    # Second check immediately after with no new messages: watermark skips all chats -> 0 LLM calls!
+    llm_calls_before = len(llm.calls)
+    res2 = sweep.run_signal_sweep(
+        st,
+        llm=llm,
+        trigger="idle_task",
+        now_utc=now_utc + timedelta(minutes=10),
+        now_local=now_local + timedelta(minutes=10),
+    )
+    assert res2["chats_scanned"] == 0
+    assert len(llm.calls) == llm_calls_before
+
+
+def test_recent_chat_scan_honors_disable_toggle_and_missing_db(tmp_path):
+    now_utc = datetime(2026, 11, 27, 15, 0, tzinfo=timezone.utc)
+    now_local = datetime(2026, 11, 27, 15, 0)
+    state_db = tmp_path / "state.db"
+    _create_fake_state_db(state_db, now_utc)
+
+    st = ProactiveStore(data_dir=tmp_path / "scan_off", sync_hermes_config=False, state_db_path=state_db)
+    st.update_settings({"enabled": True, "scan_recent_chats": False, "brief_hour": 23})
+    llm = _FakeLlm()
+    res = sweep.run_signal_sweep(st, llm=llm, now_utc=now_utc, now_local=now_local)
+    assert res["quiet"] is True
+    assert res["chats_scanned"] == 0
+    assert llm.calls == []
+
+    # Missing state.db never crashes.
+    st_missing = ProactiveStore(data_dir=tmp_path / "scan_missing", sync_hermes_config=False, state_db_path=tmp_path / "nope.db")
+    st_missing.update_settings({"enabled": True, "brief_hour": 23})
+    res_m = sweep.run_signal_sweep(st_missing, llm=llm, now_utc=now_utc, now_local=now_local)
+    assert res_m["quiet"] is True
+    assert res_m["chats_scanned"] == 0
