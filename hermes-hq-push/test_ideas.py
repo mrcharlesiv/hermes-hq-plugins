@@ -76,10 +76,17 @@ def test_ideas_start_off_and_settings_check_their_values(tmp_path):
     s = store(tmp_path, on=False)
     settings = s.get_settings()
     assert settings["ideas"] is False and settings["ideas_bot"] == "default" and settings["ideas_max"] == 3
+    assert settings["ideas_bots"] == [] and settings["ideas_note"] == ""
+    assert settings["ideas_sources"] == {
+        "chats": True, "chat_bots": [], "memory": True, "files": False, "web": False, "connectors": [],
+    }
     s.put_settings({"ideas": True, "ideas_bot": "scout", "ideas_at": "06:45", "ideas_max": 5})
     s.put_settings({"ideas_bot": "../etc", "ideas_at": "25:00", "ideas_max": 9})   # all three ignored
     assert {k: v for k, v in s.get_settings().items() if k.startswith("ideas")} == {
-        "ideas": True, "ideas_bot": "scout", "ideas_at": "06:45", "ideas_max": 5}
+        "ideas": True, "ideas_bot": "scout", "ideas_bots": ["scout"], "ideas_at": "06:45", "ideas_max": 5,
+        "ideas_sources": {"chats": True, "chat_bots": [], "memory": True, "files": False, "web": False, "connectors": []},
+        "ideas_note": "",
+    }
     assert tasks.status()["task_ideas"] is True
 
 
@@ -321,19 +328,147 @@ def test_guard_leaves_every_other_session_alone(tmp_path, monkeypatch):
     assert ideas.guard("send_message", "", lambda: s) is None
 
 
-def test_guard_refuses_only_task_writes_in_the_ideas_run(tmp_path, monkeypatch):
+def test_guard_enforces_source_toggles_opt_in_connectors_and_read_only(tmp_path, monkeypatch):
     s = store(tmp_path)
     monkeypatch.setattr(ideas, "_known_runs", {"ab12cd34ef56": True, "other0000000": False})
     run = "cron_ab12cd34ef56_20261105_073000"
-    # Owner 2026-11-05: "It doesn't have to limit to read only tools."
-    for tool in ("session_search", "web_search", "read_file", "terminal", "memory", "tasks_list", "tasks_ideas",
-                 "mcp__mail__GMAIL_SEARCH_THREADS", "mcp__tools__COMPOSIO_MULTI_EXECUTE_TOOL"):
+
+    # Defaults: chats + memory ON; files, web, and all connected apps OFF (strict opt-in).
+    for tool in ("session_search", "memory", "tasks_list", "tasks_ideas"):
         assert ideas.guard(tool, run, lambda: s) is None, tool
-    for tool in ("tasks_add", "tasks_update", "tasks_next_prep"):
+    # Task writes are always refused.
+    for tool in ("tasks_add", "tasks_update", "tasks_next_prep", "tasks_offer", "goals_offer"):
         message = ideas.guard(tool, run, lambda: s)
         assert message and message.startswith("Refused") and tool in message and "suggest" in message, tool
+    # Files, web, and unenabled MCP / Composio tools are refused by default.
+    assert ideas.guard("read_file", run, lambda: s)
+    assert ideas.guard("terminal", run, lambda: s)
+    assert ideas.guard("web_search", run, lambda: s)
+    assert ideas.guard("mcp__notion__search_pages", run, lambda: s)
+    assert ideas.guard("mcp__composio__COMPOSIO_MULTI_EXECUTE_TOOL", run, lambda: s,
+                       args={"tools": [{"tool_slug": "GMAIL_FETCH_EMAILS"}]})
+    # Memory writes and file writes are ALWAYS refused (read-only).
+    assert ideas.guard("memory", run, lambda: s, args={"action": "add"})
+    assert ideas.guard("write_file", run, lambda: s)
+
+    # Enable files, web, Notion (MCP), and Gmail (Composio): read calls pass, writes & disabled apps stay blocked!
+    s.put_settings({"ideas_sources": {
+        "chats": False, "memory": True, "files": True, "web": True,
+        "connectors": ["mcp:notion", "composio:gmail"],
+    }})
+    assert ideas.guard("session_search", run, lambda: s)   # chats turned off
+    assert ideas.guard("read_file", run, lambda: s) is None
+    assert ideas.guard("write_file", run, lambda: s)       # still read-only
+    assert ideas.guard("web_search", run, lambda: s) is None
+    assert ideas.guard("mcp__notion__search_pages", run, lambda: s) is None
+    assert ideas.guard("mcp__notion__create_page", run, lambda: s)          # mutating MCP blocked
+    assert ideas.guard("mcp__slack__list_channels", run, lambda: s)         # disabled MCP blocked
+    assert ideas.guard("mcp__composio__COMPOSIO_MULTI_EXECUTE_TOOL", run, lambda: s,
+                       args={"tools": [{"tool_slug": "GMAIL_FETCH_EMAILS"}]}) is None
+    assert ideas.guard("mcp__composio__COMPOSIO_MULTI_EXECUTE_TOOL", run, lambda: s,
+                       args={"tools": [{"tool_slug": "GMAIL_SEND_EMAIL"}]})   # mutating Composio blocked
+    assert ideas.guard("mcp__composio__COMPOSIO_MULTI_EXECUTE_TOOL", run, lambda: s,
+                       args={"tools": [{"tool_slug": "SLACK_LIST_MESSAGES"}]})  # disabled Composio blocked
+    assert ideas.guard("mcp__composio__COMPOSIO_REMOTE_WORKBENCH", run, lambda: s,
+                       args={"code_to_execute": "run_composio_tool('GMAIL_FETCH_EMAILS', {})"}) is None
+    assert ideas.guard("mcp__composio__COMPOSIO_REMOTE_WORKBENCH", run, lambda: s,
+                       args={"code_to_execute": "run_composio_tool('GMAIL_SEND_EMAIL', {})"})
+
+    # Non-ideas runs are untouched.
     assert ideas.guard("tasks_add", "cron_other0000000_20261105_073000", lambda: s) is None   # another job
     assert ideas.guard("tasks_add", "20261105_073000_abcd", lambda: s) is None                # a chat
+
+
+def test_discover_connectors_and_multi_bot_context(tmp_path):
+    homes = {name: tmp_path / name for name in ("default", "scout", "atlas")}
+    for h in homes.values():
+        h.mkdir()
+    (homes["default"] / "config.yaml").write_text(
+        "mcp_servers:\n"
+        "  notion:\n"
+        "    url: https://mcp.notion.com/mcp\n"
+        "  disabled_one:\n"
+        "    enabled: false\n"
+        "    url: https://example.com\n"
+        "  composio:\n"
+        "    url: https://backend.composio.dev/tool_router/v1/sess_abc/mcp\n"
+    )
+    (homes["default"] / ".env").write_text("COMPOSIO_API_KEY=test_key_placeholder\n")
+    (homes["scout"] / "config.yaml").write_text(
+        "mcp_servers:\n"
+        "  linear:\n"
+        "    url: https://mcp.linear.app\n"
+    )
+    fake_composio = lambda sid, key: (
+        [{"slug": "gmail", "name": "Gmail"}, {"slug": "googlecalendar", "name": "Google Calendar"}]
+        if sid == "sess_abc" and key == "test_key_placeholder" else []
+    )
+    found = ideas.discover_connectors(profiles=["default", "scout", "atlas"],
+                                      home_for=lambda p: homes[p], fetch_composio=fake_composio)
+    assert [c["id"] for c in found] == ["composio:gmail", "composio:googlecalendar", "mcp:linear", "mcp:notion"]
+    assert found[2]["bots"] == ["scout"]
+
+    s = store(tmp_path)
+    s.put_settings({
+        "ideas_bots": ["default", "scout"],
+        "ideas_sources": {"chats": True, "chat_bots": ["default"], "memory": True, "files": False, "web": False,
+                          "connectors": ["composio:gmail", "mcp:linear"]},
+        "ideas_note": "Check unread client emails and Linear blockers. Skip newsletters.",
+    })
+    sample_chats = [
+        {"bot": "default", "chat": "Morning", "when": "2023-11-14T20:00:00Z", "you_said": ["call the roofer"]},
+        {"bot": "atlas", "chat": "Noisy", "when": "2023-11-14T20:00:00Z", "you_said": ["ignore me"]},
+    ]
+    primary_ctx = ideas.context(s, "default", bots=BOTS, chats=sample_chats, connectors=found)
+    assert primary_ctx["primary_bot"] is True
+    assert [c["bot"] for c in primary_ctx["recent_chats"]] == ["default"]   # atlas filtered out by chat_bots
+    assert any("Gmail" in line for line in primary_ctx["sources_to_check"])
+    assert any("Notion" in line for line in primary_ctx["sources_to_skip"])
+    assert primary_ctx["instructions"] == "Check unread client emails and Linear blockers. Skip newsletters."
+
+    secondary_ctx = ideas.context(s, "scout", bots=BOTS, chats=sample_chats, connectors=found)
+    assert secondary_ctx["primary_bot"] is False
+    assert secondary_ctx["recent_chats"] == []   # primary already covers chats
+    assert any("Linear" in line for line in secondary_ctx["sources_to_check"])
+
+
+@needs_cron
+def test_multi_bot_reconcile_and_run_now(client, tmp_path, monkeypatch):
+    from hermes_cli import profiles as hermes_profiles
+    homes = {name: tmp_path / "profiles" / name for name in ("default", "scout", "atlas")}
+    for home in homes.values():
+        home.mkdir(parents=True)
+    monkeypatch.setattr(hermes_profiles, "get_profile_dir", lambda name: str(homes[name]))
+    res = client.put(f"{BASE}/tasks/settings", json={
+        "ideas": True,
+        "ideas_bots": ["default", "scout"],
+        "ideas_at": "08:00",
+        "ideas_sources": {"chats": True, "memory": True, "files": False, "web": False, "connectors": ["mcp:notion"]},
+        "ideas_note": "Focus on Notion Inbox.",
+    })
+    assert res.status_code == 200
+    assert res.json()["ideas_bots"] == ["default", "scout"]
+    assert res.json()["ideas_sources"]["connectors"] == ["mcp:notion"]
+    assert res.json()["ideas_note"] == "Focus on Notion Inbox."
+    for bot in ("default", "scout"):
+        with cron_jobs.use_cron_store(homes[bot]):
+            assert cron_jobs.resolve_job_ref(ideas.JOB_NAME)["schedule"]["expr"] == "0 8 * * *"
+    with cron_jobs.use_cron_store(homes["atlas"]):
+        assert cron_jobs.resolve_job_ref(ideas.JOB_NAME) is None
+
+    # Look Now triggers ALL participating bots.
+    assert client.post(f"{BASE}/tasks/ideas/run").json() == {"started": True, "looking": True}
+    for bot in ("default", "scout"):
+        with cron_jobs.use_cron_store(homes[bot]):
+            assert cron_jobs.resolve_job_ref(ideas.JOB_NAME).get("manual_run_at")
+
+    # Removing scout from ideas_bots removes scout's job while keeping default's.
+    client.put(f"{BASE}/tasks/settings", json={"ideas_bots": ["default"]})
+    with cron_jobs.use_cron_store(homes["scout"]):
+        assert cron_jobs.resolve_job_ref(ideas.JOB_NAME) is None
+    with cron_jobs.use_cron_store(homes["default"]):
+        assert cron_jobs.resolve_job_ref(ideas.JOB_NAME) is not None
+    assert client.get(f"{BASE}/tasks/ideas/sources").status_code == 200
 
 
 @needs_cron

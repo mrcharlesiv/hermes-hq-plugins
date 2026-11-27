@@ -114,9 +114,21 @@ START_NOW_TTL = 2 * 3600  # a "start now" the prep job hasn't reached in two hou
 # meta 'sections'), and the order inside each — kept here so the iPhone and the Mac show the same page.
 # "ideas" (0.9.39, ideas.py): the Tasks page's Ideas page. Off until the user turns it on (a daily run that reads their
 # chats is theirs to choose); "ideas_bot" runs it daily at "ideas_at" and offers at most "ideas_max" ideas a day.
+DEFAULT_IDEAS_SOURCES = {
+    "chats": True,
+    "chat_bots": [],
+    "memory": True,
+    "files": False,
+    "web": False,
+    "connectors": [],
+}
+IDEAS_NOTE_MAX = 800
+_CONNECTOR_ID = re.compile(r"^(mcp|composio):[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
 DEFAULT_SETTINGS = {"enabled": True, "capture": "ask", "prep_per_day": 6, "quiet_start": "22:00", "quiet_end": "08:00",
                     "prep_every_hours": 3, "group": "smart", "sort": "smart",
-                    "ideas": False, "ideas_bot": "default", "ideas_at": "07:30", "ideas_max": 3,
+                    "ideas": False, "ideas_bot": "default", "ideas_bots": [], "ideas_at": "07:30", "ideas_max": 3,
+                    "ideas_sources": dict(DEFAULT_IDEAS_SOURCES), "ideas_note": "",
                     "goals": True}
 # "goals" (0.9.66, goals.py): False hides every goals tool, drops the goals note and every Goal check-in job (as
 # "enabled" does for all of Tasks). The goals themselves are kept.
@@ -1844,16 +1856,66 @@ class Store:
 
     # -- settings ------------------------------------------------------------------------------------------------
 
+    @staticmethod
+    def _clean_profiles(raw, limit: int = 30) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        out, seen = [], set()
+        for item in raw:
+            if isinstance(item, str) and _PROFILE_NAME.match(item) and item not in seen:
+                seen.add(item)
+                out.append(item)
+                if len(out) >= limit:
+                    break
+        return out
+
+    @classmethod
+    def _clean_ideas_sources(cls, raw, base: dict | None = None) -> dict:
+        out = dict(DEFAULT_IDEAS_SOURCES)
+        if isinstance(base, dict):
+            out.update({k: base[k] for k in DEFAULT_IDEAS_SOURCES if k in base})
+        out["chat_bots"] = list(out.get("chat_bots") or [])
+        out["connectors"] = list(out.get("connectors") or [])
+        if not isinstance(raw, dict):
+            return out
+        for key in ("chats", "memory", "files", "web"):
+            if isinstance(raw.get(key), bool):
+                out[key] = raw[key]
+        if "chat_bots" in raw and isinstance(raw.get("chat_bots"), list):
+            out["chat_bots"] = cls._clean_profiles(raw["chat_bots"], limit=30)
+        if "connectors" in raw and isinstance(raw.get("connectors"), list):
+            cleaned, seen = [], set()
+            for item in raw["connectors"]:
+                if isinstance(item, str):
+                    norm = item.strip().lower()
+                    if _CONNECTOR_ID.match(norm) and norm not in seen:
+                        seen.add(norm)
+                        cleaned.append(norm)
+                        if len(cleaned) >= 50:
+                            break
+            out["connectors"] = cleaned
+        return out
+
     def get_settings(self) -> dict:
         with closing(self._db()) as db:
             row = db.execute("select value from meta where key='settings'").fetchone()
         if not row:
-            return dict(DEFAULT_SETTINGS)
+            out = dict(DEFAULT_SETTINGS)
+            out["ideas_bots"] = []
+            out["ideas_sources"] = dict(DEFAULT_IDEAS_SOURCES)
+            return out
         try:
             saved = json.loads(row[0])
         except ValueError:
-            return dict(DEFAULT_SETTINGS)
-        return {**DEFAULT_SETTINGS, **{k: saved[k] for k in DEFAULT_SETTINGS if k in saved}}
+            out = dict(DEFAULT_SETTINGS)
+            out["ideas_bots"] = []
+            out["ideas_sources"] = dict(DEFAULT_IDEAS_SOURCES)
+            return out
+        merged = {**DEFAULT_SETTINGS, **{k: saved[k] for k in DEFAULT_SETTINGS if k in saved}}
+        merged["ideas_bots"] = self._clean_profiles(merged.get("ideas_bots"), limit=20)
+        merged["ideas_sources"] = self._clean_ideas_sources(merged.get("ideas_sources"))
+        merged["ideas_note"] = _text(merged.get("ideas_note"), IDEAS_NOTE_MAX) if isinstance(merged.get("ideas_note"), str) else ""
+        return merged
 
     def put_settings(self, fields: dict) -> dict:
         current = self.get_settings()
@@ -1880,11 +1942,22 @@ class Store:
             current["goals"] = fields["goals"]
         if isinstance(fields.get("ideas_bot"), str) and _PROFILE_NAME.match(fields["ideas_bot"]):
             current["ideas_bot"] = fields["ideas_bot"]
+            if "ideas_bots" not in fields and len(current.get("ideas_bots") or []) <= 1:
+                current["ideas_bots"] = [fields["ideas_bot"]]
+        if "ideas_bots" in fields and isinstance(fields.get("ideas_bots"), list):
+            cleaned_bots = self._clean_profiles(fields["ideas_bots"], limit=20)
+            if cleaned_bots:
+                current["ideas_bots"] = cleaned_bots
+                current["ideas_bot"] = cleaned_bots[0]
         if _hhmm(fields.get("ideas_at")):
             current["ideas_at"] = fields["ideas_at"]
         value = fields.get("ideas_max")
         if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= IDEAS_MAX:
             current["ideas_max"] = value
+        if isinstance(fields.get("ideas_sources"), dict):
+            current["ideas_sources"] = self._clean_ideas_sources(fields["ideas_sources"], base=current.get("ideas_sources"))
+        if isinstance(fields.get("ideas_note"), str):
+            current["ideas_note"] = _text(fields["ideas_note"], IDEAS_NOTE_MAX)
         with closing(self._write_db()) as db, db:
             db.execute("insert into meta (key, value) values ('settings', ?) on conflict(key) do update"
                        " set value=excluded.value", (json.dumps(current),))
