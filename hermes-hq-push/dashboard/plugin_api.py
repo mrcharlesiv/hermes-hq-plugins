@@ -98,6 +98,21 @@ else:
     shopping = importlib.util.module_from_spec(_shopping_spec)
     sys.modules["hermes_hq_shopping"] = shopping
     _shopping_spec.loader.exec_module(shopping)
+if "hermes_hq_travel" in sys.modules:   # [travel] 0.9.86: one copy for this process: the tools and the route share it
+    travel = sys.modules["hermes_hq_travel"]
+else:
+    _travel_spec = importlib.util.spec_from_file_location("hermes_hq_travel", Path(__file__).parents[1] / "travel.py")
+    travel = importlib.util.module_from_spec(_travel_spec)
+    sys.modules["hermes_hq_travel"] = travel
+    _travel_spec.loader.exec_module(travel)
+if "hermes_hq_tool_permissions" in sys.modules:   # [tool-permissions] 0.9.86
+    tool_permissions = sys.modules["hermes_hq_tool_permissions"]
+else:
+    _perms_spec = importlib.util.spec_from_file_location("hermes_hq_tool_permissions",
+                                                         Path(__file__).parents[1] / "tool_permissions.py")
+    tool_permissions = importlib.util.module_from_spec(_perms_spec)
+    sys.modules["hermes_hq_tool_permissions"] = tool_permissions
+    _perms_spec.loader.exec_module(tool_permissions)
 
 if "hermes_hq_terminal" in sys.modules:
     terminal = sys.modules["hermes_hq_terminal"]
@@ -237,7 +252,8 @@ class ApprovalIn(BaseModel):
 def status():
     """The app probes this to offer push; a 404 means the plugin isn't installed or enabled."""
     return {**push.status_body(push.data_dir(), push.sender_from_env()), **terminal.status(push.data_dir()),
-            **tasks.status(), **goals.status(), **drafts.status(push.data_dir()), **shopping.status(push.data_dir()), **asks.status(push.data_dir()),
+            **tasks.status(), **goals.status(), **drafts.status(push.data_dir()), **shopping.status(push.data_dir()), **travel.status(push.data_dir()),
+            **tool_permissions.status(), **asks.status(push.data_dir()),
             **plugin_updates.status(),
             **onepassword_allow.status(), "sessionPRStatus": session_pr_status.supported(),
             # 0.9.70: the owner's "closed" mark on a chat, and repositories linked per project from the app.
@@ -375,6 +391,14 @@ def shopping_cards():
     """[shopping] An app that draws product and order cards uses this computer: bots get show_products and
     order_card from now on (shopping.py)."""
     shopping.note_cards(push.data_dir())
+    return {"ok": True}
+
+
+@router.put("/travel/cards")
+def travel_cards():
+    """[travel] An app that draws flight and hotel cards uses this computer: bots get show_flights and show_hotels
+    from now on (travel.py)."""
+    travel.note_cards(push.data_dir())
     return {"ok": True}
 
 
@@ -542,6 +566,8 @@ class SessionPRBatchIn(BaseModel):
     sessions: list[SessionPRIn] = Field(max_length=32)
     # A chat being opened: its waiting pull requests are asked about again rather than read from the cache.
     fresh: StrictBool = False
+    # The one chat whose pull request card is open: each waiting item's files and check runs too.
+    detail: StrictBool = False
 
 
 class SessionPRMarkIn(BaseModel):
@@ -717,7 +743,7 @@ def sessions_pr_status(body: SessionPRBatchIn, request: Request):
             access[actor.subject] = session_pr_status.access_for(data_dir, actor.subject, config)
         return {"profile": profile, "id": sid, "created": created, "work": work, "access": access[actor.subject],
                 "repos": config['repos'], "data_dir": data_dir, "closed": f"{profile}/{sid}" in marks,
-                "fresh": body.fresh and len(rows) <= 4}
+                "fresh": body.fresh and len(rows) <= 4, "detail": body.detail and len(rows) <= 4}
 
     return {"sessions": session_pr_status.resolve_batch(_pr_owned(request, rows, visit))}
 
@@ -995,6 +1021,13 @@ class GoalIn(BaseModel):
     position: float | None = None
     measure: MeasureIn | None = None
     milestones: list[MilestoneIn] = Field(default_factory=list, max_length=30)
+    # Goal set-up: the bots in the same call, so a goal made with a lead is one write and one "Added" line (before, the app
+    # sent them in a PATCH after, which wrote "Lead changed" too). Left out: no lead, as before. review left out with
+    # a lead is Monday 08:00; null is no check-in.
+    lead: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+    helpers: list[str] = Field(default_factory=list, max_length=5)
+    adds: str | None = Field(default=None, pattern="^(ask|auto)$")
+    review: ReviewIn | None = None
 
 
 class GoalPatchIn(BaseModel):
@@ -1244,11 +1277,18 @@ def _measure_fields(measure: "MeasureIn | None"):
 
 @router.post("/goals")
 def goals_create(body: GoalIn):
-    """A goal: its name, and any of why, a day, a colour, a number and milestones. Returns the Goal."""
-    fields = body.model_dump(exclude={"measure", "milestones"})
+    """A goal: its name, and any of why, a day, a colour, a number and milestones, and its bots (lead, helpers, adds,
+    review) in the same call: one write, one "Added" line. Returns the Goal. Setting the bots with a PATCH after
+    still works."""
+    fields = body.model_dump(exclude={"measure", "milestones", "review"})
     fields["measure"] = _measure_fields(body.measure)
     fields["milestones"] = [m.model_dump(exclude_unset=True) for m in body.milestones]
-    return _goal_call(lambda: _tasks_store().create_goal(fields))
+    if "review" in body.model_fields_set:   # left out: a lead's default; null: no check-in
+        fields["review"] = body.review.model_dump() if body.review is not None else None
+    goal = _goal_call(lambda: _tasks_store().create_goal(fields))
+    if goal.get("lead"):
+        _reconcile_checkin({goal["lead"]})   # its check-in job, as a PATCH that gives a lead arms it
+    return goal
 
 
 @router.patch("/goals/{goal_id}")

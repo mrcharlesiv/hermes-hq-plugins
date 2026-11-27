@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Page Title</title>
+<style>
+/* Hermes HQ page kit. Keep this block as it is and build the page below with its classes; add your own rules after
+   it. The colours are the app's own (light and dark, whatever theme the person picked); outside the app they fall
+   back to the system's. Never set a text colour of your own: use --ink and --ink2, and a brand colour only for a
+   dot, a pin, a bar or a chip's mark. */
+:root {
+  --ink: var(--foreground, CanvasText);
+  --ink2: var(--muted-foreground, color-mix(in srgb, CanvasText 62%, transparent));
+  --tint: var(--accent, #0a84ff);
+  --line: var(--border, color-mix(in srgb, CanvasText 16%, transparent));
+  --panel: var(--card, color-mix(in srgb, CanvasText 6%, Canvas));
+  --round: var(--hq-radius, 16px);
+  --gap: 12px;
+  accent-color: var(--tint);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto; max-width: 760px; padding: 12px 16px 28px;   /* one left edge for everything: these 16px */
+  font: 16px/1.4 -apple-system, system-ui, sans-serif; color: var(--ink);
+  overflow-wrap: break-word; -webkit-text-size-adjust: 100%;
+}
+body > * + * { margin-top: var(--gap); }                         /* even space between sections */
+h1, h2, h3 { margin: 0; line-height: 1.25; }
+h1 { font-size: 1.45rem; font-weight: 700; }
+h2 { font-size: 1.1rem; font-weight: 650; margin-top: 20px; }
+p { margin: 0; }
+a { color: var(--tint); }
+
+/* A heading with one short line under it. */
+.hq-head .hq-sub { margin-top: 2px; color: var(--ink2); font-size: 0.92rem; }
+
+/* Filters and toggles: a row of chips that wraps as a whole, each chip its box and its words together. */
+.hq-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.hq-chip {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+  font-size: 0.95rem; white-space: nowrap; cursor: pointer; user-select: none;
+}
+.hq-chip input { margin: 0; width: 18px; height: 18px; }
+.hq-chip:has(input:checked) { border-color: color-mix(in srgb, var(--tint) 55%, transparent); }
+.hq-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--tint)); flex: none; }
+.hq-chip .hq-count { color: var(--ink2); }
+
+/* A menu or search box with a button beside it: the field takes the room, the button keeps its size. */
+.hq-bar { display: flex; gap: 8px; align-items: stretch; }
+.hq-bar > select, .hq-bar > input { flex: 1; min-width: 0; }
+.hq-field, .hq-bar > select, .hq-bar > input {
+  min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--panel); color: var(--ink); font: inherit; font-size: 1rem;    /* 16px: iOS doesn't zoom */
+}
+.hq-btn {
+  min-height: 44px; padding: 0 16px; border: 0; border-radius: 12px; white-space: nowrap;
+  background: var(--tint); color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+}
+.hq-btn.quiet { background: var(--panel); color: var(--ink); border: 1px solid var(--line); }
+
+/* A short hint or footnote. */
+.hq-note { color: var(--ink2); font-size: 0.9rem; }
+
+/* A map, a picture, a chart: rounded, inside the same edges as everything else. */
+.hq-media { display: block; width: 100%; border-radius: var(--round); overflow: hidden; border: 1px solid var(--line); }
+.hq-map { height: clamp(320px, 62vh, 620px); }
+img.hq-media { height: auto; }
+
+/* Cards and lists. */
+.hq-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--round); padding: 14px 16px; }
+.hq-list { list-style: none; margin: 0; padding: 0; }
+.hq-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 11px 0; }
+.hq-row + .hq-row { border-top: 1px solid var(--line); }
+.hq-row .hq-val { color: var(--ink2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* A few big numbers side by side. */
+.hq-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.hq-stat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--round); padding: 12px 14px; }
+.hq-stat .n { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.hq-stat .l { color: var(--ink2); font-size: 0.85rem; }
+
+/* A table: it scrolls sideways inside its card, never the page. */
+.hq-table { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--round); }
+.hq-table table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+.hq-table th { text-align: left; font-weight: 600; color: var(--ink2); font-size: 0.82rem; }
+.hq-table th, .hq-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.hq-table tr:last-child td { border-bottom: 0; }
+
+/* Something that runs edge to edge on purpose (a wide photo): out to the screen's sides, square-cornered. */
+.hq-bleed { margin-left: -16px; margin-right: -16px; border-radius: 0; border-left: 0; border-right: 0; }
+</style>
+</head>
+<body>
+
+<!-- Keep what you need, delete the rest. Order: what it is, how to filter it, the thing itself, the details. -->
+
+<header class="hq-head">
+  <h1>Page Title</h1>
+  <p class="hq-sub">One short line: how many, from where, as of when</p>
+</header>
+
+<div class="hq-chips" role="group" aria-label="Show">
+  <label class="hq-chip"><input type="checkbox" checked><span class="hq-dot" style="--c:#2f7de1"></span>First kind <span class="hq-count">12</span></label>
+  <label class="hq-chip"><input type="checkbox" checked><span class="hq-dot" style="--c:#e0603a"></span>Second kind <span class="hq-count">30</span></label>
+</div>
+
+<div class="hq-bar">
+  <select aria-label="Find one"><option>Find one…</option></select>
+  <button class="hq-btn quiet" type="button">Show all</button>
+</div>
+
+<p class="hq-note">Tap a pin to open its page.</p>
+
+<div class="hq-media hq-map" id="map"></div>
+
+<div class="hq-stats">
+  <div class="hq-stat"><div class="n">42</div><div class="l">In total</div></div>
+  <div class="hq-stat"><div class="n">7</div><div class="l">New this week</div></div>
+</div>
+
+<section class="hq-card">
+  <h2 style="margin-top:0">A list</h2>
+  <ul class="hq-list">
+    <li class="hq-row"><span>First thing</span><span class="hq-val">$120</span></li>
+    <li class="hq-row"><span>Second thing</span><span class="hq-val">$85</span></li>
+  </ul>
+</section>
+
+<div class="hq-table">
+  <table>
+    <tr><th>Name</th><th>When</th><th>Cost</th></tr>
+    <tr><td>First thing</td><td>Mon 4</td><td>$120</td></tr>
+    <tr><td>Second thing</td><td>Tue 5</td><td>$85</td></tr>
+  </table>
+</div>
+
+</body>
+</html>

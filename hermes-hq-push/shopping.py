@@ -213,7 +213,17 @@ ORDER_SCHEMA = {
                               "qty": {"type": "integer", "description": "How many (default 1)."},
                               "price": {"type": "number",
                                         "description": "Optional: the line's amount as the checkout lists it."},
-                              "image": {"type": "string", "description": "Optional https link to its photo."}},
+                              "image": {"type": "string", "description": "Optional https link to its photo."},
+                              "url": {"type": "string",
+                                      "description": "Optional https link to this item's own product page at the "
+                                                     "store (the card opens it on a tap): the page you chose it on."},
+                              "options": {
+                                  "type": "array",
+                                  "description": f"Optional, up to {MAX_OPTIONS}: the options in the order, one value "
+                                                 "per name, as the checkout lists them (Colour: Navy, Size: M).",
+                                  "items": {"type": "object",
+                                            "properties": {"name": {"type": "string"}, "value": {"type": "string"}},
+                                            "required": ["name", "value"]}}},
                           "required": ["title"]}},
             "charges": {
                 "type": "array",
@@ -596,6 +606,9 @@ def check_order(args) -> tuple[list[str], str, list[str], dict]:
         price = c.number(item, "price", where)
         if item.get("image") not in (None, ""):
             c.url(item, "image", where)
+        if item.get("url") not in (None, ""):   # 0.9.86: the item's own page, which the card opens
+            c.url(item, "url", where)
+        c.pairs(item, "options", where, ("name", "value"), MAX_OPTIONS)
         if title:
             lines.append((int(qty), title))
         if price is not None:

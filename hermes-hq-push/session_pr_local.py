@@ -29,6 +29,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 _TERMINAL = ('terminal', 'functions.terminal')
@@ -275,8 +276,9 @@ def load_repos(raw):
 _git_binary = None
 
 
-def _git(path, *args):
-    """One read-only git question inside an owner-listed repository; None when it fails."""
+def _git(path, *args, raw=False):
+    """One read-only git question inside an owner-listed repository; None when it fails. *raw*: the
+    answer as bytes, for answers that hold file names or file contents (they need not be UTF-8)."""
     global _git_binary
     if _git_binary is None:
         _git_binary = shutil.which('git') or '/usr/bin/git'
@@ -285,7 +287,7 @@ def _git(path, *args):
     try:
         # A repository's own config must not make a read run a program of its choosing.
         done = subprocess.run([_git_binary, '-C', path, '--no-pager', '-c', 'core.fsmonitor=false',
-                               '-c', 'core.hooksPath=/dev/null', *args], capture_output=True, text=True,
+                               '-c', 'core.hooksPath=/dev/null', *args], capture_output=True, text=not raw,
                               timeout=_GIT_TIMEOUT, env=env, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -302,11 +304,15 @@ _facts = {}          # (path, question, …) -> the answer, for questions whose 
 _MAX_FACTS = 50000
 
 
-def _fact(key, ask):
+def _fact(key, ask, keep_failed=True):
+    """*ask*'s answer, asked once per *key*. With *keep_failed* false a failed question (None) is asked
+    again next time: a busy computer's timeout is not an answer that can't change."""
     with _lock:
         if key in _facts:
             return _facts[key]
     value = ask()
+    if value is None and not keep_failed:
+        return None
     with _lock:
         if len(_facts) > _MAX_FACTS:
             _facts.clear()
@@ -613,10 +619,14 @@ def local_state(work, repos, tips=None):
     return best, len(unplaced)
 
 
-def local_items(work, repos, tips=None):
+def local_items(work, repos, tips=None, where=False):
     """``(answers, unplaced)``: one answer per branch (or loose commit) of the session's that holds work,
     oldest first, each the best any listed repository gives it; *unplaced* names the branches no listed
-    repository knows, oldest first."""
+    repository knows, oldest first.
+
+    *where*: each answer still waiting (``draft``) also carries ``_where``, ``(repository path, main's
+    name, main, the branch's tip or None)`` of the repository it came from, for ``branch_review``. It
+    is never sent."""
     if not work or not repos:
         return [], []
     snaps = [(repo, snap) for repo, snap in ((repo, _snapshot(repo)) for repo in repos) if snap is not None]
@@ -626,6 +636,7 @@ def local_items(work, repos, tips=None):
     for branch, shas in items:
         placed = False
         best = None
+        found_in = None
         for repo, snap in snaps:
             remembered = tips.get(f"{repo['path']}\n{branch}") if tips is not None and branch is not None else None
             # Everything an answer rests on: main, the marker, every branch's tip, the receipts, the tip remembered.
@@ -654,8 +665,171 @@ def local_items(work, repos, tips=None):
             placed = True
             if cached['state'] != 'nothing' and (best is None or _RANK[cached['state']] >= _RANK[best['state']]):
                 best = dict(cached)
+                found_in = (repo, snap)
         if best is not None:
+            if where and best['state'] == 'draft':
+                home, seen = found_in
+                best['_where'] = (home['path'], home['main'], seen['main'], seen['heads'].get(branch))
             answers.append(best)
         if not placed and branch is not None:
             unplaced.append(branch)
     return answers, unplaced
+
+
+# ---- what a branch waiting to be merged changes ---------------------------------------------------
+# Asked only for a branch whose answer is ``draft``: its tip against its merge-base with main. The
+# merge-base of two commits and the diff of two commits never change, so each is asked once and a poll
+# that finds neither main nor the tip moved asks git nothing. File names come NUL-separated (``-z``)
+# and as bytes: a name may hold a newline, a quote or bytes that are not UTF-8.
+
+MAX_FILES = 50          # files listed per branch
+MAX_PATCH = 20_000      # characters of one file's patch
+MAX_PATCHES = 200_000   # characters of all the patches of one answer
+_MAX_REVIEWS = 32
+_reviews = OrderedDict()   # (path, merge-base, tip) -> one patch per listed file: the last few asked for
+_CUT = object()            # a patch left out for size
+# The same diff every time, whatever the owner's or the repository's config says: no external diff or
+# text conversion (each would run a program), no color, paths from the top, git's own order, renames found.
+_DIFF = ('diff', '-M', '--no-color', '--no-ext-diff', '--no-textconv', '--no-relative', '-O/dev/null')
+
+
+def _merge_base(path, main, tip):
+    def ask():
+        out = (_git(path, 'merge-base', main, tip) or '').strip()
+        return out if _SHA.fullmatch(out) else None
+    return _fact((path, 'merge-base', main, tip), ask, keep_failed=False)
+
+
+def _read_numstat(out):
+    """``git diff --numstat -z``: ``{'files', 'additions', 'deletions', 'listed'}``, *listed* the first
+    ``MAX_FILES`` as ``(path, old path or None, additions, deletions, binary)`` (paths as bytes); None
+    when it can't be read. A renamed file is ``adds TAB dels TAB NUL old NUL new NUL``; a binary one
+    counts ``-``."""
+    parts = out.split(b'\0')
+    files = additions = deletions = 0
+    listed = []
+    index = 0
+    while index < len(parts):
+        head = parts[index]
+        index += 1
+        if not head:
+            continue
+        fields = head.split(b'\t', 2)
+        if len(fields) != 3:
+            return None
+        adds, dels, name = fields
+        old = None
+        if not name:
+            if index + 1 >= len(parts) or not parts[index] or not parts[index + 1]:
+                return None
+            old, name = parts[index], parts[index + 1]
+            index += 2
+        binary = adds == b'-' and dels == b'-'
+        if binary:
+            adds = dels = 0
+        elif adds.isdigit() and dels.isdigit():
+            adds, dels = int(adds), int(dels)
+        else:
+            return None
+        files += 1
+        additions += adds
+        deletions += dels
+        if len(listed) < MAX_FILES:
+            listed.append((name, old, adds, dels, binary))
+    return {'files': files, 'additions': additions, 'deletions': deletions, 'listed': tuple(listed)}
+
+
+def _numstat(path, base, tip):
+    def ask():
+        out = _git(path, '-c', 'core.quotePath=true', *_DIFF, '--numstat', '-z', base, tip, raw=True)
+        return None if out is None else _read_numstat(out)
+    return _fact((path, 'numstat', base, tip), ask, keep_failed=False)
+
+
+_HEADER = re.compile(rb'^diff --git ', re.M)
+
+
+def _patches(path, base, tip, listed):
+    """One patch per *listed* file (from its first ``@@`` line on), ``_CUT``, or None (binary, nothing
+    but a rename or a mode change, or not told apart); from one ``git diff`` of the listed files. None
+    when git couldn't be asked."""
+    key = (path, base, tip)
+    with _lock:
+        if key in _reviews:
+            _reviews.move_to_end(key)
+            return _reviews[key]
+    out = [None] * len(listed)
+    asked = []          # indexes of the files whose patch is asked for
+    for index, (name, old, adds, dels, binary) in enumerate(listed):
+        if binary:
+            continue
+        if 2 * (adds + dels) - 1 > MAX_PATCH:      # every changed line is at least two characters
+            out[index] = _CUT
+            continue
+        asked.append(index)
+    if asked:
+        names = []
+        for index in asked:
+            name, old = listed[index][0], listed[index][1]
+            names += [old, name] if old else [name]
+        text = _git(path, '--literal-pathspecs', '-c', 'core.quotePath=true', *_DIFF, '-U3', base, tip, '--', *names, raw=True)
+        if text is None:
+            return None
+        chunks = _HEADER.split(text)[1:]
+        # Git writes the files in the order --numstat listed them; a chunk is taken as a file's only when
+        # the count matches and its own lines add and remove what --numstat said.
+        if len(chunks) == len(asked):
+            for index, chunk in zip(asked, chunks):
+                start = chunk.find(b'\n@@')
+                if start < 0:
+                    continue
+                body = chunk[start + 1:]
+                lines = body.split(b'\n')
+                adds = sum(1 for line in lines if line.startswith(b'+'))
+                dels = sum(1 for line in lines if line.startswith(b'-'))
+                if (adds, dels) != listed[index][2:4]:
+                    continue
+                patch = body.decode('utf-8', 'replace')
+                patch = patch[:-1] if patch.endswith('\n') else patch
+                out[index] = patch if len(patch) <= MAX_PATCH else _CUT
+    total = 0
+    for index, patch in enumerate(out):
+        if isinstance(patch, str):
+            total += len(patch)
+            if total > MAX_PATCHES:          # never sent in one answer anyway
+                out[index] = _CUT
+    out = tuple(out)
+    with _lock:
+        _reviews[key] = out
+        while len(_reviews) > _MAX_REVIEWS:
+            _reviews.popitem(last=False)
+    return out
+
+
+def branch_review(path, main, tip, detail=False):
+    """``(size, files)`` of a branch waiting to be merged, *tip* against its merge-base with *main*
+    (commit ids): ``size`` is ``{'files', 'additions', 'deletions'}`` (a binary file counts as a file
+    with no lines); ``files`` (only with *detail*) the first ``MAX_FILES`` in git's own order, each
+    ``{'path', 'additions', 'deletions'}`` and ``binary``, ``patch`` or ``patch_cut``. Either is None
+    when it isn't known."""
+    if not isinstance(main, str) or not isinstance(tip, str) or not _SHA.fullmatch(main) or not _SHA.fullmatch(tip):
+        return None, None
+    base = _merge_base(path, main, tip)
+    numbers = _numstat(path, base, tip) if base else None
+    if numbers is None:
+        return None, None
+    size = {'files': numbers['files'], 'additions': numbers['additions'], 'deletions': numbers['deletions']}
+    if not detail:
+        return size, None
+    patches = _patches(path, base, tip, numbers['listed']) or (None,) * len(numbers['listed'])
+    files = []
+    for (name, _, adds, dels, binary), patch in zip(numbers['listed'], patches):
+        file = {'path': name.decode('utf-8', 'replace'), 'additions': adds, 'deletions': dels}
+        if binary:
+            file['binary'] = True
+        elif patch is _CUT:
+            file['patch_cut'] = True
+        elif patch is not None:
+            file['patch'] = patch
+        files.append(file)
+    return size, files

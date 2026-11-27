@@ -1832,3 +1832,63 @@ def test_an_older_database_gains_the_new_columns(tmp_path):
     again = store(tmp_path)
     assert again.get(task["id"])["edited"] is False and again.get(task["id"])["offer"] is None
     assert again.rev() == before + 1     # a new shape: every app reads the whole list again
+
+
+# ---------------------------------------------------------------------------
+# 0.9.81, owner 2026-11-22: "I booked the flight and hotel." The bot offered to close the shared task; "You mark it
+# done" was refused, and the bot answered "HQ won't let me". Their typed word in any chat finishes their task.
+# ---------------------------------------------------------------------------
+
+def _wired_typed(tmp_path, typed):
+    s = store(tmp_path)
+    ctx = FakeCtx()
+    tasks.register_tools(ctx, lambda: s, lambda: "otto", lambda task, prof: None, lambda session: session in typed)
+    return s, ctx
+
+
+def test_when_they_say_mark_it_done_in_a_chat_the_bot_can_finish_a_shared_task(tmp_path):
+    s, ctx = _wired_typed(tmp_path, {"s_chat"})
+    task = s.create(together(steps=[{"title": "Find flights", "who": "bot"}, {"title": "Book it", "who": "me"}]),
+                    created_by="otto", source={})
+    offered = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "offer_done": "You said both are booked."},
+                                                   session_id="s_chat"))
+    assert offered["offer"]["kind"] == "done" and "status 'done'" in offered["offered"] and "asked" not in offered
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "done", "status_note": "Booked"},
+                                               session_id="s_chat"))
+    assert "error" not in out, out
+    assert out["status"] == "done" and out["asked"] is True and s.get(task["id"])["status"] == "done"
+    assert [e["text"] for e in out["log"] if e.get("kind") == "change"] == ["Marked done, as you said in the chat"]
+
+
+def test_their_own_task_too_but_only_the_finish_rides_on_their_word(tmp_path):
+    s, ctx = _wired_typed(tmp_path, {"s_chat"})
+    task = s.create(me(), created_by="you", source={})
+    for extra in ({"title": "New name"}, {"add_steps": [{"title": "More", "who": "bot"}]}, {"next_check": "friday 9am"}):
+        out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "done", **extra}, session_id="s_chat"))
+        assert "error" in out and s.get(task["id"])["status"] != "done", extra
+    for status in ("ready", "working", "needs_you"):   # only done
+        assert "error" in json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": status}, session_id="s_chat"))
+    out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "done"}, session_id="s_chat"))
+    assert out.get("status") == "done" and out["asked"] is True
+
+
+def test_a_turn_nobody_typed_still_cannot_finish_their_task_and_hears_what_to_do(tmp_path):
+    s, ctx = _wired_typed(tmp_path, {"s_chat"})
+    task = s.create(together(), created_by="otto", source={})
+    for session in ("s_job", ""):
+        out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "done"}, session_id=session))
+        assert out["error"] == tasks.NOT_YOURS_TO_FINISH and "offer_done" in out["error"]
+    assert s.get(task["id"])["status"] != "done"
+    (tmp_path / "plain").mkdir()
+    s2, ctx2, _ = wired(tmp_path / "plain")   # nothing says who typed: nobody asked
+    task2 = s2.create(together(), created_by="otto", source={})
+    assert "error" in json.loads(ctx2.tools["tasks_update"]({"id": task2["id"], "status": "done"}, session_id="s_chat"))
+
+
+def test_a_bots_own_task_finishes_as_before_and_says_nothing_of_being_asked(tmp_path):
+    s, ctx = _wired_typed(tmp_path, {"s_chat"})
+    task = s.create({"title": "Sort receipts", "who": "bot", "bot": "otto"}, created_by="otto", source={})
+    for session in ("s_chat", "s_job"):
+        out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "done"}, session_id=session))
+        assert "asked" not in out and (out.get("status") == "done" or "error" in out)
+    assert s.get(task["id"])["status"] == "done"

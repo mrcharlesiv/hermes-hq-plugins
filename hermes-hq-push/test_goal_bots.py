@@ -470,6 +470,23 @@ def test_the_goals_setting_is_a_bool_and_defaults_on(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Offers: the line beside the card asks (owner 2026-11-22: "I put … on a card" read as already done)
+# ---------------------------------------------------------------------------
+
+def test_the_line_beside_an_offer_asks_and_never_says_it_was_added(tmp_path):
+    w = Wired(tmp_path)
+    offered = w.call("goals_offer", {"kind": "goal", "title": "Grow a following", "tasks": [{"title": "Post the demo"}]},
+                     as_bot="herald")
+    note = offered["note"]
+    assert note == goals.OFFER_LINE and "nothing is added until they tap" in note and "question" in note
+    assert "never say you added, put" in note.lower()
+    assert "never say \"i added\" or \"i put\"" in goals.OFFER_SCHEMA["description"].lower()
+    rule = goals.GOALS_RULE
+    assert "waits for their tap" in rule and "never say you added it" in rule
+    assert "tasks_add (who 'bot')" in rule and "never add to a goal silently" in rule
+
+
+# ---------------------------------------------------------------------------
 # Offers: kind goal
 # ---------------------------------------------------------------------------
 
@@ -1154,7 +1171,7 @@ def test_the_manifest_lists_the_goals_tools_and_the_skill_is_there():
     manifest = (HERE / "plugin.yaml").read_text()
     for name in ("goals_list", "goals_offer", "goals_update", "goals_next_review"):
         assert name in manifest
-    assert 'version: "0.9.82"' in manifest and push.PLUGIN_VERSION == "0.9.82"
+    assert 'version: "0.9.86"' in manifest and push.PLUGIN_VERSION == "0.9.86"
     skill = (HERE / "skills" / "goal-page" / "SKILL.md").read_text()
     assert skill.startswith("---\nname: goal-page\n") and "stands" in skill and "summary" in skill
     for bot in ("otto", "herald", "ivy", "wren", "juno"):
@@ -1177,3 +1194,45 @@ def test_undo_takes_back_a_goal_the_offer_made_and_keeps_one_that_changed_since(
     w.store.update_goal(kept_id, w.store.get_goal(kept_id)["rev"], {"why": "For Sunday."})
     kept = goals.answer_offer(w.store, again["id"], "undo")
     assert w.store.get_goal(kept_id) is not None and kept_id in kept["offer"]["kept"]
+
+
+# ---------------------------------------------------------------------------
+# A task a bot offers carries what it needs (owner 2026-11-23: "it would be great if it was just there for me")
+# ---------------------------------------------------------------------------
+
+def test_an_offered_task_keeps_its_files_links_and_notes_once_accepted(tmp_path):
+    w = Wired(tmp_path)
+    goal = a_goal(w.store)
+    attached = [{"title": "Brand blueprint", "kind": "file", "ref": "/tmp/course/blueprint.pdf"},
+                {"title": "Lesson 2", "kind": "link", "ref": "https://course.example.com/lesson-2"},
+                {"title": "Three questions", "kind": "note", "ref": "- Who?\n- What problem?\n- One example"},
+                {"title": "", "ref": ""}]
+    offered = w.call("goals_offer", {"kind": "tasks", "goal": goal["id"], "tasks": [
+        {"title": "Work through the blueprint", "made": attached + [{"title": f"x{i}", "kind": "link",
+                                                                     "ref": f"https://e.com/{i}"} for i in range(9)]},
+        {"title": "Nothing to attach", "made": "not a list"}]})
+    card = next(o for o in w.store.shown_offers() if o["id"] == offered["id"])
+    first = card["tasks"][0]["made"]
+    assert len(first) == goals.OFFER_TASK_MADE_CAP and [m["kind"] for m in first[:3]] == ["file", "link", "note"]
+    assert "made" not in card["tasks"][1]
+    answer = goals.answer_offer(w.store, offered["id"], "accept")
+    task, bare = (w.store.get(i) for i in answer["offer"]["added"])
+    assert [(m["title"], m["kind"], m["ref"]) for m in task["made"][:3]] == [
+        ("Brand blueprint", "file", "/tmp/course/blueprint.pdf"), ("Lesson 2", "link", "https://course.example.com/lesson-2"),
+        ("Three questions", "note", "- Who?\n- What problem?\n- One example")]
+    assert all(m.get("id") for m in task["made"]) and bare["made"] == []
+    # The bot that added it can still attach more until they change it.
+    w.call("tasks_update", {"id": task["id"], "made": [{"title": "Lesson 3", "kind": "link", "ref": "https://e.com/3"}]})
+    assert w.store.get(task["id"])["made"][-1]["title"] == "Lesson 3"
+
+
+def test_a_task_made_from_fields_alone_never_carries_made(tmp_path):
+    s = store(tmp_path)
+    task = s.create({"title": "Buy stamps", "made": [{"title": "evil", "kind": "file", "ref": "/etc/passwd"}]},
+                    created_by="you", source={"kind": "app"})
+    assert task["made"] == []
+
+
+def test_the_offer_tool_tells_bots_to_attach_what_a_task_names():
+    assert "made" in goals.OFFER_TASK["properties"]
+    assert "never go looking" in goals.OFFER_SCHEMA["description"]
