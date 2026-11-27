@@ -350,7 +350,8 @@ def test_the_teaching_text_says_what_matters():
     order = shopping.ORDER_SCHEMA["description"]
     for words in ("last step of checkout", "exactly as that page says", "only for something the user asked",
                   "never press the store's final button", "[Hermes HQ order <id>: pay]", "exact id",
-                  "[Hermes HQ order <id>: cancel]", "call order_card again", "new card"):
+                  "[Hermes HQ order <id>: cancel]", "call order_card again", "new card",
+                  "without stopping to ask about what you already know", "The card is the one ask"):   # 0.9.82
         assert words in order, words
     for schema in (shopping.PRODUCTS_SCHEMA, shopping.ORDER_SCHEMA):
         assert set(schema["parameters"]["required"]) <= set(schema["parameters"]["properties"])

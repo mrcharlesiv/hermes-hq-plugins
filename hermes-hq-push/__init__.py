@@ -212,8 +212,12 @@ def pre_approval_request(**kwargs):
         job = bot_chat and _job_approval(kwargs, key)
         profile = _profile()
         kwargs = _in_its_chat(kwargs, profile)
+        # 0.9.82: a card fill to confirm (browser_vault's "vault-payment") and an MCP server's question or trust
+        # prompt ("mcp-elicitation/<server>", "mcp-trust/<server>") wait on the same timer as a command, so they
+        # alert too. They used to wait unseen until they timed out.
+        surfaces = push.CONFIRM_SURFACES + (("cli",) if job else ())
         item = push.approval_push(kwargs, list_gateway_approvals(key), push.data_dir(), profile, _sender(profile),
-                                  outside, answerable=serves, surfaces=("gateway", "cli") if job else ("gateway",))
+                                  outside, answerable=serves, surfaces=surfaces)
         if item is not None:
             push.remember_approval(_sent_approvals, kwargs, item)
             _dispatcher_for().submit(item)

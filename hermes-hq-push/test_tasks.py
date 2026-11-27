@@ -1606,6 +1606,17 @@ def test_the_runner_job_prompt_still_opens_the_way_the_app_knows(tmp_path):
     assert "scheduled job" in tasks.ADD_SCHEMA["description"]
 
 
+def test_the_rules_ask_once_and_say_when_a_wait_came_through():
+    """0.9.82: a bot asked about the address, then the total, then the card; and a check that found the payment
+    approved marked the task ready and ended without a word."""
+    assert "Ask once" in tasks.OWN_RULE and "never comes one detail at a time" in tasks.OWN_RULE
+    prep = tasks.PREP_JOB_PROMPT
+    for words in ("has now come through", "don't mark it ready and don't end quietly", "'needs_you'",
+                  "Finish it now", "Hold off"):
+        assert words in prep, words
+    assert "Never send, book, buy, pay, post or delete anything" in prep   # the check still finishes nothing itself
+
+
 # ---------------------------------------------------------------------------
 # 0.9.55: lists with a look and a keeper, offers, sources, the finished-task guard
 # ---------------------------------------------------------------------------
