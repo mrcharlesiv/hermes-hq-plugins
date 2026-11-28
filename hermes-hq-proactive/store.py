@@ -14,7 +14,7 @@ import uuid
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 try:
     from . import clock, policy
@@ -48,8 +48,14 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "allow_llm_in_sweep": True,
     "scan_recent_chats": True,
     "scan_lookback_hours": 72,
-    # 0.3.0: what is found goes to Tasks > Ideas (hermes-hq-push), where Add & Start acts on it.
-    # Off, or with that add-on missing or its Ideas tab off, finds stay on the Proactivity page.
+    # 0.4.0: where a find goes. "chat": the bot looks into it and messages the person in its own
+    # chat. "ideas": Tasks > Ideas (hermes-hq-push), where Add & Start acts on it. "page": it
+    # stays on the Proactivity page. A place that is not there falls back down that list.
+    "finds_go_to": "chat",
+    # In a chat message, may the bot look things up first (reading only)? Off: it only says what is open.
+    "chat_lookup": True,
+    "daily_message_budget": 3,
+    # 0.3.0's switch, kept so a saved "off" still means "keep finds on the page" (see get_settings).
     "ideas_inbox": True,
     "daily_offer_budget": 6,
     "daily_interrupt_budget": 2,
@@ -202,6 +208,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at DESC);
 _ADDED_COLUMNS = (
     ("offers", "idea_id", "TEXT"),
     ("offers", "delivered_to", "TEXT NOT NULL DEFAULT ''"),
+    # 0.4.0: when a find was handed to the bot's chat, and the hand-off it rode in.
+    ("offers", "said_at", "TEXT"),
+    ("offers", "chat_delivery_id", "TEXT"),
     ("loops", "resolved_by", "TEXT NOT NULL DEFAULT ''"),
     # 1 when the value was also written to config.yaml. Rows from 0.2.0 were, so they default to 1.
     ("settings", "mirrored", "INTEGER NOT NULL DEFAULT 1"),
@@ -280,8 +289,16 @@ def _sanitize_settings_patch(patch: Mapping[str, Any]) -> Dict[str, Any]:
             "allow_llm_in_sweep",
             "scan_recent_chats",
             "ideas_inbox",
+            "chat_lookup",
         ):
             clean[key] = bool(val)
+        elif key == "finds_go_to":
+            place = str(val or "").strip().lower()
+            if place not in policy.FIND_PLACES:
+                raise ValueError(f"finds_go_to must be one of {', '.join(policy.FIND_PLACES)}")
+            clean[key] = place
+        elif key == "daily_message_budget":
+            clean[key] = max(1, min(10, int(val)))
         elif key == "scan_lookback_hours":
             clean[key] = max(1, min(336, int(val)))
         elif key == "autonomy_mode":
@@ -326,7 +343,10 @@ _SETTING_WORDS = {
     "scan_recent_chats": "reading your recent chats",
     "scan_lookback_hours": "hours of chats read the first time",
     "ideas_inbox": "sending suggestions to Tasks › Ideas",
-    "daily_offer_budget": "most suggestions a day",
+    "finds_go_to": "what it does with a find",
+    "chat_lookup": "looking things up before it messages you",
+    "daily_message_budget": "most messages a day",
+    "daily_offer_budget": "most finds a day",
     "daily_interrupt_budget": "most Time-sensitive ones a day",
     "quiet_start": "quiet hours start",
     "quiet_end": "quiet hours end",
@@ -336,7 +356,8 @@ _SETTING_WORDS = {
     "focus_note": "what to watch for",
     "skip_note": "what to leave alone",
 }
-_MODE_WORDS = {"observe": "only keep track", "prep": "keep track and suggest", "full": "suggest and mark overdue ones"}
+_MODE_WORDS = {"observe": "only keep track", "prep": "keep track and speak up", "full": "speak up, overdue ones first"}
+_PLACE_WORDS = {"chat": "message you in the bot's chat", "ideas": "send it to Tasks › Ideas", "page": "keep it on the Proactivity page"}
 
 
 def _setting_words(key: str, value: Any) -> str:
@@ -346,6 +367,8 @@ def _setting_words(key: str, value: Any) -> str:
         return f"{name} {'on' if value else 'off'}"
     if key == "autonomy_mode":
         return f"{name}: {_MODE_WORDS.get(str(value), str(value))}"
+    if key == "finds_go_to":
+        return f"{name}: {_PLACE_WORDS.get(str(value), str(value))}"
     if key in ("focus_note", "skip_note"):
         return f"{name} {'set' if str(value).strip() else 'cleared'}"
     return f"{name} {value}"
@@ -453,17 +476,24 @@ class ProactiveStore:
                         if not int(row["mirrored"] or 0):
                             unmirrored.add(row["key"])
 
+        chosen = set()
         for k, v in db_vals.items():
             if k in DEFAULT_SETTINGS:
                 merged[k] = v
+                chosen.add(k)
         if self._sync_hermes_config:
             for k, v in _read_hermes_plugin_config().items():
                 if k not in DEFAULT_SETTINGS or k in unmirrored:
                     continue
                 try:
                     merged.update(_sanitize_settings_patch({k: v}))
+                    chosen.add(k)
                 except (ValueError, TypeError):
                     pass
+        # Someone who turned 0.3.0's "send to Ideas" off asked for finds to stay on the page.
+        # That still holds until they pick a place themselves.
+        if "finds_go_to" not in chosen and merged.get("ideas_inbox") is False:
+            merged["finds_go_to"] = "page"
         return merged
 
     def is_enabled(self) -> bool:
@@ -1081,10 +1111,13 @@ class ProactiveStore:
         now: Optional[datetime] = None,
         actor: str = "user",
         loop_outcome: Optional[str] = None,
+        keep_loop: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Record the person's answer and adapt the category's bar. Accepting closes the loop the
         suggestion was about (*loop_outcome* names why: ``task`` when it became a task);
-        ``loop_outcome="idea_dismissed"`` on a dismiss drops it, so it stops coming back."""
+        ``loop_outcome="idea_dismissed"`` on a dismiss drops it, so it stops coming back.
+        *keep_loop* leaves the loop as it is: a chat message that was welcome says nothing about
+        whether the thing itself is done."""
         action_map = {
             "accept": "accepted",
             "accepted": "accepted",
@@ -1173,7 +1206,9 @@ class ProactiveStore:
                         "UPDATE loops SET status='snoozed', snoozed_until=?, updated_at=? WHERE id=? AND status='open'",
                         (snoozed_until, now_iso, offer["loop_id"]),
                     )
-                if offer.get("loop_id") and status in ("accepted", "edited_accepted"):
+                if keep_loop:
+                    pass
+                elif offer.get("loop_id") and status in ("accepted", "edited_accepted"):
                     conn.execute(
                         "UPDATE loops SET status='resolved', resolved_at=?, resolved_by=?, snoozed_until=NULL, "
                         "updated_at=? WHERE id=? AND status IN ('open', 'snoozed')",
@@ -1259,6 +1294,87 @@ class ProactiveStore:
                 rows = conn.execute(
                     "SELECT o.* FROM offers o JOIN loops l ON l.id = o.loop_id "
                     "WHERE o.status IN ('pending', 'snoozed') AND l.status IN ('resolved', 'dropped') LIMIT 200"
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+    # ── Finds said in the bot's chat ───────────────────────────────────────────
+
+    def list_offers_waiting_for_chat(self) -> List[Dict[str, Any]]:
+        """Finds meant for the bot's chat that have not been said yet: the pressing ones first,
+        then the oldest."""
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return []
+            with closing(conn):
+                rows = conn.execute(
+                    "SELECT * FROM offers WHERE status='pending' AND delivered_to='chat' AND said_at IS NULL "
+                    "AND tier >= 1 ORDER BY tier DESC, created_at ASC LIMIT 60"
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+    def mark_offers_said(
+        self, offer_ids: Iterable[str], *, delivery_id: str, keep_hours: float = 72.0, now: Optional[datetime] = None
+    ) -> None:
+        """These went to the bot's chat in one message. Each waits *keep_hours* for an answer, and
+        the thing it was about is left alone for at least that long."""
+        now_dt = now or policy.utc_now()
+        now_iso = policy.iso_utc(now_dt)
+        until = policy.iso_utc(now_dt + timedelta(hours=max(1.0, float(keep_hours))))
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return
+            with closing(conn):
+                for offer_id in offer_ids:
+                    conn.execute(
+                        "UPDATE offers SET said_at=?, chat_delivery_id=?, expires_at=?, "
+                        "cooldown_until=CASE WHEN cooldown_until IS NULL OR cooldown_until < ? THEN ? ELSE cooldown_until END "
+                        "WHERE id=?",
+                        (now_iso, (delivery_id or "")[:80], until, until, until, str(offer_id)),
+                    )
+                conn.commit()
+
+    def count_chat_messages(self, *, hours: int = 24, now: Optional[datetime] = None) -> int:
+        """Messages the plugin had the bot write in its chat in the last *hours* (one can carry several finds)."""
+        cutoff = policy.iso_utc((now or policy.utc_now()) - timedelta(hours=hours))
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return 0
+            with closing(conn):
+                row = conn.execute(
+                    "SELECT COUNT(DISTINCT chat_delivery_id) AS n FROM offers WHERE said_at IS NOT NULL AND said_at >= ?",
+                    (cutoff,),
+                ).fetchone()
+                return int(row["n"]) if row else 0
+
+    def times_said(self, loop_id: str) -> int:
+        """How many times this open item has already been brought up in the chat."""
+        if not loop_id:
+            return 0
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return 0
+            with closing(conn):
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM offers WHERE loop_id=? AND said_at IS NOT NULL", (str(loop_id),)
+                ).fetchone()
+                return int(row["n"]) if row else 0
+
+    def list_offers_said(self, *, hours: int = 48, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """Finds said in the chat in the last *hours* that nobody has answered yet."""
+        cutoff = policy.iso_utc((now or policy.utc_now()) - timedelta(hours=hours))
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return []
+            with closing(conn):
+                rows = conn.execute(
+                    "SELECT * FROM offers WHERE status='pending' AND said_at IS NOT NULL AND said_at >= ? "
+                    "ORDER BY said_at DESC LIMIT 12",
+                    (cutoff,),
                 ).fetchall()
                 return [dict(r) for r in rows]
 
@@ -1607,6 +1723,8 @@ class ProactiveStore:
                 "offers_limit_24h": int(settings["daily_offer_budget"]),
                 "interrupts_used_24h": interrupts_24h,
                 "interrupts_limit_24h": int(settings["daily_interrupt_budget"]),
+                "messages_used_24h": self.count_chat_messages(hours=24),
+                "messages_limit_24h": int(settings["daily_message_budget"]),
             },
             "counts": {
                 "pending_offers": pending_offers,

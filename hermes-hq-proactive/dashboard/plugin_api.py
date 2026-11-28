@@ -73,6 +73,7 @@ def _sweep():
     _sibling("hermes_hq_proactive_origin", "origin.py")
     _sibling("hermes_hq_proactive_session_scan", "session_scan.py")
     _inbox_mod()
+    _sibling("hermes_hq_proactive_chat", "chat.py")
     return _sibling("hermes_hq_proactive_sweep", "sweep.py")
 
 
@@ -104,10 +105,16 @@ def _inbox():
     return _inbox_mod().Inbox(_bot())
 
 
+def _door():
+    """This bot's own chat (the page is opened per bot, so the home is asked for per request)."""
+    _store_mod()
+    return _sibling("hermes_hq_proactive_chat", "chat.py").Door(_brief_job().bot_home())
+
+
 def _where(store) -> Dict[str, Any]:
     """Where finds are going right now, for the page."""
     mod = _inbox_mod()
-    return mod.describe(store, _inbox())
+    return mod.describe(store, _inbox(), _door())
 
 
 def _due(raw: Optional[str]) -> Optional[str]:
@@ -161,6 +168,9 @@ class SettingsPatch(BaseModel):
     skip_note: Optional[str] = None
     disabled_categories: Optional[List[str]] = None
     ideas_inbox: Optional[bool] = None
+    finds_go_to: Optional[str] = None
+    chat_lookup: Optional[bool] = None
+    daily_message_budget: Optional[int] = None
 
 
 class OfferRespondBody(BaseModel):
@@ -241,8 +251,16 @@ def patch_settings(body: SettingsPatch) -> Dict[str, Any]:
 @router.post("/offers/{offer_id}/respond")
 def respond_offer(offer_id: str, body: OfferRespondBody) -> Dict[str, Any]:
     st = _store()
+    # An answer to something the bot said in its chat is about the message. "It helped" says
+    # nothing about whether the thing itself is done, so the open item is left as it is. "Not
+    # helpful" means do not bring it up again, the same as the bot's own proactive_feedback.
+    said = bool((st.get_offer(offer_id) or {}).get("said_at"))
+    unwanted = said and body.action.strip().lower() in ("dismiss", "dismissed")
     try:
-        result = st.respond_to_offer(offer_id, body.action, snooze_hours=body.snooze_hours)
+        result = st.respond_to_offer(
+            offer_id, body.action, snooze_hours=body.snooze_hours,
+            keep_loop=said and not unwanted, loop_outcome="not_wanted" if unwanted else None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
@@ -372,6 +390,7 @@ def _run_check(store, force_brief: bool, key: str) -> None:
             force_brief=force_brief,
             trigger="manual",
             inbox=_inbox(),
+            door=_door(),
         )
         result.pop("brief", None)   # the page reads the brief from the overview
     except Exception as exc:   # report it on the page instead of losing it in a thread

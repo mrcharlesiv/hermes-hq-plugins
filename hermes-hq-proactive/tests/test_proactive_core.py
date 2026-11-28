@@ -1,4 +1,4 @@
-"""Tests for hermes-hq-proactive (Beta) 0.3.0.
+"""Tests for hermes-hq-proactive (Beta) 0.4.0.
 
 Each section is one promise the plugin makes. The names, places and figures are made up.
 """
@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -43,11 +44,19 @@ radar = pkg.radar
 sweep = pkg.sweep
 origin = pkg.origin
 inbox = pkg.inbox
+chat = pkg.chat
 brief_job = pkg.brief_job
 session_scan = pkg.session_scan
 ProactiveStore = pkg.ProactiveStore
 
 CHICAGO = ZoneInfo("America/Chicago")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_bot_chat(monkeypatch):
+    """No test may reach a real bot's chat. Hermes's door to it is taken away for every test;
+    the ones about it pass a stand-in (``_FakeDoor``) instead."""
+    monkeypatch.setitem(sys.modules, "tools.bot_live_delivery", None)
 NOW_UTC = datetime(2026, 3, 4, 20, 0, tzinfo=timezone.utc)     # a Wednesday, 2 pm in Chicago
 NOW_LOCAL = NOW_UTC.astimezone(CHICAGO)
 
@@ -292,7 +301,7 @@ def test_off_by_default_does_nothing_at_all(tmp_path):
     ctx = _FakeCtx(tmp_path / "p1")
     pkg.register(ctx)
 
-    assert len(ctx.tools) == 6
+    assert len(ctx.tools) == 7
     for spec in ctx.tools.values():
         assert spec["check_fn"]() is False
         res = json.loads(spec["handler"]({"title": "Test", "summary": "Test"}))
@@ -867,7 +876,8 @@ def test_a_find_goes_to_ideas_and_costs_no_draft(tmp_path):
     assert idea["who"] == "together" and idea["why"].startswith("Due ") and " h." not in idea["why"]
     (offer,) = st.list_offers(status="pending")
     assert offer["delivered_to"] == "ideas" and offer["idea_id"] == idea["id"] and offer["loop_id"] == loop["id"]
-    assert inbox.describe(st, box) == {"state": "ok", "to_ideas": True, "note": inbox.STATES["ok"]}
+    assert inbox.describe(st, box) == {"goes_to": "ideas", "state": "ok", "to_chat": False, "to_ideas": True,
+                                       "note": inbox.STATES["ok"]}
 
 
 def test_adding_an_idea_accepts_the_suggestion_and_closes_the_item(tmp_path):
@@ -1010,6 +1020,339 @@ def test_the_real_ideas_tab_takes_a_find_and_reports_back(tmp_path):
     mods["hermes_hq_ideas"].add(tasks_store, idea["id"])
     assert inbox.sync(st, box)["added"] == 1
     assert st.get_loop(loop["id"])["resolved_by"] == "task"
+
+
+# ── 8b. The bot's own chat, where finds are said ───────────────────────────────
+
+class _FakeDoor:
+    """Hermes's door to a bot's own chat, with the two calls ``chat.Door`` makes."""
+
+    def __init__(self, *, running: bool = True, takes: bool = True, session_id: str = "botchat"):
+        self.running, self.takes, self.session_id = running, takes, session_id
+        self.turns: Dict[str, str] = {}   # delivery id -> the turn handed over
+        self.lost_reply = False           # Hermes takes the turn, then the answer to us is lost
+        self.failed: set = set()          # delivery ids the bot could not answer
+        self.fail_next = False
+
+    def find_canonical_live_owner(self, home):
+        if not self.running:
+            raise ValueError("profile authority is not ready")
+        return {"profile_home": str(home), "session_id": self.session_id, "lease_id": "lease",
+                "live_session_id": self.session_id, "canonical": True}
+
+    def deliver_to_live_owner(self, home, owner, message, *, delivery_id=None):
+        if not self.takes:
+            raise RuntimeError("admission_conflict")
+        if self.fail_next:
+            self.fail_next = False
+            self.failed.add(delivery_id)
+        if delivery_id in self.failed:
+            return {"status": "failed", "admission_id": "adm_" + delivery_id[:6], "delivery_id": delivery_id}
+        if self.turns.setdefault(delivery_id, message) != message:   # the same id twice is one turn
+            raise RuntimeError("admission_conflict")
+        if self.lost_reply:
+            raise TimeoutError("no answer from the gateway")
+        return {"status": "queued", "admission_id": "adm_" + delivery_id[:6], "delivery_id": delivery_id,
+                "message": self.turns[delivery_id]}
+
+
+def _door(tmp_path: Path, **kw):
+    hermes = _FakeDoor(**kw)
+    return chat.Door(tmp_path / "home", transport=hermes), hermes
+
+
+def _check(st, door, box=None, *, at: datetime = NOW_UTC, trigger: str = "idle_task", llm=None) -> Dict[str, Any]:
+    return sweep.run_signal_sweep(st, llm=llm, inbox=box, door=door, trigger=trigger, now_utc=at,
+                                  now_local=at.astimezone(CHICAGO))
+
+
+def test_a_find_is_looked_into_and_said_in_the_bots_chat(tmp_path):
+    st = _on(tmp_path, scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    box, ideas = _fake_inbox()
+    lease = _due_soon(st, "Send the signed lease back", detail="The landlord wants it by email.")
+    _due_soon(st, "Renew the parking permit")
+    llm = _FakeLlm()
+    res = _check(st, door, box, llm=llm)
+
+    # Both finds ride in ONE turn handed to the bot; nothing goes to Ideas and no draft is bought.
+    assert res["created_offers"] == 2 and res["said_in_chat"] == 2 and res["sent_to_ideas"] == 0
+    assert ideas.rows == {} and llm.calls == []
+    (turn,) = hermes.turns.values()
+    assert "asked the bot to message you about 2" in res["summary"]
+    assert inbox.describe(st, box, door) == {"goes_to": "chat", "state": "chat", "to_chat": True, "to_ideas": False,
+                                             "note": inbox.STATES["chat"]}
+
+    # The first line is what Hermes, the app and the push add-on know a job's hand-off by: one
+    # bracketed line that says nobody typed it. The app leaves that line out and shows the rest.
+    head, _, body = turn.partition("\n")
+    assert head.startswith('[Cronjob "Proactivity" output') and head.endswith("]") and head.count("]") == 1
+    assert "not the user" in head[:400].lower() and chat.is_hand_off(turn)
+    # (The pattern the Hermes HQ app reads a job's hand-off with: the name is the card's byline.)
+    assert re.match(r'^\[Cronjob "([^"\n]{1,160})" output\b[^\]\n]*\][ \t]*(?:\n|$)', turn).group(1) == "Proactivity"
+    assert origin.is_relayed_notice(turn) and session_scan._is_relayed_notice(turn)
+    # The bot is told to read only, to ask before anything else, and which items these are.
+    assert "reading only" in head and "Do not book, buy, pay, send" in head and lease["id"] in head
+    assert "Looking into 2 things you left open." in body
+    assert "1. " in body and "Send the signed lease back (due Mar 4)" in body and "Renew the parking permit" in body
+    assert "From the chat: The landlord wants it by email." in body and lease["id"] not in body
+
+    # They wait for an answer, so the same item is not found again an hour later.
+    offers = st.list_offers(status="pending")
+    assert {o["delivered_to"] for o in offers} == {"chat"} and all(o["said_at"] for o in offers)
+    assert len({o["chat_delivery_id"] for o in offers}) == 1
+    again = _check(st, door, box, at=NOW_UTC + timedelta(hours=1))
+    assert again["created_offers"] == 0 and again["said_in_chat"] == 0 and len(hermes.turns) == 1
+    assert any(row["event_type"] == "said_in_chat" for row in st.list_audit(limit=20))
+
+
+def test_one_find_reads_as_one_thing_and_lookup_can_be_turned_off(tmp_path):
+    st = _on(tmp_path, scan_recent_chats=False, chat_lookup=False)
+    door, hermes = _door(tmp_path)
+    _due_soon(st, "Call the dentist about Thursday")
+    _check(st, door)
+    (turn,) = hermes.turns.values()
+    head, _, body = turn.partition("\n")
+    assert "Do not use tools" in head and "reading only" not in head and "Item ids" not in head
+    assert "Something you left open." in body and "1. " not in body
+    assert inbox.describe(st, None, door)["state"] == "chat_tell"
+
+
+def test_messages_wait_for_quiet_hours_the_daily_limit_and_a_chat_in_full_flow(tmp_path):
+    night = datetime(2026, 3, 5, 5, 0, tzinfo=timezone.utc)       # 11 pm in Chicago
+    morning = datetime(2026, 3, 5, 15, 0, tzinfo=timezone.utc)    # 9 am
+
+    # Quiet hours: found, kept, said after them. A check the person asked for goes out anyway.
+    st = _on(tmp_path / "quiet", scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    st.add_loop(kind="commitment", title="Send the signed lease back", due_at=policy.iso_utc(night + timedelta(hours=5)))
+    held = _check(st, door, at=night)
+    assert held["said_in_chat"] == 0 and held["chat_held"] == "quiet_hours" and held["chat_waiting"] == 1
+    assert hermes.turns == {} and "for after quiet hours" in held["summary"]
+    assert _check(st, door, at=morning)["said_in_chat"] == 1 and len(hermes.turns) == 1
+
+    st = _on(tmp_path / "asked", scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    st.add_loop(kind="commitment", title="Send the signed lease back", due_at=policy.iso_utc(night + timedelta(hours=5)))
+    assert _check(st, door, at=night, trigger="manual")["said_in_chat"] == 1
+
+    # The limit is on messages, and holds even for a check the person asked for.
+    st = _on(tmp_path / "limit", scan_recent_chats=False, daily_message_budget=1)
+    door, hermes = _door(tmp_path)
+    _due_soon(st, "Send the signed lease back")
+    assert _check(st, door)["said_in_chat"] == 1
+    _due_soon(st, "Renew the parking permit")
+    later = _check(st, door, at=NOW_UTC + timedelta(hours=1), trigger="manual")
+    assert later["said_in_chat"] == 0 and later["chat_held"] == "limit" and len(hermes.turns) == 1
+    assert _check(st, door, at=NOW_UTC + timedelta(hours=25))["said_in_chat"] == 1
+
+    # The person is talking to the bot right now: it waits for the next check.
+    db = tmp_path / "state.db"
+    conn = _state_db(db)
+    _chat(conn, "botchat", [("user", "What is for dinner?", NOW_UTC - timedelta(minutes=2))], title="Bot Chat")
+    st = ProactiveStore(data_dir=tmp_path / "busy" / "data", sync_hermes_config=False, state_db_path=db)
+    st.update_settings({"enabled": True, "scan_recent_chats": False})
+    door, hermes = _door(tmp_path)
+    _due_soon(st, "Send the signed lease back")
+    busy = _check(st, door)
+    assert busy["said_in_chat"] == 0 and busy["chat_held"] == "busy" and hermes.turns == {}
+    assert _check(st, door, at=NOW_UTC + timedelta(minutes=1), trigger="manual")["chat_held"] == "busy"
+    assert _check(st, door, at=NOW_UTC + timedelta(minutes=30))["said_in_chat"] == 1
+
+
+def test_a_message_carries_three_finds_at_most_and_a_hand_off_hermes_refuses_is_tried_again(tmp_path):
+    st = _on(tmp_path, scan_recent_chats=False)
+    door, hermes = _door(tmp_path, takes=False)
+    for title in ("Send the signed lease back", "Renew the parking permit", "Call the dentist about Thursday",
+                  "Book the car in for its service"):
+        _due_soon(st, title)
+    first = _check(st, door)
+    assert first["created_offers"] == 4 and first["said_in_chat"] == 0 and first["chat_held"] == "refused"
+    assert all(o["said_at"] is None for o in st.list_offers(status="pending"))
+
+    hermes.takes = True
+    second = _check(st, door, at=NOW_UTC + timedelta(hours=1))
+    assert second["said_in_chat"] == 3 and second["chat_waiting"] == 1
+    (turn,) = hermes.turns.values()
+    assert "Looking into 3 things" in turn and "4. " not in turn
+    third = _check(st, door, at=NOW_UTC + timedelta(hours=2))
+    assert third["said_in_chat"] == 1 and len(hermes.turns) == 2
+
+    # The bot was not running at all: the same, with its own reason.
+    st2 = _on(tmp_path / "down", scan_recent_chats=False)
+    door2, hermes2 = _door(tmp_path, running=False)
+    _due_soon(st2, "Send the signed lease back")
+    assert _check(st2, door2)["chat_held"] == "not_running"
+
+
+def test_the_same_item_is_brought_up_twice_at_most(tmp_path):
+    st = _on(tmp_path, scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    loop = _due_soon(st, "Send the signed lease back")
+    assert _check(st, door)["said_in_chat"] == 1
+    # Nobody answers; days later it is past its date and comes up once more.
+    day4 = NOW_UTC + timedelta(days=4)
+    assert _check(st, door, at=day4)["said_in_chat"] == 1 and st.times_said(loop["id"]) == 2
+    # A third time would be nagging: it stays on the page and in the brief.
+    day8 = NOW_UTC + timedelta(days=8)
+    res = _check(st, door, at=day8)
+    assert res["said_in_chat"] == 0 and len(hermes.turns) == 2
+    assert [o["delivered_to"] for o in st.list_offers(status="pending")] == ["page"]
+
+
+def test_a_second_mention_is_a_new_message_even_in_the_same_words(tmp_path):
+    st = _on(tmp_path, scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    # Already past its date, so the find reads the same both times, word for word.
+    loop = st.add_loop(kind="commitment", title="Send the signed lease back",
+                       due_at=policy.iso_utc(NOW_UTC - timedelta(days=2)))[0]
+    assert _check(st, door)["said_in_chat"] == 1
+    assert _check(st, door, at=NOW_UTC + timedelta(days=4))["said_in_chat"] == 1
+    first, second = hermes.turns.values()
+    assert first == second and len(hermes.turns) == 2 and st.times_said(loop["id"]) == 2
+
+
+def test_a_hand_off_in_doubt_goes_again_as_it_was_and_a_failed_one_is_not_counted(tmp_path):
+    # Hermes took the turn but its answer to us was lost. A new find turns up before the next
+    # check: the first one still goes again as it was, so the bot gets it once, not twice.
+    st = _on(tmp_path / "doubt", scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    hermes.lost_reply = True
+    _due_soon(st, "Send the signed lease back")
+    assert _check(st, door)["chat_held"] == "refused" and len(hermes.turns) == 1
+    hermes.lost_reply = False
+    _due_soon(st, "Renew the parking permit")
+    again = _check(st, door, at=NOW_UTC + timedelta(hours=1))
+    assert again["said_in_chat"] == 1 and again["chat_waiting"] == 1 and len(hermes.turns) == 1
+    last = _check(st, door, at=NOW_UTC + timedelta(hours=2))
+    assert last["said_in_chat"] == 1 and len(hermes.turns) == 2
+    assert sum("Send the signed lease back" in turn for turn in hermes.turns.values()) == 1
+
+    # The bot could not answer the turn: nothing was said, so it is not counted and goes again
+    # as a new message (asking again under the spent id would only return the same failure).
+    st = _on(tmp_path / "failed", scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    hermes.fail_next = True
+    loop = _due_soon(st, "Send the signed lease back")
+    failed = _check(st, door)
+    assert failed["said_in_chat"] == 0 and failed["chat_held"] == "failed" and st.times_said(loop["id"]) == 0
+    assert st.count_chat_messages(hours=24, now=NOW_UTC) == 0
+    assert _check(st, door, at=NOW_UTC + timedelta(hours=1))["said_in_chat"] == 1 and len(hermes.turns) == 1
+
+
+def test_finds_waiting_for_the_chat_follow_a_change_of_setting(tmp_path):
+    night = datetime(2026, 3, 5, 5, 0, tzinfo=timezone.utc)       # 11 pm in Chicago
+    morning = datetime(2026, 3, 5, 15, 0, tzinfo=timezone.utc)
+    for place in ("page", "ideas"):
+        st = _on(tmp_path / place, scan_recent_chats=False)
+        door, hermes = _door(tmp_path)
+        box, ideas = _fake_inbox()
+        st.add_loop(kind="commitment", title="Send the signed lease back",
+                    due_at=policy.iso_utc(night + timedelta(hours=5)))
+        assert _check(st, door, box, at=night)["chat_held"] == "quiet_hours"
+        # Overnight the person picks another place for finds. The one held back goes there.
+        st.update_settings({"finds_go_to": place})
+        res = _check(st, door, box, at=morning)
+        assert res["said_in_chat"] == 0 and hermes.turns == {}, place
+        assert [o["delivered_to"] for o in st.list_offers(status="pending")] == [place], place
+        assert len(ideas.rows) == (1 if place == "ideas" else 0), place
+
+
+def test_the_turn_handed_to_the_bot_only_reads(tmp_path):
+    ctx = _FakeCtx(tmp_path / "p")
+    pkg.register(ctx)
+    store = ProactiveStore(data_dir=tmp_path / "p", sync_hermes_config=False)
+    store.update_settings({"enabled": True})
+    pre_llm, pre_tool = ctx.hooks["pre_llm_call"][0], ctx.hooks["pre_tool_call"][0]
+    turn = chat.hand_off_text([{"title": "Send the signed lease back", "summary": "Due today."}], {})
+
+    # Our hand-off gets no private note of its own, and its tool calls are kept to reading.
+    assert pre_llm(user_message=turn, session_id="botchat", turn_id="t1", platform="desktop") is None
+    for blocked in ("write_file", "terminal", "send_message", "message_agent", "delegate_task", "gmail_send_email",
+                    "stripe_pay_invoice", "calendar_delete_event", "schedule_cronjob"):
+        res = pre_tool(tool_name=blocked, args={}, session_id="botchat", turn_id="t1")
+        assert isinstance(res, dict) and res["action"] == "block" and "look-up" in res["message"], blocked
+    for allowed in ("web_search", "web_extract", "read_file", "session_search", "proactive_loop_resolve",
+                    "proactive_loop_list"):
+        assert pre_tool(tool_name=allowed, args={}, session_id="botchat", turn_id="t1") is None, allowed
+    # It may not make new finds out of its own look-up: they would come back as the next message.
+    for own in ("proactive_offer", "proactive_loop_track", "proactive_watch_add"):
+        assert pre_tool(tool_name=own, args={}, session_id="botchat", turn_id="t1")["action"] == "block", own
+    # Hermes can give a long chat a new id in the middle of a turn. The turn is still ours.
+    assert pre_tool(tool_name="write_file", args={}, session_id="botchat-shortened", turn_id="t1")["action"] == "block"
+    # Another chat is none of its business, and neither is this chat once the person types.
+    assert pre_tool(tool_name="write_file", args={}, session_id="elsewhere", turn_id="t9") is None
+    assert pre_tool(tool_name="proactive_offer", args={}, session_id="elsewhere", turn_id="t9") is None
+    pre_llm(user_message="Thanks. Go ahead and email it.", session_id="botchat", turn_id="t2", platform="desktop")
+    assert pre_tool(tool_name="gmail_send_email", args={}, session_id="botchat", turn_id="t2") is None
+
+
+def test_how_the_person_took_it_is_learned_from_the_chat(tmp_path):
+    ctx = _FakeCtx(tmp_path / "p")
+    pkg.register(ctx)
+    store = ProactiveStore(data_dir=tmp_path / "p", sync_hermes_config=False)
+    store.update_settings({"enabled": True, "scan_recent_chats": False})
+    door, hermes = _door(tmp_path)
+    lease = _due_soon(store, "Send the signed lease back")
+    permit = _due_soon(store, "Renew the parking permit")
+    _check(store, door)
+    said = {o["loop_id"]: o for o in store.list_offers_said(hours=48, now=NOW_UTC + timedelta(hours=1))}
+    assert set(said) == {lease["id"], permit["id"]}
+
+    # In the person's next message the bot is told what it brought up, with the ids to answer by.
+    note = radar.build_pre_llm_context(
+        settings=store.get_settings(), user_message="Thanks, that was useful.", open_loops=[],
+        pending_offers=store.list_offers(status="pending"), calibration_rows=[], said_offers=list(said.values()),
+    )
+    assert "proactive_feedback" in note and said[lease["id"]]["id"] in note and "Already suggested" not in note
+
+    feedback = ctx.tools["proactive_feedback"]["handler"]
+    ok = json.loads(feedback({"offer_id": said[lease["id"]]["id"], "verdict": "helpful"}))
+    assert ok == {"ok": True, "recorded": "helpful"}
+    # Welcome is about the message: the item itself stays open until it is done.
+    assert store.get_offer(said[lease["id"]]["id"])["status"] == "accepted"
+    assert store.get_loop(lease["id"])["status"] == "open"
+    assert store.get_calibration(said[lease["id"]]["category"])["accepted"] == 1
+
+    no = json.loads(feedback({"offer_id": said[permit["id"]]["id"], "verdict": "not_wanted"}))
+    assert no["recorded"] == "not_wanted" and store.get_offer(said[permit["id"]]["id"])["status"] == "dismissed"
+    assert store.get_loop(permit["id"])["status"] == "dropped"   # it stops coming back
+
+    assert json.loads(feedback({"offer_id": said[permit["id"]]["id"], "verdict": "helpful"}))["note"] == "Already recorded."
+    assert json.loads(feedback({"offer_id": "of_nothing", "verdict": "helpful"}))["ok"] is False
+    assert json.loads(feedback({"offer_id": said[lease["id"]]["id"], "verdict": "meh"}))["ok"] is False
+
+
+def test_where_a_find_goes_is_the_persons_pick_with_a_fallback(tmp_path):
+    box, ideas = _fake_inbox()
+    door, hermes = _door(tmp_path)
+    no_door = chat.Door(tmp_path / "home")          # a Hermes without the door (it is taken away in tests)
+    assert no_door.state() == "unavailable" and no_door.say("x") == {"said": False, "why": "unavailable"}
+
+    for label, settings, use_door, use_box, goes_to in (
+        ("chat by default", {}, door, box, "chat"),
+        ("ideas picked", {"finds_go_to": "ideas"}, door, box, "ideas"),
+        ("page picked", {"finds_go_to": "page"}, door, box, "page"),
+        ("no door, so ideas", {}, no_door, box, "ideas"),
+        ("no door and no ideas, so the page", {}, no_door, None, "page"),
+        ("0.3.0's switch was off, so the page", {"ideas_inbox": False}, door, box, "page"),
+        ("a pick made since wins over that switch", {"ideas_inbox": False, "finds_go_to": "chat"}, door, box, "chat"),
+    ):
+        st = _on(tmp_path / label.replace(" ", "_").replace(",", "").replace("'", ""), scan_recent_chats=False, **settings)
+        where = inbox.describe(st, use_box, use_door)
+        assert where["goes_to"] == goes_to, label
+        _due_soon(st, "Send the signed lease back " + label)
+        _check(st, use_door, use_box)
+        (offer,) = st.list_offers(status="pending")
+        assert offer["delivered_to"] == goes_to, label
+    assert "cannot post to the bot's chat" in inbox.describe(_on(tmp_path / "said", scan_recent_chats=False), box, no_door)["note"]
+
+    st = _on(tmp_path / "checked")
+    with pytest.raises(ValueError):
+        st.update_settings({"finds_go_to": "carrier pigeon"})
+    assert st.update_settings({"daily_message_budget": 0})["daily_message_budget"] == 1
+    st.update_settings({"finds_go_to": "ideas"})
+    assert any("what it does with a find: send it to Tasks › Ideas" in row["summary"] for row in st.list_audit(limit=5))
 
 
 # ── 9. The morning message ─────────────────────────────────────────────────────
@@ -1183,6 +1526,18 @@ def test_the_pages_routes_end_to_end(tmp_path, monkeypatch):
     assert gone.status_code == 200 and gone.json()["offer"]["status"] == "dismissed"
     assert ideas.rows[in_ideas[0]["idea_id"]]["state"] == "dismissed"
 
+    # Answering, on the page, something the bot said in its chat: "It Helped" leaves the item
+    # open (it is about the message); "Not Helpful" means do not bring it up again.
+    for action, loop_status in (("accept", "open"), ("dismiss", "dropped")):
+        item = store.add_loop(kind="commitment", title=f"Renew the parking permit ({action})")[0]
+        find = store.create_offer(category="next_step", title=f"Parking permit ({action})", summary="It runs out soon.",
+                                  tier=1, confidence=0.95, loop_id=item["id"], trigger="test")
+        assert find["ok"], find
+        store.mark_offer_delivered(find["offer"]["id"], delivered_to="chat")
+        store.mark_offers_said([find["offer"]["id"]], delivery_id="ab" * 32)
+        assert client.post(f"/api/offers/{find['offer']['id']}/respond", json={"action": action}).status_code == 200
+        assert store.get_loop(item["id"])["status"] == loop_status, action
+
     closed = client.patch(f"/api/loops/{loop_id}", json={"status": "resolved"}).json()["loop"]
     assert closed["status"] == "resolved" and closed["resolved_by"] == "user"
     assert client.patch(f"/api/loops/{loop_id}", json={"status": "open"}).json()["loop"]["status"] == "open"
@@ -1221,7 +1576,8 @@ def test_manifest_settings_and_scanner_with_real_hermes():
     by_key = {f["key"]: f for f in plugin_settings_fields("hermes-hq-proactive", PLUGIN_DIR)}
     assert by_key["enabled"]["type"] == "boolean"
     assert by_key["autonomy_mode"]["choices"] == ["observe", "prep", "full"]
-    for key in ("scan_recent_chats", "scan_lookback_hours", "ideas_inbox", "daily_brief_enabled"):
+    for key in ("scan_recent_chats", "scan_lookback_hours", "finds_go_to", "chat_lookup", "daily_message_budget",
+                "ideas_inbox", "daily_brief_enabled"):
         assert key in by_key, key
     # Every setting the plugin keeps is one Hermes's own settings screen can show.
     store_mod = sys.modules[ProactiveStore.__module__]

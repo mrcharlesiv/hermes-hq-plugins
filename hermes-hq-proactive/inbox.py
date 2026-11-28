@@ -1,9 +1,10 @@
-"""Where a find goes: Tasks > Ideas in the Hermes HQ app (hermes-hq-proactive 0.3.0).
+"""Where a find goes, and the Tasks > Ideas hand-off (hermes-hq-proactive 0.3.0, 0.4.0).
 
-0.2.0 kept everything it found on its own page, where Approve only recorded a tap. The app
-already has the right place: the Ideas tab of Tasks (the hermes-hq-push add-on), where Add puts
-a find on the task list and Add & Start has the bot do it. So a suggestion is handed there, and
-what the person does with it comes back here on the next check:
+Since 0.4.0 a find is said in the bot's own chat (``chat.py``) unless the person picked another
+place, or this Hermes cannot do that. ``route`` picks the place; the rest of this file is the
+second place: the Ideas tab of Tasks in the Hermes HQ app (the hermes-hq-push add-on), where Add
+puts a find on the task list and Add & Start has the bot do it. What the person does with an
+idea comes back here on the next check:
 
 * added      -> the suggestion counts as accepted and the loop it was about is closed (it is a task now)
 * dismissed  -> counts as dismissed, and the loop is dropped so it stops coming back
@@ -29,14 +30,17 @@ NEEDED_API = 1
 PUSH_PLUGIN_DIR = "hermes-hq-push"
 _MODULES = (("hermes_hq_push_core", "push.py"), ("hermes_hq_tasks", "tasks.py"), ("hermes_hq_ideas", "ideas.py"))
 
-# Why finds are, or are not, going to Ideas. The page shows the sentence.
+# Where finds are going and why. The page shows the sentence.
 STATES = {
+    "chat": "The bot looks into what it finds and messages you in its chat.",
+    "chat_tell": "The bot messages you in its chat about what it finds.",
     "ok": "What it finds goes to Tasks › Ideas in the app.",
-    "setting_off": "You turned off sending finds to Tasks › Ideas, so they stay on the Proactivity page.",
+    "setting_off": "What it finds stays on the Proactivity page.",
     "missing": "The Hermes HQ add-on is not installed for this bot, so finds stay on the Proactivity page.",
     "old": "The Hermes HQ add-on is older than 0.9.90, so finds stay on the Proactivity page until it is updated.",
     "off": "Ideas is turned off in the app's Tasks page, so finds stay on the Proactivity page.",
 }
+_NO_CHAT = "This Hermes cannot post to the bot's chat. "
 
 # Who does it, as Ideas words it, for a find that is not about a tracked item. (For a tracked
 # item it follows whose it is: the bot's own promise is the bot's; yours is done together.)
@@ -125,13 +129,35 @@ class Inbox:
             return False
 
 
-def describe(store, inbox: Optional[Inbox]) -> Dict[str, Any]:
-    """Where finds are going right now, for the page: ``{"state", "to_ideas", "note"}``."""
-    if not store.get_settings().get("ideas_inbox", True):
-        state = "setting_off"
-    else:
+def describe(store, inbox: Optional[Inbox], door: Any = None) -> Dict[str, Any]:
+    """Where finds are going right now: ``{"goes_to", "state", "to_chat", "to_ideas", "note"}``.
+
+    The person's pick (``finds_go_to``) is the first place tried. One that is not there falls
+    back: chat, then Ideas, then the page. ``goes_to`` is where a find really lands."""
+    settings = store.get_settings()
+    want = str(settings.get("finds_go_to") or "chat")
+    note_start = ""
+    if want == "chat":
+        if door is not None and door.state() == "ok":
+            state = "chat" if settings.get("chat_lookup", True) else "chat_tell"
+            return {"goes_to": "chat", "state": state, "to_chat": True, "to_ideas": False, "note": STATES[state]}
+        if door is not None:
+            note_start = _NO_CHAT   # there is a bot to ask, and its Hermes cannot do it: worth saying
+        want = "ideas"
+    if want == "ideas":
         state = inbox.state() if inbox is not None else "missing"
-    return {"state": state, "to_ideas": state == "ok", "note": STATES.get(state, STATES["missing"])}
+    else:
+        state = "setting_off"
+    note = STATES.get(state, STATES["missing"])
+    if note_start:
+        note = note_start + ("Finds go to Tasks › Ideas instead." if state == "ok" else "Finds stay on the Proactivity page.")
+    return {
+        "goes_to": "ideas" if state == "ok" else "page",
+        "state": state,
+        "to_chat": False,
+        "to_ideas": state == "ok",
+        "note": note,
+    }
 
 
 def idea_title(offer: Mapping[str, Any], loop: Optional[Mapping[str, Any]]) -> str:
@@ -170,16 +196,17 @@ def _close_loop(store, offer: Mapping[str, Any], *, status: str, by: str) -> Non
             store.update_loop(str(offer["loop_id"]), status=status, resolved_by=by)
 
 
-def deliver(store, offer: Mapping[str, Any], inbox: Optional[Inbox]) -> str:
-    """Show one new suggestion: in Ideas when it can go there, on the page otherwise.
-    Returns ``ideas``, ``page`` or ``closed`` (it turned out to be on the list or answered already)."""
+def deliver(store, offer: Mapping[str, Any], inbox: Optional[Inbox], door: Any = None) -> str:
+    """Place one new find. Returns ``chat`` (it waits for the bot's next message, see
+    ``chat.say_waiting``), ``ideas``, ``page`` or ``closed`` (it turned out to be on the task list
+    or answered already)."""
     offer_id = str(offer["id"])
-    to_ideas = (
-        inbox is not None
-        and int(offer.get("tier") or 0) >= 1   # a quiet one is only kept on the page and in the brief
-        and bool(store.get_settings().get("ideas_inbox", True))
-    )
-    if not to_ideas:
+    # A quiet one is only kept on the page and in the brief.
+    goes_to = describe(store, inbox, door)["goes_to"] if int(offer.get("tier") or 0) >= 1 else "page"
+    if goes_to == "chat":
+        store.mark_offer_delivered(offer_id, delivered_to="chat")
+        return "chat"
+    if goes_to != "ideas" or inbox is None:
         store.mark_offer_delivered(offer_id, delivered_to="page")
         return "page"
     try:
@@ -213,6 +240,18 @@ def deliver(store, offer: Mapping[str, Any], inbox: Optional[Inbox]) -> str:
         return "closed"
     store.mark_offer_delivered(offer_id, delivered_to="page")
     return "page"
+
+
+def move_waiting(store, inbox: Optional[Inbox], door: Any = None) -> int:
+    """Finds that were waiting for the bot's chat when the person chose another place for them
+    (or the chat stopped being reachable): place each one again, where finds go now."""
+    if describe(store, inbox, door)["goes_to"] == "chat":
+        return 0
+    moved = 0
+    for offer in store.list_offers_waiting_for_chat():
+        deliver(store, offer, inbox, door)
+        moved += 1
+    return moved
 
 
 def sync(store, inbox: Optional[Inbox]) -> Dict[str, int]:

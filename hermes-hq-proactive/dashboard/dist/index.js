@@ -42,8 +42,8 @@
 
   const MODE_LABELS = {
     observe: "Keep track only",
-    prep: "Keep track and suggest",
-    full: "Suggest, overdue ones first",
+    prep: "Keep track and speak up",
+    full: "Speak up, overdue ones first",
   };
 
   const KIND_LABELS = {
@@ -62,6 +62,14 @@
     task: "you, by adding it to Tasks",
     idea_dismissed: "you, by dismissing it in Tasks › Ideas",
     offer: "you, by marking its suggestion done",
+    not_wanted: "you, by telling the bot you did not want it brought up",
+  };
+
+  // Where a find goes. The value is the setting's; the words are the choice as the page offers it.
+  const PLACE_LABELS = {
+    chat: "The bot messages me in its chat",
+    ideas: "Make it a card in Tasks › Ideas",
+    page: "Keep it on this page",
   };
 
   const WATCH_KINDS = {
@@ -73,7 +81,8 @@
   const ACTIVITY_LABELS = {
     loop_captured: "Noted",
     loop_closed_by_scan: "Closed",
-    offer_created: "Suggested",
+    offer_created: "Found",
+    said_in_chat: "Messaged",
     offer_answered: "Answered",
     offer_closed: "Closed",
     offer_suppressed: "Held back",
@@ -86,7 +95,8 @@
   };
 
   const NUMBER_FIELDS = [
-    ["daily_offer_budget", "Most suggestions a day", 0, 30],
+    ["daily_message_budget", "Most messages a day", 1, 10],
+    ["daily_offer_budget", "Most finds a day", 0, 30],
     ["daily_interrupt_budget", "Most Time-sensitive ones a day", 0, 10],
     ["brief_hour", "Morning brief hour (0–23)", 0, 23],
     ["stale_waiting_days", "Days with no news before a nudge", 1, 30],
@@ -99,11 +109,27 @@
     ["scan_recent_chats", "Read your recent chats", "Only your own one-to-one chats with this bot. Never group chats, scheduled jobs or helper agents."],
     ["idle_sweep_enabled", "Check every hour", "Looks at what is due, overdue or has gone quiet. Free when nothing is new."],
     ["allow_llm_in_sweep", "Let the check use a model", "A small model reads new chat messages and writes short drafts. Off: fixed rules only, at no cost."],
-    ["ideas_inbox", "Send suggestions to Tasks › Ideas", "Add puts one on your list; Add & Start has the bot do it. Off: they stay on this page."],
+    ["chat_lookup", "Look into it before messaging me", "The bot looks the thing up first, reading only, and tells you what it found. Off: it only tells you what is open."],
     ["daily_brief_enabled", "Morning brief in the bot's chat", "A few lines once a day. Nothing is posted on a day with nothing to report."],
     ["in_turn_enabled", "Go one step further in chats", "Asks the bot to do the one obvious read-only check and tell you, instead of only suggesting it."],
     ["pattern_detection_enabled", "Notice requests you repeat", "After the same multi-step request three times, suggests making it a skill or a scheduled job."],
   ];
+
+  // Where finds go right now, in the few words a stat tile has room for.
+  function whereWords(inbox) {
+    if (inbox && inbox.to_chat) return "The bot messages you";
+    if (inbox && inbox.to_ideas) return "Shown in Tasks › Ideas";
+    return "Shown on this page";
+  }
+
+  // What the 24-hour tile counts: messages when finds are said in the chat, finds otherwise.
+  function usageFor(st) {
+    const b = st.budgets || {};
+    if (st.inbox && st.inbox.to_chat && b.messages_limit_24h !== undefined) {
+      return { label: "Messages in 24 hours", used: b.messages_used_24h, limit: b.messages_limit_24h };
+    }
+    return { label: "Found in 24 hours", used: b.offers_used_24h, limit: b.offers_limit_24h };
+  }
 
   function ago(iso) {
     if (!iso) return "never";
@@ -217,7 +243,7 @@
             "div",
             { className: "hq-pro-tier-box" },
             h("strong", null, "Suggests"),
-            h("p", null, "When something is due or has gone quiet, a suggestion appears in Tasks › Ideas, and a short brief is posted in the bot's chat each morning.")
+            h("p", null, "When something is due or has gone quiet, the bot looks into it and messages you in its chat with what it found. A short brief is posted there each morning.")
           ),
           h(
             "div",
@@ -237,6 +263,9 @@
 
   function SuggestionCard({ offer, busy, onRespond, onCopied }) {
     const inIdeas = offer.delivered_to === "ideas";
+    const inChat = offer.delivered_to === "chat";
+    const said = inChat && !!offer.said_at;
+    const elsewhere = inIdeas || inChat;   // acted on somewhere else, so this page only reports it
     return h(
       "div",
       { className: "hq-pro-item" },
@@ -248,6 +277,7 @@
           "div",
           { className: "hq-pro-meta" },
           inIdeas ? h(Badge, { tone: "default" }, "In Tasks › Ideas") : null,
+          inChat ? h(Badge, { tone: "default" }, said ? "Said in the bot's chat" : "Next message") : null,
           offer.tier >= 2 ? h(Badge, { tone: "warning" }, "Time-sensitive") : null,
           offer.tier === 0 ? h(Badge, { tone: "secondary" }, "Kept for the brief") : null,
           h(Badge, { tone: "secondary" }, CATEGORY_LABELS[offer.category] || offer.category),
@@ -264,14 +294,25 @@
             { className: "hq-pro-note" },
             "Open Tasks › Ideas in the app to act on this. Add puts it on your list; Add & Start has the bot do it."
           )
-        : h("div", { className: "hq-pro-note" }, "Marking it done only records your answer. Nothing is sent or changed."),
+        : said
+          ? h(
+              "div",
+              { className: "hq-pro-note" },
+              "The bot messaged you about this " + ago(offer.said_at) + ". Saying whether it helped makes this kind come up more or less often."
+            )
+          : inChat
+            ? h("div", { className: "hq-pro-note" }, "The bot will look into this and message you at the next check.")
+            : h("div", { className: "hq-pro-note" }, "Marking it done only records your answer. Nothing is sent or changed."),
       h(
         "div",
         { className: "hq-pro-actions" },
-        inIdeas
+        said
+          ? h(Button, { disabled: busy, onClick: function () { onRespond(offer.id, "accept"); } }, "It Helped")
+          : null,
+        elsewhere
           ? null
           : h(Button, { disabled: busy, onClick: function () { onRespond(offer.id, "accept"); } }, "Mark Done"),
-        !inIdeas && offer.draft_content
+        !elsewhere && offer.draft_content
           ? h(
               Button,
               {
@@ -288,7 +329,7 @@
               "Copy Draft & Mark Done"
             )
           : null,
-        inIdeas
+        elsewhere
           ? null
           : h(
               Button,
@@ -298,7 +339,7 @@
         h(
           Button,
           { ghost: true, destructive: true, disabled: busy, onClick: function () { onRespond(offer.id, "dismiss"); } },
-          "Dismiss"
+          said ? "Not Helpful" : "Dismiss"
         )
       )
     );
@@ -354,8 +395,8 @@
                       h(
                         "div",
                         { className: "hq-pro-meta" },
-                        (item.kind === "offer" ? "Suggested" : "Open") + (item.note ? " · " + item.note : "") +
-                          (item.where === "ideas" ? " · in Tasks › Ideas" : "")
+                        (item.kind === "offer" ? "Found" : "Open") + (item.note ? " · " + item.note : "") +
+                          (item.where === "ideas" ? " · in Tasks › Ideas" : item.where === "chat" ? " · in the bot's chat" : "")
                       )
                     )
                   );
@@ -379,7 +420,7 @@
         h(
           CardHeader,
           null,
-          h(CardTitle, null, "Suggestions (" + pending.length + ")"),
+          h(CardTitle, null, "What It Found (" + pending.length + ")"),
           h(CardDescription, null, st.inbox && st.inbox.note ? st.inbox.note : "What it finds is listed here.")
         ),
         h(
@@ -955,7 +996,7 @@
           CardHeader,
           null,
           h(CardTitle, null, "Settings"),
-          h(CardDescription, null, "For this bot only. Whatever you choose, it only reads and suggests. Times are on your Hermes clock (" + (timezone || "local") + ").")
+          h(CardDescription, null, "For this bot only. Whatever you choose, it only reads and tells you: nothing is sent to anyone else, booked, paid or changed. Times are on your Hermes clock (" + (timezone || "local") + ").")
         ),
         h(
           CardContent,
@@ -972,6 +1013,18 @@
                 { value: draft.autonomy_mode, onValueChange: function (v) { setField("autonomy_mode", v); } },
                 Object.keys(MODE_LABELS).map(function (m) {
                   return h(SelectOption, { key: m, value: m }, MODE_LABELS[m]);
+                })
+              )
+            ),
+            h(
+              "div",
+              { className: "hq-pro-field" },
+              h(Label, null, "When it finds something"),
+              h(
+                Select,
+                { value: draft.finds_go_to || "chat", onValueChange: function (v) { setField("finds_go_to", v); } },
+                Object.keys(PLACE_LABELS).map(function (place) {
+                  return h(SelectOption, { key: place, value: place }, PLACE_LABELS[place]);
                 })
               )
             ),
@@ -1013,7 +1066,7 @@
           h(
             "div",
             { className: "hq-pro-note" },
-            "In quiet hours nothing is marked Time-sensitive and the check uses no model; new chat messages wait until after."
+            "In quiet hours the bot does not message you and the check uses no model; what it finds waits until after."
           ),
           h(
             "div",
@@ -1295,6 +1348,7 @@
     const st = overview.status;
     const enabled = !!st.enabled;
     const quietRange = st.settings.quiet_start + "–" + st.settings.quiet_end;
+    const usage = usageFor(st);
 
     return h(
       "div",
@@ -1315,7 +1369,7 @@
           h(
             "p",
             { className: "hq-pro-subtitle" },
-            "Keeps track of what is left open in your chats with this bot and suggests the next step. It only reads and suggests: nothing is sent, booked, paid or deleted without you."
+            "Keeps track of what is left open in your chats with this bot and speaks up when something is due. It only reads and tells you: nothing is sent to anyone else, booked, paid or deleted without you."
           )
         ),
         h(
@@ -1345,9 +1399,9 @@
               h(
                 "div",
                 { className: "hq-pro-stat" },
-                h("div", { className: "hq-pro-stat-label" }, "Suggestions waiting"),
+                h("div", { className: "hq-pro-stat-label" }, "Finds waiting"),
                 h("div", { className: "hq-pro-stat-value" }, String(st.counts.pending_offers)),
-                h("div", { className: "hq-pro-stat-sub" }, st.inbox && st.inbox.to_ideas ? "Shown in Tasks › Ideas" : "Shown on this page")
+                h("div", { className: "hq-pro-stat-sub" }, whereWords(st.inbox))
               ),
               h(
                 "div",
@@ -1359,9 +1413,9 @@
               h(
                 "div",
                 { className: "hq-pro-stat" },
-                h("div", { className: "hq-pro-stat-label" }, "Suggested in 24 hours"),
-                h("div", { className: "hq-pro-stat-value" }, st.budgets.offers_used_24h + " of " + st.budgets.offers_limit_24h),
-                h("div", { className: "hq-pro-stat-sub" }, "Your limit is " + st.budgets.offers_limit_24h + " a day")
+                h("div", { className: "hq-pro-stat-label" }, usage.label),
+                h("div", { className: "hq-pro-stat-value" }, usage.used + " of " + usage.limit),
+                h("div", { className: "hq-pro-stat-sub" }, "Your limit is " + usage.limit + " a day")
               ),
               h(
                 "div",

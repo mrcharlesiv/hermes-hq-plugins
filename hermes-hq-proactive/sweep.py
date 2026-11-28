@@ -8,13 +8,16 @@ One pass, in this order:
    text together with the loops already open and says which are new, which got done, and what is
    worth suggesting. Bookmarks move on only once that call has worked.
 3. Look at the open loops and watches for anything due, overdue or gone quiet (no model).
-4. Turn those into suggestions. Whether one would be let through is asked BEFORE any draft is
-   written, so a loop that already has a suggestion waiting costs nothing on later checks.
-5. Hand each new suggestion to Ideas (or keep it on the page), and refresh the brief.
+4. Turn those into finds. Whether one would be let through is asked BEFORE any draft is
+   written, so a loop that already has a find waiting costs nothing on later checks.
+5. Place each new find: the bot's own chat (``chat.py``), Tasks > Ideas, or the page. Those for
+   the chat go out together, as one turn handed to the bot, which looks into them and writes the
+   person one message. Then refresh the brief.
 
-The check never calls a tool and never sends anything: it reads ``state.db`` read-only, writes
-only this plugin's own database, and may ask a model for text through Hermes's ``ctx.llm`` on the
-``proactive_sweep`` auxiliary slot, with secrets redacted first.
+The check itself never calls a tool: it reads ``state.db`` read-only, writes only this plugin's
+own database, and may ask a model for text through Hermes's ``ctx.llm`` on the ``proactive_sweep``
+auxiliary slot, with secrets redacted first. The one thing it sends is that turn to the bot's own
+chat, which ``pre_tool_call`` keeps to reading.
 """
 from __future__ import annotations
 
@@ -27,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 try:
-    from . import clock, inbox as inbox_mod, policy, radar, session_scan
+    from . import chat as chat_mod, clock, inbox as inbox_mod, policy, radar, session_scan
     from .store import ProactiveStore
 except ImportError:  # pragma: no cover - loaded via spec_from_file_location
     import importlib.util
@@ -49,6 +52,7 @@ except ImportError:  # pragma: no cover - loaded via spec_from_file_location
     session_scan = _load("hermes_hq_proactive_session_scan", "session_scan.py")
     ProactiveStore = _load("hermes_hq_proactive_store", "store.py").ProactiveStore
     inbox_mod = _load("hermes_hq_proactive_inbox", "inbox.py")
+    chat_mod = _load("hermes_hq_proactive_chat", "chat.py")
 
 logger = logging.getLogger("hermes-hq-proactive")
 
@@ -494,9 +498,13 @@ def _extract_from_chats_with_llm(
         "come back to something (owner `bot`). Leave out anything the chat shows was finished. "
         "`resolved_loop_ids`: ids from the list that this chat text clearly shows are done or no longer wanted. "
         "Only when it is plain; when in doubt leave it open. "
-        "`offers`: at most 2 things worth suggesting to the user now (a follow-up to send, something to get ready, "
-        "a clear next step). Set `about_loop` to the id from the list, or the exact title of one of your "
-        "`open_loops`, when the offer is about that. "
+        "`offers`: at most 2 things worth the assistant bringing up with the user on its own, today. The bar is "
+        "high: would the user be glad of a message about it? Prefer what the assistant can move forward itself by "
+        "reading and looking things up (check a price, a date, a schedule, whether something arrived, compare two "
+        "options) over a reminder of something only the user can do. Leave out what the assistant already answered "
+        "in this chat, what the user is plainly handling, and what loses nothing by waiting. `title` names the thing "
+        "to look into and `summary` says exactly what to find out. Set `about_loop` to the id from the list, or the "
+        "exact title of one of your `open_loops`, when the offer is about that. "
         "Return empty lists for casual chat or when everything is settled. Never suggest sending, paying, booking, "
         "posting or deleting something without the user's OK."
     )
@@ -576,6 +584,7 @@ def _scan_recent_chats(
     now_utc: datetime,
     now_local: datetime,
     inbox: Any,
+    door: Any = None,
 ) -> Dict[str, Any]:
     """Read what is new in the person's chats and act on it. See the module docstring."""
     out = _new_scan_result()
@@ -641,7 +650,7 @@ def _scan_recent_chats(
             if cost is not None:
                 out["cost_usd"] = float(out["cost_usd"] or 0.0) + float(cost)
             _apply_scan_answer(store, extracted, open_loops, out, radar_on=radar_on, trigger=trigger,
-                               now_utc=now_utc, now_local=now_local, inbox=inbox)
+                               now_utc=now_utc, now_local=now_local, inbox=inbox, door=door)
 
         store.save_scan_marks(bundle.marks, now=now_utc)
         store.set_meta("last_chat_scan_at", policy.iso_utc(now_utc))
@@ -661,6 +670,7 @@ def _apply_scan_answer(
     now_utc: datetime,
     now_local: datetime,
     inbox: Any,
+    door: Any = None,
 ) -> None:
     by_title: Dict[str, str] = {}
     shown_ids = {str(lp["id"]) for lp in shown_loops}
@@ -746,13 +756,25 @@ def _apply_scan_answer(
             now_local=now_local,
         )
         if res.get("ok"):
-            res["offer"]["shown_in"] = inbox_mod.deliver(store, res["offer"], inbox)
+            res["offer"]["shown_in"] = inbox_mod.deliver(store, res["offer"], inbox, door)
             out["offers_created"].append(res["offer"])
         elif res.get("status") == "suppressed":
             out["suppressed"] += 1
 
 
 # ── The check itself ───────────────────────────────────────────────────────────
+
+# Why finds meant for the bot's chat did not go out on this check, for the check's own summary.
+_HELD_WORDS = {
+    "quiet_hours": "kept {n} for after quiet hours",
+    "limit": "kept {n} for tomorrow (today's limit of messages)",
+    "busy": "kept {n} until you are done talking to the bot",
+    "not_running": "could not reach the bot's chat, so {n} will wait",
+    "no_chat": "could not reach the bot's chat, so {n} will wait",
+    "refused": "could not reach the bot's chat, so {n} will wait",
+    "failed": "the bot could not answer, so {n} will be tried again",
+    "unavailable": "could not reach the bot's chat, so {n} will wait",
+}
 
 def run_signal_sweep(
     store: ProactiveStore,
@@ -766,6 +788,7 @@ def run_signal_sweep(
     now_local: Optional[datetime] = None,
     state_db_path: Optional[Path] = None,
     inbox: Any = None,
+    door: Any = None,
 ) -> Dict[str, Any]:
     """Run one check. No model is called when Proactivity is off, or when nothing needs one."""
     settings = store.get_settings()
@@ -797,7 +820,7 @@ def run_signal_sweep(
             and str(settings.get("autonomy_mode") or "prep") != "observe"
         )
         use_llm = llm_wanted and (not quiet or manual)
-        to_ideas = bool(inbox_mod.describe(store, inbox)["to_ideas"])
+        on_page = inbox_mod.describe(store, inbox, door)["goes_to"] == "page"
 
         # 1. What the person did with earlier finds.
         synced = inbox_mod.sync(store, inbox)
@@ -815,6 +838,7 @@ def run_signal_sweep(
             now_utc=now_utc,
             now_local=now_local,
             inbox=inbox,
+            door=door,
         )
         # An item the chats just closed takes its suggestion with it, also one made a moment ago.
         inbox_mod.settle_closed(store, inbox)
@@ -848,11 +872,12 @@ def run_signal_sweep(
                     suppressed_count += 1
                 continue
 
-            draft_text = "" if to_ideas else _build_deterministic_draft(sig)
-            # A model-written draft is for a suggestion shown on the page. In Ideas the bot does the
-            # work when the person taps Add & Start, and one only kept quietly (over today's limit)
-            # may never be opened: a draft for either would be paid for and not read.
-            worth_a_draft = int(ask.get("tier", sig.tier)) >= 1 and not to_ideas
+            draft_text = _build_deterministic_draft(sig) if on_page else ""
+            # A model-written draft is for a suggestion shown on the page. In the chat the bot looks
+            # into it itself, in Ideas it does the work when the person taps Add & Start, and one
+            # only kept quietly (over today's limit) may never be opened: a draft for any of those
+            # would be paid for and not read.
+            worth_a_draft = int(ask.get("tier", sig.tier)) >= 1 and on_page
             if use_llm and worth_a_draft and sig.category in ("follow_up", "pre_event", "prepared_draft"):
                 try:
                     llm_draft, tok, cost = _draft_with_llm(
@@ -885,7 +910,7 @@ def run_signal_sweep(
                 if sig.loop_id and draft_text:
                     # touch=False: our own draft must not make an untouched loop look fresh.
                     store.update_loop(sig.loop_id, prep_artifact=draft_text, touch=False)
-                res["offer"]["shown_in"] = inbox_mod.deliver(store, res["offer"], inbox)
+                res["offer"]["shown_in"] = inbox_mod.deliver(store, res["offer"], inbox, door)
                 created_offers.append(res["offer"])
             elif res.get("status") == "suppressed":
                 suppressed_count += 1
@@ -902,6 +927,18 @@ def run_signal_sweep(
         for wid, state_str in eval_out["watch_updates"]:
             store.update_watch_state(wid, last_state=state_str, triggered=True)
 
+        # 4b. Hand what is meant for the bot's chat to the bot, as one message (new finds, and
+        # ones held back earlier for quiet hours, the day's limit or a chat in full flow).
+        # If the setting has since moved away from the chat (or this Hermes lost the door), the
+        # ones still waiting go where finds go now instead.
+        if inbox_mod.describe(store, inbox, door)["goes_to"] == "chat":
+            said = chat_mod.say_waiting(
+                store, door, quiet=quiet, manual=manual, now_utc=now_utc, day_words=_local_day, trigger=trigger
+            )
+        else:
+            inbox_mod.move_waiting(store, inbox, door)
+            said = {"said": 0, "waiting": 0, "held": "", "titles": []}
+
         # 5. The brief, as things stand now.
         brief = None
         brief_changed = False
@@ -917,8 +954,10 @@ def run_signal_sweep(
         sent_to_ideas = sum(1 for o in created_offers if o.get("shown_in") == "ideas")
         suggested = [o for o in created_offers if int(o.get("tier") or 0) >= 1]
         kept_quietly = len(created_offers) - len(suggested)
+        for_chat = sum(1 for o in suggested if o.get("shown_in") == "chat")
         nothing_new = not (
             created_offers or loops_captured or loops_closed or synced["expired"] or eval_out["expired_offers"]
+            or said["said"]
         )
 
         parts = []
@@ -932,9 +971,15 @@ def run_signal_sweep(
             parts.append(f"noted {loops_captured} open item{'s' if loops_captured != 1 else ''}")
         if loops_closed:
             parts.append(f"closed {loops_closed}")
-        if suggested:
+        if suggested and for_chat == len(suggested):
+            parts.append(f"found {for_chat} thing{'s' if for_chat != 1 else ''} worth bringing up")
+        elif suggested:
             where = " (sent to Tasks › Ideas)" if sent_to_ideas == len(suggested) else ""
             parts.append(f"made {len(suggested)} suggestion{'s' if len(suggested) != 1 else ''}{where}")
+        if said["said"]:
+            parts.append(f"asked the bot to message you about {said['said']}")
+        if said["held"] and said["waiting"]:
+            parts.append(_HELD_WORDS.get(said["held"], _HELD_WORDS["refused"]).format(n=said["waiting"]))
         if kept_quietly:
             parts.append(f"kept {kept_quietly} more for the brief")
         if not parts:
@@ -949,6 +994,9 @@ def run_signal_sweep(
             "signals_detected": len(signals),
             "created_offers": len(created_offers),
             "sent_to_ideas": sent_to_ideas,
+            "said_in_chat": int(said["said"]),
+            "chat_waiting": int(said["waiting"]),
+            "chat_held": said["held"],
             "kept_quietly": kept_quietly,
             "already_waiting": already_waiting,
             "suppressed": suppressed_count,

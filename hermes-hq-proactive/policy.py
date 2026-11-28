@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional
 
-BETA_VERSION = "0.3.0-beta.3"   # keep in step with plugin.yaml and dashboard/manifest.json (test_versions_agree)
+BETA_VERSION = "0.4.0-beta.1"   # keep in step with plugin.yaml and dashboard/manifest.json (test_versions_agree)
 BETA_LABEL = "Beta"
 
 AUTONOMY_MODES = ("observe", "prep", "full")
@@ -25,6 +25,8 @@ OFFER_CATEGORIES = (
     "stale_check",
 )
 
+FIND_PLACES = ("chat", "ideas", "page")   # where a find goes; one that is not there falls back down the list
+
 LOOP_KINDS = ("commitment", "waiting_on", "follow_up", "pre_event", "watch")
 LOOP_OWNERS = ("user", "bot", "external")
 LOOP_STATUSES = ("open", "snoozed", "resolved", "dropped")
@@ -33,7 +35,8 @@ WATCH_KINDS = ("deadline", "file_change", "custom_timer")   # every kind listed 
 
 # Tier semantics:
 #   0 = Quiet (kept on the Proactivity page and in the morning brief; never an idea or an alert)
-#   1 = Suggestion (goes to Tasks › Ideas, or the page when Ideas is off; counts toward daily_offer_budget)
+#   1 = A find worth raising (said in the bot's chat, or sent to Tasks › Ideas, or kept on the page;
+#       counts toward daily_offer_budget)
 #   2 = Time-sensitive (a suggestion marked urgent; counts toward daily_interrupt_budget,
 #       needs autonomy_mode == "full" and to be outside quiet hours)
 VALID_TIERS = (0, 1, 2)
@@ -50,13 +53,14 @@ COOLDOWN_DECAY_PER_DAY = 0.10
 
 # ── Read-only fence ────────────────────────────────────────────────────────────
 # The plugin's own checks never call tools at all (they read state.db and may ask a model for
-# text). The one run of its own where a bot does have tools is the "Proactivity brief" job, and
-# `pre_tool_call` keeps that run to reading: any tool whose name suggests an outside effect, a
-# change, a payment or a sent message is refused there.
+# text). A bot has tools in two runs of ours: the "Proactivity brief" job, and the turn in which
+# a find is handed to its chat to look into. `pre_tool_call` keeps both to reading: any tool
+# whose name suggests an outside effect, a change, a payment or a sent message is refused there.
 SWEEP_ALWAYS_ALLOWED_TOOLS = frozenset({
     "proactive_loop_track",
     "proactive_loop_list",
     "proactive_offer",
+    "proactive_feedback",
     "proactive_watch_add",
     "proactive_brief_get",
     "read_file",
@@ -118,23 +122,41 @@ _WORD_RE = re.compile(r"[a-z0-9]{2,}")
 _TIME_HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
-def is_tool_allowed_in_sweep(tool_name: str, args: Optional[Mapping[str, Any]] = None) -> tuple[bool, str]:
-    """Return ``(allowed, reason)`` for a tool call attempted during a proactive sweep."""
+def is_tool_allowed_in_sweep(
+    tool_name: str,
+    args: Optional[Mapping[str, Any]] = None,
+    *,
+    run: str = "the Proactivity brief run",
+    also_allowed: frozenset = frozenset(),
+    not_allowed: frozenset = frozenset(),
+) -> tuple[bool, str]:
+    """Return ``(allowed, reason)`` for a tool call in a run of ours that only reads: the brief
+    job, or a find handed to the bot's chat (*run* names it in the reason the bot is given)."""
     name = (tool_name or "").strip()
     if not name:
-        return False, "A tool with no name is not allowed in the Proactivity brief run."
-    if name in SWEEP_ALWAYS_ALLOWED_TOOLS:
+        return False, f"A tool with no name is not allowed in {run}."
+    if name in not_allowed:
+        return False, f"'{name}' is not for {run}. Tell the user what you found instead."
+    if name in SWEEP_ALWAYS_ALLOWED_TOOLS or name in also_allowed:
         return True, ""
     if name in SWEEP_ALWAYS_BLOCKED_TOOLS:
-        return False, f"'{name}' is not allowed in the Proactivity brief run, which only reads."
+        return False, f"'{name}' is not allowed in {run}, which only reads."
     if name == "memory":
         action = str((args or {}).get("action") or "").strip().lower()
         if action in ("", "read", "get", "list", "search"):
             return True, ""
-        return False, f"memory.{action} is not allowed in the Proactivity brief run, which only reads."
+        return False, f"memory.{action} is not allowed in {run}, which only reads."
     if _FORBIDDEN_VERB_RE.search(name):
-        return False, f"'{name}' changes or sends something, so it is not allowed in the Proactivity brief run."
+        return False, f"'{name}' changes or sends something, so it is not allowed in {run}."
     return True, ""
+
+
+# A find handed to the bot's chat (chat.py): the bot may also close the item it just settled.
+CHAT_TURN_ALSO_ALLOWED = frozenset({"proactive_loop_resolve"})
+# ... and may not make new finds or new things to watch out of its own look-up: those would come
+# back as the next message, the plugin answering itself.
+CHAT_TURN_NOT_ALLOWED = frozenset({"proactive_offer", "proactive_loop_track", "proactive_watch_add"})
+CHAT_TURN_NAME = "this Proactivity look-up"
 
 
 def validate_offer_safety(title: str, summary: str, suggested_action: str = "") -> tuple[bool, str]:
