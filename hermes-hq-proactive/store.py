@@ -44,6 +44,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "loop_radar_enabled": True,
     "idle_sweep_enabled": True,
     "daily_brief_enabled": True,
+    "scout_tools_enabled": True,
     "pattern_detection_enabled": True,
     "allow_llm_in_sweep": True,
     "scan_recent_chats": True,
@@ -188,6 +189,21 @@ CREATE TABLE IF NOT EXISTS scan_marks (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS deck_tasks (
+    card_id TEXT PRIMARY KEY,
+    offer_id TEXT,
+    loop_id TEXT,
+    category TEXT NOT NULL DEFAULT 'prepared_draft',
+    icon TEXT NOT NULL DEFAULT 'lightbulb',
+    title TEXT NOT NULL,
+    pitch TEXT NOT NULL,
+    action_prompt TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    answered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_deck_tasks_status ON deck_tasks(status, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id TEXT PRIMARY KEY,
     at TEXT NOT NULL,
@@ -285,6 +301,7 @@ def _sanitize_settings_patch(patch: Mapping[str, Any]) -> Dict[str, Any]:
             "loop_radar_enabled",
             "idle_sweep_enabled",
             "daily_brief_enabled",
+            "scout_tools_enabled",
             "pattern_detection_enabled",
             "allow_llm_in_sweep",
             "scan_recent_chats",
@@ -1737,8 +1754,169 @@ class ProactiveStore:
             "last_auto_check_at": self.get_meta("last_auto_check_at"),
             "inbox": dict(inbox) if inbox is not None else None,
             "brief_job": self.get_meta("brief_job_state") or "",
+            "deckCards": True,
+            "deckCardsShown": self.deck_cards_enabled(),
             "settings": settings,
         }
+
+    # ── Task Deck Cards (0.5.0) ────────────────────────────────────────────────
+
+    def deck_cards_enabled(self) -> bool:
+        """True once a native Hermes HQ client has announced support for ``proactive_task_deck``."""
+        return self.get_meta("deck_cards_shown") == "1"
+
+    def set_deck_cards_enabled(self, shown: bool = True) -> None:
+        self.set_meta("deck_cards_shown", "1" if shown else "0")
+
+    def save_deck_task(
+        self,
+        *,
+        card_id: str,
+        title: str,
+        pitch: str,
+        action_prompt: str,
+        icon: str = "lightbulb",
+        category: str = "prepared_draft",
+        offer_id: Optional[str] = None,
+        loop_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        now = policy.iso_utc()
+        with _lock_for(self.db_path):
+            with closing(self._connect(create=True)) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO deck_tasks(
+                        card_id, offer_id, loop_id, category, icon, title, pitch,
+                        action_prompt, status, created_at, answered_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL)
+                    ON CONFLICT(card_id) DO UPDATE SET
+                        offer_id=COALESCE(excluded.offer_id, deck_tasks.offer_id),
+                        loop_id=COALESCE(excluded.loop_id, deck_tasks.loop_id),
+                        action_prompt=CASE WHEN excluded.action_prompt != '' THEN excluded.action_prompt ELSE deck_tasks.action_prompt END
+                    """,
+                    (
+                        card_id[:32],
+                        offer_id,
+                        loop_id,
+                        category[:40],
+                        icon[:30],
+                        title[:120],
+                        pitch[:360],
+                        action_prompt[:2000],
+                        now,
+                    ),
+                )
+                conn.commit()
+                row = conn.execute("SELECT * FROM deck_tasks WHERE card_id=?", (card_id[:32],)).fetchone()
+                return dict(row)
+
+    def get_deck_task(self, card_id: str) -> Optional[Dict[str, Any]]:
+        if not card_id:
+            return None
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return None
+            with closing(conn):
+                row = conn.execute("SELECT * FROM deck_tasks WHERE card_id=?", (card_id[:32],)).fetchone()
+                return dict(row) if row else None
+
+    def get_deck_task_states(self, *, limit: int = 200) -> Dict[str, str]:
+        """Return ``{card_id: 'started' | 'hidden'}`` for cross-device deck sync."""
+        with _lock_for(self.db_path):
+            conn = self._connect(create=False)
+            if conn is None:
+                return {}
+            with closing(conn):
+                rows = conn.execute(
+                    "SELECT card_id, status FROM deck_tasks WHERE status IN ('started', 'hidden') "
+                    "ORDER BY COALESCE(answered_at, created_at) DESC LIMIT ?",
+                    (max(1, min(500, int(limit))),),
+                ).fetchall()
+                return {str(r["card_id"]): str(r["status"]) for r in rows}
+
+    def respond_deck_task(self, card_id: str, action: str, *, actor: str = "chat") -> Dict[str, Any]:
+        """Mark a deck task ``started`` or ``hidden`` and feed the outcome into adaptive calibration."""
+        act = (action or "").strip().lower()
+        if act in ("start", "started", "accept"):
+            new_status = "started"
+            cal_action = "accept"
+        elif act in ("hide", "hidden", "dismiss"):
+            new_status = "hidden"
+            cal_action = "dismiss"
+        else:
+            raise ValueError("action must be start or hide")
+
+        now = policy.iso_utc()
+        cid = (card_id or "").strip()[:32]
+        if not cid:
+            raise ValueError("card_id is required")
+
+        existing = self.get_deck_task(cid)
+        already = existing is not None and existing.get("status") == new_status
+        with _lock_for(self.db_path):
+            with closing(self._connect(create=True)) as conn:
+                if existing is not None:
+                    conn.execute(
+                        "UPDATE deck_tasks SET status=?, answered_at=? WHERE card_id=?",
+                        (new_status, now, cid),
+                    )
+                else:
+                    # Record even if the card came from a synced/older transcript so Hide syncs across devices.
+                    conn.execute(
+                        "INSERT INTO deck_tasks(card_id, title, pitch, status, created_at, answered_at) "
+                        "VALUES (?, '', '', ?, ?, ?)",
+                        (cid, new_status, now, now),
+                    )
+                conn.commit()
+                updated = dict(conn.execute("SELECT * FROM deck_tasks WHERE card_id=?", (cid,)).fetchone())
+
+        if not already:
+            offer_id = updated.get("offer_id")
+            if offer_id:
+                try:
+                    self.respond_to_offer(
+                        str(offer_id),
+                        cal_action,
+                        actor=actor,
+                        keep_loop=(new_status == "started"),
+                        loop_outcome="not_wanted" if new_status == "hidden" else None,
+                    )
+                except Exception:
+                    pass
+            elif updated.get("category"):
+                # Update calibration directly even when the card wasn't linked to a legacy offer row.
+                cal = self.get_calibration(str(updated["category"]))
+                nxt = policy.update_calibration(cal, "accepted" if new_status == "started" else "dismissed")
+                with _lock_for(self.db_path):
+                    with closing(self._connect(create=True)) as conn:
+                        conn.execute(
+                            "INSERT INTO calibration(category, accepted, edited, snoozed, dismissed, ignored, "
+                            "consecutive_dismissals, threshold, cooldown_multiplier, auto_paused_until, last_reason, updated_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                            "ON CONFLICT(category) DO UPDATE SET accepted=excluded.accepted, edited=excluded.edited, "
+                            "snoozed=excluded.snoozed, dismissed=excluded.dismissed, ignored=excluded.ignored, "
+                            "consecutive_dismissals=excluded.consecutive_dismissals, threshold=excluded.threshold, "
+                            "cooldown_multiplier=excluded.cooldown_multiplier, auto_paused_until=excluded.auto_paused_until, "
+                            "last_reason=excluded.last_reason, updated_at=excluded.updated_at",
+                            (
+                                str(updated["category"]),
+                                nxt.accepted, nxt.edited, nxt.snoozed, nxt.dismissed, nxt.ignored,
+                                nxt.consecutive_dismissals, nxt.threshold, nxt.cooldown_multiplier,
+                                nxt.auto_paused_until, nxt.last_reason, now,
+                            ),
+                        )
+                        conn.commit()
+            title = updated.get("title") or cid
+            self.log_audit(
+                event_type="deck_task_started" if new_status == "started" else "deck_task_hidden",
+                category=str(updated.get("category") or ""),
+                trigger=actor,
+                summary=("Started task card: " if new_status == "started" else "Hid task card: ") + str(title),
+                outcome=new_status,
+                details={"card_id": cid, "offer_id": offer_id},
+            )
+        return updated
 
     def get_overview(self, *, inbox: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         status = self.get_status(inbox=inbox)

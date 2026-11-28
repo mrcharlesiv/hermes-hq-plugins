@@ -301,7 +301,7 @@ def test_off_by_default_does_nothing_at_all(tmp_path):
     ctx = _FakeCtx(tmp_path / "p1")
     pkg.register(ctx)
 
-    assert len(ctx.tools) == 7
+    assert len(ctx.tools) == 8
     for spec in ctx.tools.values():
         assert spec["check_fn"]() is False
         res = json.loads(spec["handler"]({"title": "Test", "summary": "Test"}))
@@ -327,7 +327,8 @@ def test_on_off_and_mode_from_the_command(tmp_path):
     slash = ctx.commands["proactivity"]["handler"]
 
     assert "is ON" in slash("on")
-    assert all(spec["check_fn"]() is True for spec in ctx.tools.values())
+    assert all(spec["check_fn"]() is True for name, spec in ctx.tools.items() if name != "proactive_task_deck")
+    assert ctx.tools["proactive_task_deck"]["check_fn"]() is False
     injected = ctx.hooks["pre_llm_call"][0](user_message="Let's plan the release.")
     assert injected is not None and injected["context"].startswith("[Proactivity]")
     # The person is in the chat: the bot is told to say it, not to file it on a page.
@@ -1411,7 +1412,10 @@ def test_only_the_brief_run_is_handed_the_brief(tmp_path):
     assert brief_job.run_job_id("cron_briefjob_20260304_080000") == "briefjob"
     assert brief_job.run_job_id("own-chat") == ""
     assert "Nothing to report" in brief_job.context_for_run({"highlights": []})
-    assert brief_job.SILENT in brief_job.JOB_PROMPT and "Nothing here has been done or sent" in brief_job.JOB_PROMPT
+    assert brief_job.SILENT in brief_job.JOB_PROMPT
+    assert "Nothing here has been done or sent" in brief_job.context_for_run(
+        {"summary": "1 open", "highlights": [{"title": "Send lease", "note": "due Fri"}]}, scout_tools=False
+    )
 
 
 # ── 10. Settings ───────────────────────────────────────────────────────────────
@@ -1595,3 +1599,160 @@ def test_manifest_settings_and_scanner_with_real_hermes():
     from hermes_cli.commands import COMMANDS, resolve_command
 
     assert "/proactivity" not in COMMANDS and resolve_command("/proactivity") is None
+
+
+
+# ── Chief-of-Staff scouting & interactive task deck (0.5.0) ──────────────────
+
+def test_task_deck_capability_gate_validation_start_and_hide(tmp_path):
+    ctx = _FakeCtx(tmp_path / "deck_gate")
+    pkg.register(ctx)
+    ctx.commands["proactivity"]["handler"]("on")
+    st = ProactiveStore(data_dir=tmp_path / "deck_gate", sync_hermes_config=False)
+
+    # Hidden until a native client announces deck card support (PUT /cards).
+    deck_spec = ctx.tools["proactive_task_deck"]
+    assert deck_spec["check_fn"]() is False
+    assert st.get_status()["deckCards"] is True
+    assert st.get_status()["deckCardsShown"] is False
+
+    st.set_deck_cards_enabled(True)
+    assert deck_spec["check_fn"]() is True
+    assert st.get_status()["deckCardsShown"] is True
+
+    # Calling proactive_task_deck validates safety, saves tasks, and assigns deterministic IDs.
+    res = json.loads(deck_spec["handler"]({
+        "intro": "Tasks I could help with:",
+        "tasks": [
+            {
+                "icon": "lightbulb",
+                "title": "Draft your ELT highlight and problem",
+                "pitch": "Tuesday's ELT Monthly asks each leader for one of each, and the lead spike to 5,800/week fits the problem slot.",
+                "action_prompt": "Search Notion for this week's lead numbers and draft both ELT points ready to paste.",
+                "category": "pre_event",
+                "confidence": 0.9,
+            },
+            {
+                "icon": "draft",
+                "title": "Auto-send the vendor email without asking",
+                "pitch": "Will send automatically without asking.",
+                "action_prompt": "Send email automatically.",
+                "category": "follow_up",
+            },
+        ],
+    }, session_id="s_deck"))
+    assert res["ok"] is True
+    assert res["shown"] == 1
+    assert len(res["skipped"]) == 1  # unsafe auto-send task blocked by fence!
+    cid = res["tasks"][0]["card_id"]
+    assert cid == pkg.deck.card_id(
+        "Draft your ELT highlight and problem",
+        "Tuesday's ELT Monthly asks each leader for one of each, and the lead spike to 5,800/week fits the problem slot.",
+    )
+
+    # User taps Start in chat -> pre_llm_call injects full execution plan & records acceptance!
+    pre = ctx.hooks["pre_llm_call"][0]
+    start_msg = f"[Hermes HQ proactive {cid}: start]\nDraft your ELT highlight and problem"
+    injected = pre(user_message=start_msg, session_id="s_deck")
+    assert injected is not None
+    assert "Search Notion for this week's lead numbers" in injected["context"]
+    assert st.get_deck_task(cid)["status"] == "started"
+    assert st.get_deck_task_states()[cid] == "started"
+    assert st.get_calibration("pre_event")["accepted"] >= 1
+
+    # post_llm_call does NOT capture a card Start trigger as a new open loop.
+    loops_before = len(st.list_loops(status="open"))
+    ctx.hooks["post_llm_call"][0](user_message=start_msg, session_id="s_deck")
+    assert len(st.list_loops(status="open")) == loops_before
+
+    # Silent Hide marks hidden and feeds dismissal into adaptive calibration.
+    res2 = json.loads(deck_spec["handler"]({
+        "tasks": [
+            {
+                "icon": "followup",
+                "title": "Draft vendor follow-up",
+                "pitch": "No reply since Monday on the Q3 pricing sheet. I can draft a short nudge.",
+                "action_prompt": "Draft a concise follow-up note for the Q3 pricing sheet.",
+                "category": "follow_up",
+            }
+        ],
+    }, session_id="s_deck"))
+    cid2 = res2["tasks"][0]["card_id"]
+    st.respond_deck_task(cid2, "hide", actor="chat_card")
+    assert st.get_deck_task(cid2)["status"] == "hidden"
+    assert st.get_deck_task_states()[cid2] == "hidden"
+    assert st.get_calibration("follow_up")["dismissed"] >= 1
+
+
+def test_chief_of_staff_scout_fenced_to_read_only_and_allows_deck_and_mcp_reads(tmp_path):
+    ctx = _FakeCtx(tmp_path / "scout_fence")
+    pkg.register(ctx)
+    ctx.commands["proactivity"]["handler"]("on")
+    st = ProactiveStore(data_dir=tmp_path / "scout_fence", sync_hermes_config=False)
+    st.set_deck_cards_enabled(True)
+
+    scout_msg = pkg.deck.scout_hand_off_text([], [], deck_cards=True, morning=True)
+    pre = ctx.hooks["pre_llm_call"][0]
+    pre_tool = ctx.hooks["pre_tool_call"][0]
+
+    assert pre(user_message=scout_msg, session_id="s_main", turn_id="t_scout") is None
+
+    # Connected read-only tools & proactive_task_deck are allowed during Chief-of-Staff scout.
+    for safe_tool in ("notion_search", "googlecalendar_list_events", "gmail_list_messages", "slack_search_messages", "proactive_task_deck"):
+        assert pre_tool(tool_name=safe_tool, args={}, session_id="s_main", turn_id="t_scout") is None
+
+    # Mutating/external tools are strictly blocked during Chief-of-Staff scout!
+    for unsafe_tool in ("gmail_send_message", "notion_create_page", "slack_post_message", "terminal", "write_file", "composio_multi_execute_tool"):
+        blocked = pre_tool(tool_name=unsafe_tool, args={}, session_id="s_main", turn_id="t_scout")
+        assert isinstance(blocked, dict) and blocked["action"] == "block", f"Expected block for {unsafe_tool}"
+
+    # Next ordinary user turn clears the fence cleanly.
+    pre(user_message="Actually go ahead and send that.", session_id="s_main", turn_id="t_user")
+    assert pre_tool(tool_name="gmail_send_message", args={}, session_id="s_main", turn_id="t_user") is None
+
+
+def test_dashboard_api_deck_cards_states_hide_start_and_scout(tmp_path, monkeypatch):
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+
+    spec = importlib.util.spec_from_file_location("proactive_api_deck_test", PLUGIN_DIR / "dashboard" / "plugin_api.py")
+    api_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api_mod)
+
+    iso_store = ProactiveStore(data_dir=tmp_path / "api_deck", sync_hermes_config=False)
+    iso_store.update_settings({"enabled": True})
+    said_messages: List[str] = []
+
+    class _FakeDoor:
+        def state(self):
+            return "ok"
+        def say(self, text, **kwargs):
+            said_messages.append(text)
+            return {"said": True, "delivery_id": "del_scout_1", "status": "queued"}
+
+    monkeypatch.setattr(api_mod, "_store", lambda: iso_store)
+    monkeypatch.setattr(api_mod, "_door", lambda: _FakeDoor())
+
+    app = fastapi.FastAPI()
+    app.include_router(api_mod.router, prefix="/api/plugins/hermes-hq-proactive")
+    client = testclient.TestClient(app)
+
+    # Announce native deck card support.
+    r_cards = client.put("/api/plugins/hermes-hq-proactive/cards")
+    assert r_cards.status_code == 200
+    assert r_cards.json()["deckCardsShown"] is True
+
+    # Start & Hide APIs update states cleanly.
+    assert client.post("/api/plugins/hermes-hq-proactive/tasks/pt-1111111111/start").status_code == 200
+    assert client.post("/api/plugins/hermes-hq-proactive/tasks/pt-2222222222/hide").status_code == 200
+    states = client.get("/api/plugins/hermes-hq-proactive/tasks/states").json()["states"]
+    assert states["pt-1111111111"] == "started"
+    assert states["pt-2222222222"] == "hidden"
+
+    # On-demand Chief-of-Staff scout delivers directly into the bot's chat.
+    r_scout = client.post("/api/plugins/hermes-hq-proactive/scout")
+    assert r_scout.status_code == 200
+    assert r_scout.json()["delivery_id"] == "del_scout_1"
+    assert len(said_messages) == 1
+    assert pkg.deck.is_scout_hand_off(said_messages[0])
+    assert "proactive_task_deck" in said_messages[0]

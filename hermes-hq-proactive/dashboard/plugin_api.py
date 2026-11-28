@@ -79,7 +79,12 @@ def _sweep():
 
 def _brief_job():
     _store_mod()
+    _sibling("hermes_hq_proactive_deck", "deck.py")
     return _sibling("hermes_hq_proactive_brief_job", "brief_job.py")
+
+
+def _deck():
+    return _sibling("hermes_hq_proactive_deck", "deck.py")
 
 
 def _store():
@@ -153,6 +158,7 @@ class SettingsPatch(BaseModel):
     loop_radar_enabled: Optional[bool] = None
     idle_sweep_enabled: Optional[bool] = None
     daily_brief_enabled: Optional[bool] = None
+    scout_tools_enabled: Optional[bool] = None
     pattern_detection_enabled: Optional[bool] = None
     allow_llm_in_sweep: Optional[bool] = None
     scan_recent_chats: Optional[bool] = None
@@ -450,3 +456,87 @@ def reset_calibration(body: Optional[CalibrationResetBody] = None) -> Dict[str, 
     cat = body.category if body is not None else None
     rows = _store().reset_calibration(cat)
     return {"ok": True, "calibration": rows}
+
+
+# ── Chief-of-Staff Task Deck (0.5.0) ───────────────────────────────────────────
+
+@router.put("/cards")
+def announce_deck_cards() -> Dict[str, Any]:
+    """Called by Hermes HQ to announce native swipeable ``proactive_task_deck`` support."""
+    st = _store()
+    st.set_deck_cards_enabled(True)
+    return {"ok": True, "deckCards": True, "deckCardsShown": True}
+
+
+@router.get("/tasks/states")
+def get_task_states() -> Dict[str, Any]:
+    st = _store()
+    return {
+        "ok": True,
+        "deckCards": True,
+        "deckCardsShown": st.deck_cards_enabled(),
+        "states": st.get_deck_task_states(limit=250),
+    }
+
+
+@router.post("/tasks/{card_id}/start")
+def start_deck_task(card_id: str) -> Dict[str, Any]:
+    try:
+        task = _store().respond_deck_task(card_id, "start", actor="chat_card")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "task": task}
+
+
+@router.post("/tasks/{card_id}/hide")
+def hide_deck_task(card_id: str) -> Dict[str, Any]:
+    try:
+        task = _store().respond_deck_task(card_id, "hide", actor="chat_card")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "task": task}
+
+
+@router.post("/scout")
+def trigger_scout() -> Dict[str, Any]:
+    """Start an on-demand read-only Chief-of-Staff check-in right in this bot's chat."""
+    st = _store()
+    if not st.is_enabled():
+        raise HTTPException(status_code=400, detail="Turn Proactivity (Beta) on before running a check-in.")
+    pol = _policy()
+    settings = st.get_settings()
+    now = pol.utc_now()
+    suppressed = set(settings.get("disabled_categories") or [])
+    for cal in st.list_calibration():
+        paused = pol.parse_iso(cal.get("auto_paused_until"))
+        if paused is not None and paused > now:
+            suppressed.add(str(cal.get("category")))
+    prompt = _deck().scout_hand_off_text(
+        st.list_loops(status="open", limit=12),
+        st.list_offers(status="pending", limit=8),
+        deck_cards=st.deck_cards_enabled(),
+        morning=False,
+        focus_note=str(settings.get("focus_note") or ""),
+        skip_note=str(settings.get("skip_note") or ""),
+        suppressed_categories=tuple(sorted(suppressed)),
+        day_words=_sweep()._local_day,
+    )
+    door = _door()
+    chat_mod = _sibling("hermes_hq_proactive_chat", "chat.py")
+    res = door.say(
+        prompt,
+        key=f"scout:{pol.iso_utc(now)}",
+        state_db_path=st.resolve_state_db_path(),
+        even_if_busy=True,
+    )
+    if not res.get("said"):
+        why = str(res.get("why") or "unavailable")
+        raise HTTPException(status_code=409, detail=chat_mod.HELD.get(why, f"Could not start check-in ({why})."))
+    st.log_audit(
+        event_type="scout_started",
+        trigger="dashboard",
+        summary="Started a Chief-of-Staff check-in in this bot's chat.",
+        outcome="said",
+        details={"delivery_id": res.get("delivery_id")},
+    )
+    return {"ok": True, "delivery_id": res.get("delivery_id"), "deck_cards": st.deck_cards_enabled()}

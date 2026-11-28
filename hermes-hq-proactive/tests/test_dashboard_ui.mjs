@@ -215,7 +215,8 @@ test("on: every tab renders in plain words", () => {
   assert.match(pages.settings, /When it finds something\s*The bot messages me in its chat\s*Make it a card in Tasks › Ideas\s*Keep it on this page/);
   assert.match(pages.settings, /Most messages a day/);
   assert.match(pages.settings, /Look into it before messaging me/);
-  assert.match(pages.settings, /Morning brief in the bot's chat/);
+  assert.match(pages.settings, /Morning check-in in the bot's chat/);
+  assert.match(pages.settings, /Read connected tools during check-ins/);
 });
 
 test("a suggestion in Tasks › Ideas can only be dismissed here; one on the page can be answered", () => {

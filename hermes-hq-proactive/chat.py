@@ -55,6 +55,11 @@ _LOOK = (
     "nothing useful on an item, give it one line saying it is still open. No headings, and no list of what "
     "you checked."
 )
+_LOOK_DECK_EXTRA = (
+    " If your look-up surfaces 1 to 3 concrete tasks you can immediately draft, compare, or prepare for the user, "
+    "call `proactive_task_deck` once with those cards (each citing the specific facts you just found and a clear "
+    "action_prompt to execute when the user taps Start)."
+)
 _TELL = (
     "the user left these open and has not asked about them. Do not use tools or look anything up. Write the "
     "user one short message in plain words: for each item, what is open and the one next step you could take "
@@ -93,12 +98,13 @@ def hand_off_text(
     loops: Mapping[str, Mapping[str, Any]],
     *,
     lookup: bool = True,
+    deck_cards: bool = False,
     day_words: Callable[[str], str] = str,
 ) -> str:
     """The turn handed to the bot: instructions in the bracketed first line (the app leaves that
     line out), then the finds in plain words (the app shows those in the card)."""
     loop_ids = [str(o.get("loop_id") or "") for o in offers]
-    head = HEAD + (_LOOK if lookup else _TELL)
+    head = HEAD + ((_LOOK + (_LOOK_DECK_EXTRA if deck_cards else "")) if lookup else _TELL)
     if lookup and any(loop_ids):
         # Ids are letters, digits and underscores; a "]" or a line break here would end the first line early.
         safe = [i if i.replace("_", "").isalnum() else "" for i in loop_ids]
@@ -289,7 +295,13 @@ def say_waiting(
                 loop = store.get_loop(str(offer["loop_id"]))
                 if loop is not None:
                     loops[str(offer["loop_id"])] = loop
-        text = hand_off_text(batch, loops, lookup=bool(settings.get("chat_lookup", True)), day_words=day_words)
+        text = hand_off_text(
+            batch,
+            loops,
+            lookup=bool(settings.get("chat_lookup", True)),
+            deck_cards=bool(store.deck_cards_enabled()) if hasattr(store, "deck_cards_enabled") else False,
+            day_words=day_words,
+        )
         tries = 0
     ids = [str(o["id"]) for o in batch]
     # The id comes from the finds as well as the words: the same item brought up a second time,

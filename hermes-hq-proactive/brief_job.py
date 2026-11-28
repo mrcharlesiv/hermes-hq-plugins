@@ -27,12 +27,9 @@ META_JOB_STATE = "brief_job_state"
 SILENT = "[SILENT]"
 
 JOB_PROMPT = (
-    f"{JOB_MARK} Write this morning's Proactivity brief for the user. The items are given to you below this "
-    "message, under 'Proactivity brief items'. Use only those: do not call tools, look anything up, or add items. "
-    f"If it says there is nothing to report, reply with exactly {SILENT} and nothing else. Otherwise write at most "
-    "6 short plain lines: one line saying how many things are open, then the items, most pressing first, each with "
-    "its date if it has one. No headings, no sign-off. End with this line, word for word: "
-    "'These are reminders only. Nothing here has been done or sent.'"
+    f"{JOB_MARK} Run this morning's Proactivity check-in for the user following the instructions below under "
+    "'Proactivity brief items'. Read-only only: never send, post, book, buy, pay, create, update, or delete "
+    f"anything. If there is genuinely nothing timely to report, reply with exactly {SILENT} and nothing else."
 )
 
 _RUN_ID = re.compile(r"^cron_(.+)_\d{8}_\d{6}$")
@@ -191,12 +188,48 @@ def is_brief_run(store, *, session_id: str = "", execution: Any = None) -> bool:
     return bool(job_id) and job_id == (store.get_meta(META_JOB_ID) or "")
 
 
-def context_for_run(brief: Optional[Mapping[str, Any]]) -> str:
-    """The brief as the context block the job's run reads."""
+def context_for_run(
+    brief: Optional[Mapping[str, Any]],
+    *,
+    scout_tools: bool = False,
+    deck_cards: bool = False,
+    focus_note: str = "",
+    skip_note: str = "",
+    suppressed_categories: tuple[str, ...] = (),
+) -> str:
+    """The brief and instructions as the context block the morning job's run reads."""
     highlights = list((brief or {}).get("highlights") or [])
+    if scout_tools:
+        try:
+            from . import deck as deck_mod
+        except ImportError:  # pragma: no cover
+            import sys
+            deck_mod = sys.modules["hermes_hq_proactive_deck"]
+        instr = deck_mod.chief_of_staff_instructions(
+            deck_cards=deck_cards,
+            morning=True,
+            focus_note=focus_note,
+            skip_note=skip_note,
+            suppressed_categories=suppressed_categories,
+        )
+        lines = ["Proactivity brief items:", instr]
+        if highlights:
+            lines.append("Tracked open items and pending suggestions:")
+            for h in highlights[:10]:
+                note = f" ({h['note']})" if h.get("note") else ""
+                lines.append(f"- {h.get('title', '')}{note}")
+        else:
+            lines.append("Tracked open items: none tracked yet (still check connected calendar, Notion, email, Slack, and memory).")
+        return "\n".join(line for line in lines if line)
+
     if not highlights:
         return "Proactivity brief items:\nNothing to report today."
-    lines = ["Proactivity brief items:", str((brief or {}).get("summary") or "").strip()]
+    lines = [
+        "Proactivity brief items:",
+        "Use only the items below (do not call tools). Write at most 6 short plain lines, most pressing first, "
+        "ending with: 'These are reminders only. Nothing here has been done or sent.'",
+        str((brief or {}).get("summary") or "").strip(),
+    ]
     for h in highlights[:8]:
         note = f" ({h['note']})" if h.get("note") else ""
         lines.append(f"- {h.get('title', '')}{note}")

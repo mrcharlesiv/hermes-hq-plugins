@@ -92,6 +92,10 @@
     calibration_reset: "Reset",
     sweep_completed: "Check",
     sweep_quiet: "Check",
+    deck_offered: "Task deck",
+    deck_task_started: "Started",
+    deck_task_hidden: "Hidden",
+    scout_started: "Check-in",
   };
 
   const NUMBER_FIELDS = [
@@ -110,7 +114,8 @@
     ["idle_sweep_enabled", "Check every hour", "Looks at what is due, overdue or has gone quiet. Free when nothing is new."],
     ["allow_llm_in_sweep", "Let the check use a model", "A small model reads new chat messages and writes short drafts. Off: fixed rules only, at no cost."],
     ["chat_lookup", "Look into it before messaging me", "The bot looks the thing up first, reading only, and tells you what it found. Off: it only tells you what is open."],
-    ["daily_brief_enabled", "Morning brief in the bot's chat", "A few lines once a day. Nothing is posted on a day with nothing to report."],
+    ["daily_brief_enabled", "Morning check-in in the bot's chat", "Posts a Chief-of-Staff check-in and ready-to-start task deck once a day. Nothing is posted when nothing is timely."],
+    ["scout_tools_enabled", "Read connected tools during check-ins", "Reads your bot's connected calendar, Notion, email, Slack, and memory (strictly read-only) so every task card cites real dates and docs."],
     ["in_turn_enabled", "Go one step further in chats", "Asks the bot to do the one obvious read-only check and tell you, instead of only suggesting it."],
     ["pattern_detection_enabled", "Notice requests you repeat", "After the same multi-step request three times, suggests making it a skill or a scheduled job."],
   ];
@@ -345,7 +350,7 @@
     );
   }
 
-  function TodayTab({ overview, busy, checking, onRespond, onCheck, onCopied }) {
+  function TodayTab({ overview, busy, checking, onRespond, onCheck, onScout, onCopied }) {
     const brief = overview.brief;
     const st = overview.status;
     const pending = overview.pending_offers || [];
@@ -372,6 +377,7 @@
             h(
               "div",
               { className: "hq-pro-actions" },
+              h(Button, { disabled: busy || checking, onClick: onScout }, "Run Check-In"),
               h(Button, { outlined: true, disabled: busy || checking, onClick: onCheck }, checking ? "Checking…" : "Check Now")
             )
           )
@@ -1292,6 +1298,13 @@
       [showToast]
     );
 
+    const onScout = useCallback(
+      function () {
+        return call("/scout", "POST", {}, "Chief-of-Staff check-in started in this bot's chat.", "Could not start the check-in.");
+      },
+      [call]
+    );
+
     const onAddLoop = useCallback(
       function (payload) {
         return call("/loops", "POST", payload, function (res) {
@@ -1473,6 +1486,7 @@
                       checking: checking,
                       onRespond: onRespond,
                       onCheck: onCheck,
+                      onScout: onScout,
                       onCopied: onCopied,
                     })
           )
