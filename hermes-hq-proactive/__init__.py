@@ -24,7 +24,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 if __package__:
     from . import brief_job, chat, clock, inbox, origin, policy, radar, session_scan, sweep
@@ -221,6 +221,9 @@ def register(ctx) -> None:
     chat_door = chat.Door(home)
     # A find handed to the bot's chat is a turn of ours: session id -> that turn's id, while it runs.
     fenced: Dict[str, str] = {}
+    # ... and the turn ids themselves. Hermes can give a long chat a new session id in the middle
+    # of a turn (when it shortens the chat), and the turn id is what stays the same.
+    fenced_turns: List[str] = []
 
     # An optional model slot, so the check can be pointed at a small, cheap model.
     try:
@@ -279,7 +282,11 @@ def register(ctx) -> None:
         # stays fenced even if Proactivity is switched off while it runs.)
         sid = str(session_id or "")
         if chat.is_hand_off(msg_text):
-            fenced[sid] = str(kwargs.get("turn_id") or "")
+            turn_id = str(kwargs.get("turn_id") or "")
+            fenced[sid] = turn_id
+            if turn_id and turn_id not in fenced_turns:
+                fenced_turns.append(turn_id)
+                del fenced_turns[:-64]
             return None
         fenced.pop(sid, None)
         settings = store.get_settings()   # read once: this runs on every turn
@@ -392,11 +399,16 @@ def register(ctx) -> None:
         sid = str(session_id or "")
         turn = str(kwargs.get("turn_id") or "")
         tool_args = args if isinstance(args, dict) else None
-        if sid in fenced and (not fenced[sid] or not turn or fenced[sid] == turn):
+        if (turn and turn in fenced_turns) or (sid in fenced and (not fenced[sid] or not turn)):
             run = policy.CHAT_TURN_NAME
             allowed, reason = policy.is_tool_allowed_in_sweep(
-                str(tool_name or ""), tool_args, run=run, also_allowed=policy.CHAT_TURN_ALSO_ALLOWED
+                str(tool_name or ""), tool_args, run=run,
+                also_allowed=policy.CHAT_TURN_ALSO_ALLOWED, not_allowed=policy.CHAT_TURN_NOT_ALLOWED,
             )
+            if not allowed:
+                # The person may have typed into this chat while the look-up was still running.
+                reason += (" If the user has asked for this themselves since, say you were in the middle of a "
+                           "Proactivity look-up and ask them to send it again.")
         else:
             job_id = brief_job.run_job_id(sid, _cron_execution())
             if not job_id or job_id != (store.get_meta(brief_job.META_JOB_ID) or ""):

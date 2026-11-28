@@ -1030,6 +1030,9 @@ class _FakeDoor:
     def __init__(self, *, running: bool = True, takes: bool = True, session_id: str = "botchat"):
         self.running, self.takes, self.session_id = running, takes, session_id
         self.turns: Dict[str, str] = {}   # delivery id -> the turn handed over
+        self.lost_reply = False           # Hermes takes the turn, then the answer to us is lost
+        self.failed: set = set()          # delivery ids the bot could not answer
+        self.fail_next = False
 
     def find_canonical_live_owner(self, home):
         if not self.running:
@@ -1040,7 +1043,15 @@ class _FakeDoor:
     def deliver_to_live_owner(self, home, owner, message, *, delivery_id=None):
         if not self.takes:
             raise RuntimeError("admission_conflict")
-        self.turns.setdefault(delivery_id, message)   # the same id twice is one turn
+        if self.fail_next:
+            self.fail_next = False
+            self.failed.add(delivery_id)
+        if delivery_id in self.failed:
+            return {"status": "failed", "admission_id": "adm_" + delivery_id[:6], "delivery_id": delivery_id}
+        if self.turns.setdefault(delivery_id, message) != message:   # the same id twice is one turn
+            raise RuntimeError("admission_conflict")
+        if self.lost_reply:
+            raise TimeoutError("no answer from the gateway")
         return {"status": "queued", "admission_id": "adm_" + delivery_id[:6], "delivery_id": delivery_id,
                 "message": self.turns[delivery_id]}
 
@@ -1189,6 +1200,64 @@ def test_the_same_item_is_brought_up_twice_at_most(tmp_path):
     assert [o["delivered_to"] for o in st.list_offers(status="pending")] == ["page"]
 
 
+def test_a_second_mention_is_a_new_message_even_in_the_same_words(tmp_path):
+    st = _on(tmp_path, scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    # Already past its date, so the find reads the same both times, word for word.
+    loop = st.add_loop(kind="commitment", title="Send the signed lease back",
+                       due_at=policy.iso_utc(NOW_UTC - timedelta(days=2)))[0]
+    assert _check(st, door)["said_in_chat"] == 1
+    assert _check(st, door, at=NOW_UTC + timedelta(days=4))["said_in_chat"] == 1
+    first, second = hermes.turns.values()
+    assert first == second and len(hermes.turns) == 2 and st.times_said(loop["id"]) == 2
+
+
+def test_a_hand_off_in_doubt_goes_again_as_it_was_and_a_failed_one_is_not_counted(tmp_path):
+    # Hermes took the turn but its answer to us was lost. A new find turns up before the next
+    # check: the first one still goes again as it was, so the bot gets it once, not twice.
+    st = _on(tmp_path / "doubt", scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    hermes.lost_reply = True
+    _due_soon(st, "Send the signed lease back")
+    assert _check(st, door)["chat_held"] == "refused" and len(hermes.turns) == 1
+    hermes.lost_reply = False
+    _due_soon(st, "Renew the parking permit")
+    again = _check(st, door, at=NOW_UTC + timedelta(hours=1))
+    assert again["said_in_chat"] == 1 and again["chat_waiting"] == 1 and len(hermes.turns) == 1
+    last = _check(st, door, at=NOW_UTC + timedelta(hours=2))
+    assert last["said_in_chat"] == 1 and len(hermes.turns) == 2
+    assert sum("Send the signed lease back" in turn for turn in hermes.turns.values()) == 1
+
+    # The bot could not answer the turn: nothing was said, so it is not counted and goes again
+    # as a new message (asking again under the spent id would only return the same failure).
+    st = _on(tmp_path / "failed", scan_recent_chats=False)
+    door, hermes = _door(tmp_path)
+    hermes.fail_next = True
+    loop = _due_soon(st, "Send the signed lease back")
+    failed = _check(st, door)
+    assert failed["said_in_chat"] == 0 and failed["chat_held"] == "failed" and st.times_said(loop["id"]) == 0
+    assert st.count_chat_messages(hours=24, now=NOW_UTC) == 0
+    assert _check(st, door, at=NOW_UTC + timedelta(hours=1))["said_in_chat"] == 1 and len(hermes.turns) == 1
+
+
+def test_finds_waiting_for_the_chat_follow_a_change_of_setting(tmp_path):
+    night = datetime(2026, 3, 5, 5, 0, tzinfo=timezone.utc)       # 11 pm in Chicago
+    morning = datetime(2026, 3, 5, 15, 0, tzinfo=timezone.utc)
+    for place in ("page", "ideas"):
+        st = _on(tmp_path / place, scan_recent_chats=False)
+        door, hermes = _door(tmp_path)
+        box, ideas = _fake_inbox()
+        st.add_loop(kind="commitment", title="Send the signed lease back",
+                    due_at=policy.iso_utc(night + timedelta(hours=5)))
+        assert _check(st, door, box, at=night)["chat_held"] == "quiet_hours"
+        # Overnight the person picks another place for finds. The one held back goes there.
+        st.update_settings({"finds_go_to": place})
+        res = _check(st, door, box, at=morning)
+        assert res["said_in_chat"] == 0 and hermes.turns == {}, place
+        assert [o["delivered_to"] for o in st.list_offers(status="pending")] == [place], place
+        assert len(ideas.rows) == (1 if place == "ideas" else 0), place
+
+
 def test_the_turn_handed_to_the_bot_only_reads(tmp_path):
     ctx = _FakeCtx(tmp_path / "p")
     pkg.register(ctx)
@@ -1206,8 +1275,14 @@ def test_the_turn_handed_to_the_bot_only_reads(tmp_path):
     for allowed in ("web_search", "web_extract", "read_file", "session_search", "proactive_loop_resolve",
                     "proactive_loop_list"):
         assert pre_tool(tool_name=allowed, args={}, session_id="botchat", turn_id="t1") is None, allowed
+    # It may not make new finds out of its own look-up: they would come back as the next message.
+    for own in ("proactive_offer", "proactive_loop_track", "proactive_watch_add"):
+        assert pre_tool(tool_name=own, args={}, session_id="botchat", turn_id="t1")["action"] == "block", own
+    # Hermes can give a long chat a new id in the middle of a turn. The turn is still ours.
+    assert pre_tool(tool_name="write_file", args={}, session_id="botchat-shortened", turn_id="t1")["action"] == "block"
     # Another chat is none of its business, and neither is this chat once the person types.
     assert pre_tool(tool_name="write_file", args={}, session_id="elsewhere", turn_id="t9") is None
+    assert pre_tool(tool_name="proactive_offer", args={}, session_id="elsewhere", turn_id="t9") is None
     pre_llm(user_message="Thanks. Go ahead and email it.", session_id="botchat", turn_id="t2", platform="desktop")
     assert pre_tool(tool_name="gmail_send_email", args={}, session_id="botchat", turn_id="t2") is None
 
@@ -1450,6 +1525,18 @@ def test_the_pages_routes_end_to_end(tmp_path, monkeypatch):
     gone = client.post(f"/api/offers/{in_ideas[0]['id']}/respond", json={"action": "dismiss"})
     assert gone.status_code == 200 and gone.json()["offer"]["status"] == "dismissed"
     assert ideas.rows[in_ideas[0]["idea_id"]]["state"] == "dismissed"
+
+    # Answering, on the page, something the bot said in its chat: "It Helped" leaves the item
+    # open (it is about the message); "Not Helpful" means do not bring it up again.
+    for action, loop_status in (("accept", "open"), ("dismiss", "dropped")):
+        item = store.add_loop(kind="commitment", title=f"Renew the parking permit ({action})")[0]
+        find = store.create_offer(category="next_step", title=f"Parking permit ({action})", summary="It runs out soon.",
+                                  tier=1, confidence=0.95, loop_id=item["id"], trigger="test")
+        assert find["ok"], find
+        store.mark_offer_delivered(find["offer"]["id"], delivered_to="chat")
+        store.mark_offers_said([find["offer"]["id"]], delivery_id="ab" * 32)
+        assert client.post(f"/api/offers/{find['offer']['id']}/respond", json={"action": action}).status_code == 200
+        assert store.get_loop(item["id"])["status"] == loop_status, action
 
     closed = client.patch(f"/api/loops/{loop_id}", json={"status": "resolved"}).json()["loop"]
     assert closed["status"] == "resolved" and closed["resolved_by"] == "user"

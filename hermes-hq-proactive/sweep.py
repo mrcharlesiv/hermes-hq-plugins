@@ -772,6 +772,7 @@ _HELD_WORDS = {
     "not_running": "could not reach the bot's chat, so {n} will wait",
     "no_chat": "could not reach the bot's chat, so {n} will wait",
     "refused": "could not reach the bot's chat, so {n} will wait",
+    "failed": "the bot could not answer, so {n} will be tried again",
     "unavailable": "could not reach the bot's chat, so {n} will wait",
 }
 
@@ -928,9 +929,15 @@ def run_signal_sweep(
 
         # 4b. Hand what is meant for the bot's chat to the bot, as one message (new finds, and
         # ones held back earlier for quiet hours, the day's limit or a chat in full flow).
-        said = chat_mod.say_waiting(
-            store, door, quiet=quiet, manual=manual, now_utc=now_utc, day_words=_local_day, trigger=trigger
-        )
+        # If the setting has since moved away from the chat (or this Hermes lost the door), the
+        # ones still waiting go where finds go now instead.
+        if inbox_mod.describe(store, inbox, door)["goes_to"] == "chat":
+            said = chat_mod.say_waiting(
+                store, door, quiet=quiet, manual=manual, now_utc=now_utc, day_words=_local_day, trigger=trigger
+            )
+        else:
+            inbox_mod.move_waiting(store, inbox, door)
+            said = {"said": 0, "waiting": 0, "held": "", "titles": []}
 
         # 5. The brief, as things stand now.
         brief = None

@@ -251,11 +251,16 @@ def patch_settings(body: SettingsPatch) -> Dict[str, Any]:
 @router.post("/offers/{offer_id}/respond")
 def respond_offer(offer_id: str, body: OfferRespondBody) -> Dict[str, Any]:
     st = _store()
-    # An answer to something the bot said in its chat is about the message, not about whether the
-    # thing itself is done, so the open item is left as it is.
+    # An answer to something the bot said in its chat is about the message. "It helped" says
+    # nothing about whether the thing itself is done, so the open item is left as it is. "Not
+    # helpful" means do not bring it up again, the same as the bot's own proactive_feedback.
     said = bool((st.get_offer(offer_id) or {}).get("said_at"))
+    unwanted = said and body.action.strip().lower() in ("dismiss", "dismissed")
     try:
-        result = st.respond_to_offer(offer_id, body.action, snooze_hours=body.snooze_hours, keep_loop=said)
+        result = st.respond_to_offer(
+            offer_id, body.action, snooze_hours=body.snooze_hours,
+            keep_loop=said and not unwanted, loop_outcome="not_wanted" if unwanted else None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:

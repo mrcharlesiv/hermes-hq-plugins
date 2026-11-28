@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 import logging
 import sqlite3
 import time
@@ -43,6 +44,7 @@ MAX_PER_MESSAGE = 3
 MAX_TIMES_PER_ITEM = 2
 QUIET_CHAT_MINUTES = 5.0   # the person typed or the bot answered this recently: wait for the next check
 KEEP_HOURS = 72.0          # how long a find that was said waits for an answer, and is left alone
+META_ATTEMPT = "chat_attempt"   # a hand-off whose outcome is not known yet, kept to be tried again as it was
 
 _LOOK = (
     "the user left these open and has not asked about them. Look into each one now, reading only: search, "
@@ -67,6 +69,7 @@ HELD = {
     "not_running": "The bot was not running, so it will bring this up at the next check.",
     "no_chat": "The bot has no chat of its own yet, so this waits on the Proactivity page.",
     "refused": "Hermes did not take the message, so it will be tried again at the next check.",
+    "failed": "The bot could not answer that message, so it will be tried again at the next check.",
     "unavailable": "This Hermes cannot post to the bot's chat.",
 }
 
@@ -169,13 +172,15 @@ class Door:
         self,
         text: str,
         *,
+        key: str = "",
         state_db_path: Optional[Path] = None,
         now: Optional[float] = None,
         even_if_busy: bool = False,
     ) -> Dict[str, Any]:
         """Hand one turn to the bot's chat. ``{"said": True, "delivery_id": ...}`` once Hermes has
         taken it (the bot answers in its own time), else ``{"said": False, "why": <a key of HELD>}``.
-        The id is made from the text, so handing the same turn over twice is one message."""
+        The id is made from *key* (else the text), so handing the same turn over twice under one
+        key is one message, and ``refused`` (Hermes may or may not have taken it) is safe to retry."""
         api = self._api()
         if self.home is None or api is None:
             return {"said": False, "why": "unavailable"}
@@ -189,7 +194,7 @@ class Door:
             last = _last_activity(state_db_path, str(owner.get("session_id") or ""))
             if last is not None and (now or time.time()) - last < QUIET_CHAT_MINUTES * 60.0:
                 return {"said": False, "why": "busy"}
-        delivery_id = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        delivery_id = hashlib.sha256((key or text).encode("utf-8")).hexdigest()
         try:
             receipt = api.deliver_to_live_owner(self.home, owner, text, delivery_id=delivery_id)
         except Exception as exc:
@@ -197,7 +202,29 @@ class Door:
             return {"said": False, "why": "refused"}
         if not isinstance(receipt, Mapping) or receipt.get("refused") or not receipt.get("admission_id"):
             return {"said": False, "why": "refused"}
-        return {"said": True, "delivery_id": delivery_id, "status": str(receipt.get("status") or "")}
+        status = str(receipt.get("status") or "")
+        if status in ("failed", "cancelled"):
+            # Known not to have reached the bot. This id is spent: asking again under it only
+            # returns this same receipt.
+            return {"said": False, "why": "failed"}
+        return {"said": True, "delivery_id": delivery_id, "status": status}
+
+
+def _attempt(store, waiting_ids: Sequence[str]) -> Optional[Dict[str, Any]]:
+    """The hand-off left in doubt last time, if every find in it is still waiting."""
+    try:
+        kept = json.loads(store.get_meta(META_ATTEMPT) or "null")
+    except ValueError:
+        kept = None
+    if not isinstance(kept, dict) or not isinstance(kept.get("text"), str):
+        return None
+    ids = [str(i) for i in kept.get("ids") or []]
+    if not ids or not set(ids) <= set(waiting_ids):
+        return None
+    try:
+        return {"ids": ids, "text": kept["text"], "n": int(kept.get("n") or 0)}
+    except (TypeError, ValueError):
+        return None
 
 
 def say_waiting(
@@ -240,22 +267,41 @@ def say_waiting(
         out["held"] = "limit"
         return out
 
-    batch = batch[:MAX_PER_MESSAGE]
-    loops: Dict[str, Mapping[str, Any]] = {}
-    for offer in batch:
-        if offer.get("loop_id"):
-            loop = store.get_loop(str(offer["loop_id"]))
-            if loop is not None:
-                loops[str(offer["loop_id"])] = loop
-    text = hand_off_text(batch, loops, lookup=bool(settings.get("chat_lookup", True)), day_words=day_words)
+    # A hand-off Hermes may or may not have taken goes again exactly as it was (same finds, same
+    # words, same id), so it can never arrive as two messages.
+    kept = _attempt(store, [str(o["id"]) for o in batch])
+    if kept is not None:
+        by_id = {str(o["id"]): o for o in batch}
+        batch = [by_id[i] for i in kept["ids"]]
+        text, tries = kept["text"], kept["n"]
+    else:
+        batch = batch[:MAX_PER_MESSAGE]
+        loops: Dict[str, Mapping[str, Any]] = {}
+        for offer in batch:
+            if offer.get("loop_id"):
+                loop = store.get_loop(str(offer["loop_id"]))
+                if loop is not None:
+                    loops[str(offer["loop_id"])] = loop
+        text = hand_off_text(batch, loops, lookup=bool(settings.get("chat_lookup", True)), day_words=day_words)
+        tries = 0
+    ids = [str(o["id"]) for o in batch]
+    # The id comes from the finds as well as the words: the same item brought up a second time,
+    # days later and in the same words, is a new message and not a replay of the first.
     res = door.say(
         text,
+        key=json.dumps([ids, tries, text]),
         state_db_path=store.resolve_state_db_path(),
         now=now_utc.timestamp() if now_utc is not None else None,
     )
     if not res.get("said"):
-        out["held"] = str(res.get("why") or "refused")
+        why = str(res.get("why") or "refused")
+        if why == "refused":
+            store.set_meta(META_ATTEMPT, json.dumps({"ids": ids, "text": text, "n": tries}))
+        elif why == "failed":
+            store.set_meta(META_ATTEMPT, json.dumps({"ids": ids, "text": text, "n": tries + 1}))
+        out["held"] = why
         return out
+    store.set_meta(META_ATTEMPT, "")
 
     store.mark_offers_said([str(o["id"]) for o in batch], delivery_id=str(res["delivery_id"]), keep_hours=KEEP_HOURS, now=now_utc)
     titles = [str(o["title"]) for o in batch]

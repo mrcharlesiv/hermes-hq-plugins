@@ -55,11 +55,11 @@ Times (quiet hours, the brief hour, "by tonight") are read on the clock Hermes i
 ## Safety
 
 - The plugin's own checks read chats and write only to its own database (and to Tasks › Ideas, if you chose that). They have no tools.
-- A bot has tools in two runs of the plugin's own: the turn in which a find is handed to its chat, and the morning brief. Both are held to reading in code: the terminal, writing files, starting other agents, and any tool whose name says it sends, posts, pays, books, creates, changes or deletes are refused there. The bot may close an item it has just settled.
+- A bot has tools in two runs of the plugin's own: the turn in which a find is handed to its chat, and the morning brief. Both are held to reading in code: the terminal, writing files, starting other agents, and any tool whose name says it sends, posts, pays, books, creates, changes or deletes are refused there. The bot may close an item it has just settled. It may not make new finds or new things to watch out of its own look-up.
 - The hand-off is a turn nobody typed, marked the way a scheduled job's result is, so Hermes, the app and other plugins do not take it for you.
 - The limit of that fence: it sees the tool calls that go through Hermes. A bot whose model runs tools of its own (a coding agent's built-in shell, for one) is held in those two runs by the instruction it is given, not by code.
 - A suggestion whose wording claims it will act by itself ("sends it for you", "paid automatically") is refused.
-- On a turn you typed, the plugin never blocks or changes what the bot may do.
+- On a turn you typed, the plugin never blocks or changes what the bot may do. One edge: if you type into the bot's chat while it is still in the middle of a look-up and Hermes folds your words into that same turn, the look-up's limit still holds, and the bot is told to ask you to send it again.
 
 ## What changed in 0.3.0
 
@@ -97,7 +97,7 @@ Asked for by the owner after a day of 0.3.0: every find had arrived as a card in
 - A find is now said in the bot's own chat. The bot looks into it first, reading only, and tells you what it found.
 - New settings: "When it finds something" (the chat, Tasks › Ideas, or this page), "Look into it before messaging me", and "Most messages a day" (3). 0.3.0's "Send suggestions to Tasks › Ideas", if you had turned it off, still keeps finds on the page until you choose.
 - The check's model is asked for less and better: things the bot can move forward by looking them up, not reminders of what only you can do.
-- A new tool, `proactive_feedback`, lets the bot record how you took a note, since a message has no Dismiss button. The page has It Helped and Not Helpful.
+- A new tool, `proactive_feedback`, lets the bot record how you took a note, since a message has no Dismiss button. The page has It Helped and Not Helpful. Not Helpful, either way, means the item is not brought up again.
 - Needs a Hermes that can post a turn to a bot's own chat (`tools.bot_live_delivery`, the door `deliver: bot-chat` jobs use). Without it, finds go to Ideas or stay on the page, and the page says so.
 
 ## Testing

@@ -128,12 +128,15 @@ def is_tool_allowed_in_sweep(
     *,
     run: str = "the Proactivity brief run",
     also_allowed: frozenset = frozenset(),
+    not_allowed: frozenset = frozenset(),
 ) -> tuple[bool, str]:
     """Return ``(allowed, reason)`` for a tool call in a run of ours that only reads: the brief
     job, or a find handed to the bot's chat (*run* names it in the reason the bot is given)."""
     name = (tool_name or "").strip()
     if not name:
         return False, f"A tool with no name is not allowed in {run}."
+    if name in not_allowed:
+        return False, f"'{name}' is not for {run}. Tell the user what you found instead."
     if name in SWEEP_ALWAYS_ALLOWED_TOOLS or name in also_allowed:
         return True, ""
     if name in SWEEP_ALWAYS_BLOCKED_TOOLS:
@@ -150,6 +153,9 @@ def is_tool_allowed_in_sweep(
 
 # A find handed to the bot's chat (chat.py): the bot may also close the item it just settled.
 CHAT_TURN_ALSO_ALLOWED = frozenset({"proactive_loop_resolve"})
+# ... and may not make new finds or new things to watch out of its own look-up: those would come
+# back as the next message, the plugin answering itself.
+CHAT_TURN_NOT_ALLOWED = frozenset({"proactive_offer", "proactive_loop_track", "proactive_watch_add"})
 CHAT_TURN_NAME = "this Proactivity look-up"
 
 

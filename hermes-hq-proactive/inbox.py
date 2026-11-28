@@ -242,6 +242,18 @@ def deliver(store, offer: Mapping[str, Any], inbox: Optional[Inbox], door: Any =
     return "page"
 
 
+def move_waiting(store, inbox: Optional[Inbox], door: Any = None) -> int:
+    """Finds that were waiting for the bot's chat when the person chose another place for them
+    (or the chat stopped being reachable): place each one again, where finds go now."""
+    if describe(store, inbox, door)["goes_to"] == "chat":
+        return 0
+    moved = 0
+    for offer in store.list_offers_waiting_for_chat():
+        deliver(store, offer, inbox, door)
+        moved += 1
+    return moved
+
+
 def sync(store, inbox: Optional[Inbox]) -> Dict[str, int]:
     """Bring back what the person did in Ideas since the last check."""
     out = {"added": 0, "dismissed": 0, "expired": 0}
