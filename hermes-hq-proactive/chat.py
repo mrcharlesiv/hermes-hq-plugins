@@ -74,6 +74,11 @@ HELD = {
 }
 
 
+# "Why now" lines that only repeat what the find's own words already say.
+_PLAIN_WHYS = ("seen in a recent chat.", "an open item is due within a day.", "an open item passed its date.",
+               "open for more than ")
+
+
 def is_hand_off(user_message: str) -> bool:
     """Is this turn one of ours: a find handed to the bot's chat?"""
     return (user_message or "").lstrip().startswith(HEAD)
@@ -109,15 +114,17 @@ def hand_off_text(
     for n, offer in enumerate(offers, start=1):
         loop = loops.get(str(offer.get("loop_id") or "")) or {}
         title = _one_line(offer.get("title"), 160)
+        summary = _one_line(offer.get("summary"), 400)
         if loop.get("due_at"):
-            title += f" (due {day_words(str(loop['due_at']))})"
+            day = day_words(str(loop["due_at"]))
+            if day not in summary:   # say the date once
+                title += f" (due {day})"
         lines.append(f"{n}. {title}" if count > 1 else title)
         pad = "   " if count > 1 else ""
-        summary = _one_line(offer.get("summary"), 400)
         if summary:
             lines.append(pad + summary)
         why = _one_line(offer.get("why"), 200)
-        if why and why.lower() != "seen in a recent chat.":
+        if why and not why.lower().startswith(_PLAIN_WHYS):
             lines.append(pad + "Why now: " + why)
         detail = _one_line(loop.get("detail"), 300)
         if detail and detail.lower() not in summary.lower():
