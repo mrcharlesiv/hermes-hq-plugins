@@ -63,6 +63,9 @@ tools instead of a table (Hermes's tool search keeps add-on tools out of a busy 
 same checks as a run's ideas; ideas.OUTSIDE_API says it is there.
 0.9.91: ask_cards.py and show_first.py make sure a bot writes needed context in chat before opening a clarify card,
 and replies in plain chat text first whenever the person skips a card or asks to explain.
+0.9.93: card_images.py, shopping.py, travel.py and show_cards.py require a real photo URL on every product and hotel
+card, refuse SVGs, logos, share banners and broken/HTML photo links, and extract a verified candidate photo from the
+store or hotel page into the refusal when one is missing.
 """
 import importlib.util
 import logging

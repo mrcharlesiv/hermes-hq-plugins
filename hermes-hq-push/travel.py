@@ -24,11 +24,21 @@ chat to show a card in. Nothing about a trip is logged or kept.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import re
+import sys
 from pathlib import Path
 from typing import Callable
+
+if "hermes_hq_card_images" in sys.modules:
+    card_images = sys.modules["hermes_hq_card_images"]
+else:
+    _ci_spec = importlib.util.spec_from_file_location("hermes_hq_card_images", Path(__file__).with_name("card_images.py"))
+    card_images = importlib.util.module_from_spec(_ci_spec)
+    sys.modules["hermes_hq_card_images"] = card_images
+    _ci_spec.loader.exec_module(card_images)
 
 FLIGHTS_TOOL = "show_flights"
 HOTELS_TOOL = "show_hotels"
@@ -178,8 +188,10 @@ HOTELS_SCHEMA = {
         "and total, cancellation and breakfast, on a map when you give the coordinates, with Book and Watch Price on "
         "each. Use it only after you have really looked rooms up on a hotel's or a booking site's pages (the browser, "
         "search or page extract) for the dates the user asked about. One call holds every hotel you recommend, best "
-        "first (up to 12). Take every value from the page and leave out any field it doesn't show: never guess or "
-        "invent a rate, a rating, a review count, a photo, the coordinates or a link. `price_per_night` and "
+        "first (up to 12). Take every value from the page and leave out any optional field it doesn't show: never guess or "
+        "invent a rate, a rating, a review count, a photo, the coordinates or a link. `image` is REQUIRED and must be a "
+        "real, direct https photo URL of the hotel from its page (never omit `image` and never use an SVG, logo, favicon "
+        "or generic banner). `price_per_night` and "
         "`total_price` are the prices the page shows for those dates; `url` is one https deep link to that hotel's "
         "page for those dates. Your reasons go in `why` and downsides in `caution`, not in your reply. This tool books "
         "nothing: it returns {hotels: \"shown\", ids} at once. Then don't repeat the hotels' names, rates or links in "
@@ -220,7 +232,11 @@ HOTELS_SCHEMA = {
                         "currency": {"type": "string", "description": "ISO 4217 code: USD (the default), EUR, GBP…"},
                         "was": {"type": "number",
                                 "description": "Only when the page shows a struck-through higher nightly rate."},
-                        "image": {"type": "string", "description": "https link to the hotel's main photo, from its page."},
+                        "image": {"type": "string",
+                                  "description": "Required. Direct https link to the hotel's main photo (JPEG, PNG or "
+                                                 "WebP) from its page — check web_extract markdown image links, "
+                                                 "og:image/JSON-LD, or open the page in the browser. Never use an SVG, "
+                                                 "logo, favicon or generic banner."},
                         "images": {"type": "array", "items": {"type": "string"},
                                    "description": "Optional further photos from the page (with `image`, up to "
                                                   f"{MAX_IMAGES})."},
@@ -236,7 +252,7 @@ HOTELS_SCHEMA = {
                         "caution": {"type": "array", "items": {"type": "string"},
                                     "description": f"Up to {MAX_CAUTION} short downsides worth knowing."},
                     },
-                    "required": ["name", "url"],
+                    "required": ["name", "url", "image"],
                 },
             },
             "follow_ups": {"type": "array", "items": {"type": "string"},
@@ -550,7 +566,7 @@ def check_flights(args) -> tuple[list[str], list[str], list[str]]:
     return c.problems, ids, c.long
 
 
-def check_hotels(args) -> tuple[list[str], list[str], list[str]]:
+def check_hotels(args, *, require_image: bool = True) -> tuple[list[str], list[str], list[str]]:
     """(problems, ids, long text) for a show_hotels call."""
     c = _Check()
     if not isinstance(args, dict):
@@ -566,7 +582,7 @@ def check_hotels(args) -> tuple[list[str], list[str], list[str]]:
     ids: list[str] = []
     for index, hotel in enumerate(hotels[:MAX_HOTELS + 1]):
         if not isinstance(hotel, dict):
-            c.problems.append(f"Hotel {index + 1} is an object with `name`, `url` and its price.")
+            c.problems.append(f"Hotel {index + 1} is an object with `name`, `url`, `image` and its price.")
             continue
         where = _where(index, _label(hotel, "name"), "hotel")
         name = c.text(hotel, "name", where, "name", required=True)
@@ -596,10 +612,17 @@ def check_hotels(args) -> tuple[list[str], list[str], list[str]]:
                               "these dates.")
         c.was(hotel, where, nightly, "price_per_night")
         c.currency(hotel, where)
+        has_image_input = False
         if hotel.get("image") not in (None, ""):
-            c.url(hotel, "image", where)
+            has_image_input = True
+            img = c.url(hotel, "image", where)
+            if img:
+                bad = card_images.bad_image_reason(img, url)
+                if bad:
+                    c.problems.append(f"{where}`image` {bad}.")
         images = hotel.get("images")
         if images not in (None, []):
+            has_image_input = True
             if not isinstance(images, list):
                 c.problems.append(f"{where}`images` is a list of https links.")
             else:
@@ -607,7 +630,13 @@ def check_hotels(args) -> tuple[list[str], list[str], list[str]]:
                 if len(images) > most:
                     c.problems.append(f"{where}`images` has {len(images)}; with `image` the card shows {MAX_IMAGES}.")
                 for i, image in enumerate(images[:MAX_IMAGES + 1]):
-                    c.link(image, f"{where}`images[{i}]`")
+                    img = c.link(image, f"{where}`images[{i}]`")
+                    if img:
+                        bad = card_images.bad_image_reason(img, url)
+                        if bad:
+                            c.problems.append(f"{where}`images[{i}]` {bad}.")
+        if require_image and not has_image_input:
+            c.problems.append(card_images.missing_photo_message(where, "hotel"))
         c.badge(hotel, where)
         c.text(hotel, "cancellation", where, "cancellation")
         c.text(hotel, "breakfast", where, "breakfast")
@@ -639,6 +668,36 @@ def decision(user_message) -> tuple[str, str] | None:
     return (found.group(1), found.group(2)) if found else None
 
 
+def _hotel_photo_items(args) -> list[dict]:
+    if not isinstance(args, dict) or not isinstance(args.get("hotels"), list):
+        return []
+    out: list[dict] = []
+    for index, hotel in enumerate(args["hotels"][:MAX_HOTELS]):
+        if not isinstance(hotel, dict):
+            continue
+        where = _where(index, _label(hotel, "name"), "hotel")
+        url = hotel.get("url").strip() if isinstance(hotel.get("url"), str) else ""
+        has_input = hotel.get("image") not in (None, "") or hotel.get("images") not in (None, [])
+        imgs: list[str] = []
+        raw_img = hotel.get("image")
+        if isinstance(raw_img, str) and raw_img.strip():
+            imgs.append(raw_img.strip())
+        raw_imgs = hotel.get("images")
+        if isinstance(raw_imgs, list):
+            for entry in raw_imgs[:MAX_IMAGES]:
+                if isinstance(entry, str) and entry.strip() and entry.strip() not in imgs:
+                    imgs.append(entry.strip())
+        if has_input:
+            valid = [u for u in imgs if _LINK.match(u) and not re.search(r"\s", u) and _URL_CHARS.match(u)
+                     and not card_images.bad_image_reason(u, url)]
+            if not valid:
+                continue
+            imgs = valid
+        pages = [url] if url.lower().startswith("https://") else []
+        out.append({"where": where, "images": imgs, "pages": pages})
+    return out
+
+
 # MARK: The tools
 
 def show_flights(args) -> str:
@@ -649,8 +708,12 @@ def show_flights(args) -> str:
                    "note": SHOWN_NOTE.format(kind="flights") + _long_words(long)})
 
 
-def show_hotels(args) -> str:
-    problems, ids, long = check_hotels(args)
+def show_hotels(args, *, probe: Callable[..., list[str]] | None = None) -> str:
+    problems, ids, long = check_hotels(args, require_image=(probe is None))
+    if probe is not None:
+        photo_items = _hotel_photo_items(args)
+        if photo_items:
+            problems.extend(probe(photo_items, kind="hotel"))
     if problems:
         return _failed(problems)
     return _reply({"hotels": "shown", "id": ids[0], "ids": ids,
@@ -668,7 +731,7 @@ def register_tool(ctx, data_dir: Callable[[], Path], serves: Callable[[], bool])
         return show_flights(args) if serves() else outside()
 
     def handle_hotels(args, session_id="", **kwargs):
-        return show_hotels(args) if serves() else outside()
+        return show_hotels(args, probe=card_images.verify_and_hint) if serves() else outside()
 
     def on() -> bool:
         try:

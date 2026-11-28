@@ -168,7 +168,8 @@ def test_long_flight_text_is_said_back_not_refused():
 # MARK: show_hotels
 
 def test_a_good_hotels_call_is_shown():
-    second = {"name": "Example Inn", "url": "https://example.net/inn", "total_price": 480}
+    second = {"name": "Example Inn", "url": "https://example.net/inn", "total_price": 480,
+              "image": "https://example.net/img/inn.jpg"}
     reply = hotels(HOTEL, second, location="Old Town", check_in="Fri Mar 6", check_out="Mon Mar 9",
                    guests="2 adults, 1 room", follow_ups=["Show cheaper ones"])
     assert reply["hotels"] == "shown" and reply["ids"][0] == HOTEL_ID and len(reply["ids"]) == 2
@@ -190,6 +191,9 @@ def test_a_good_hotels_call_is_shown():
     ({"was": 150}, "must be above `price_per_night`"),
     ({"was": 300, "price_per_night": None}, "needs a `price_per_night`"),
     ({"image": "http://example.com/a.jpg"}, "only a full https:// link"),
+    ({"image": None, "images": None}, "`image` is missing"),
+    ({"image": "https://example.com/img/logo.svg"}, "SVG"),
+    ({"image": HOTEL_URL}, "page link itself"),
     ({"images": "https://example.com/a.jpg"}, "list of https links"),
     ({"images": [f"https://example.com/{i}.jpg" for i in range(12)]}, "the card shows 12"),
     ({"images": ["/img/1.jpg"]}, "`images[0]`"),
@@ -249,7 +253,8 @@ def test_a_turn_outside_the_app_is_told_to_answer_in_its_reply(tmp_path):
         assert reply["status"] == "failed" and "reply" in reply["error"]
 
 
-def test_the_handlers_take_hermes_arguments(tmp_path):
+def test_the_handlers_take_hermes_arguments(tmp_path, monkeypatch):
+    monkeypatch.setattr(travel.card_images, "verify_and_hint", lambda *a, **kw: [])
     tools = registered(tmp_path)
     assert json.loads(tools["show_flights"]["handler"]({"flights": [FLIGHT]}, session_id="s1", task_id="t"))["id"] == FLIGHT_ID
     assert json.loads(tools["show_hotels"]["handler"]({"hotels": [HOTEL]}, session_id="s1"))["id"] == HOTEL_ID
@@ -268,7 +273,7 @@ def test_the_teaching_text_says_what_matters():
     assert {"segments", "relaxed_filters"} <= set(flight["properties"]) | set(
         travel.FLIGHTS_SCHEMA["parameters"]["properties"])
     hotel = travel.HOTELS_SCHEMA["parameters"]["properties"]["hotels"]["items"]
-    assert set(hotel["required"]) == {"name", "url"}
+    assert set(hotel["required"]) == {"name", "url", "image"}
 
 
 # MARK: The route and the add-on
