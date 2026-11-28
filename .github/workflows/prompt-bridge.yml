@@ -1,0 +1,42 @@
+name: Prompt bridge
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'hermes-hq-push/plugin.yaml'
+      - 'hermes-hq-push/push.py'
+      - 'hermes-hq-push/test_windows_reply_watcher.py'
+      - 'hermes-hq-push/gateway_logins.py'
+      - 'hermes-hq-push/windows_bridge.py'
+      - 'hermes-hq-push/test_windows_gateway_bridge.py'
+      - '.github/workflows/prompt-bridge.yml'
+  pull_request:
+    paths:
+      - 'hermes-hq-push/plugin.yaml'
+      - 'hermes-hq-push/push.py'
+      - 'hermes-hq-push/test_windows_reply_watcher.py'
+      - 'hermes-hq-push/gateway_logins.py'
+      - 'hermes-hq-push/windows_bridge.py'
+      - 'hermes-hq-push/test_windows_gateway_bridge.py'
+      - '.github/workflows/prompt-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  transport:
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ['3.11', '3.14']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Exercise the host's real prompt transport
+        run: python -m unittest discover -s hermes-hq-push -p "test_windows*.py" -v

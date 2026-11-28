@@ -544,6 +544,21 @@ All optional, in `~/.hermes/.env` (the old `DISPATCH_PUSH_RELAY_URL` and `DISPAT
 
 ### Tests
 
+The gateway prompt bridge uses Unix sockets on macOS/Linux and authenticated named pipes on Windows.
+Windows keeps its bridge authentication key in `plugin-data/hermes-hq-push/logins.sock.dpapi`, encrypted with
+current-user Windows DPAPI. Copying this file to another Windows account does not transfer access. The pipe
+carries JSON bytes, never pickled Python objects; it opens no TCP listener.
+
+The transport regression tests need only Python and never call a model, a push relay, or a real phone:
+
+```bash
+python -m unittest discover -s hermes-hq-push -p test_windows_gateway_bridge.py -v
+```
+
+CI runs them on Windows, macOS and Linux with Python 3.11 and 3.14. The Windows tests cover module loading,
+prompt answers, rejected credentials, a stalled unauthenticated peer, disconnects and listener restart.
+The macOS/Linux check sends a real prompt over a Unix socket.
+
 ```bash
 python3 -m unittest hermes-hq-push/test_push.py
 ```
