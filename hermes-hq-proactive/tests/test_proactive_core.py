@@ -1094,7 +1094,13 @@ def test_a_find_is_looked_into_and_said_in_the_bots_chat(tmp_path):
     # The bot is told to read only, to ask before anything else, and which items these are.
     assert "reading only" in head and "Do not book, buy, pay, send" in head and lease["id"] in head
     assert "Looking into 2 things you left open." in body
-    assert "1. " in body and "Send the signed lease back (due Mar 4)" in body and "Renew the parking permit" in body
+    assert "1. Due soon: Send the signed lease back\n" in body and "Renew the parking permit" in body
+    # The date is said once per find, and a "why" that only repeats it is left out.
+    assert body.count("Mar 4") == 2 and "Why now" not in body
+    told = chat.hand_off_text(
+        [{"title": "Answer the landlord", "summary": "They are waiting on the lease.", "why": "They wrote twice.",
+          "loop_id": "lp_1"}], {"lp_1": {"due_at": "2026-03-04T23:00:00Z"}}, day_words=lambda iso: "Mar 4")
+    assert "Answer the landlord (due Mar 4)" in told and "Why now: They wrote twice." in told
     assert "From the chat: The landlord wants it by email." in body and lease["id"] not in body
 
     # They wait for an answer, so the same item is not found again an hour later.
