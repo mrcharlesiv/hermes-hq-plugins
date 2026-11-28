@@ -119,12 +119,18 @@ def test_a_good_call_is_shown_and_says_what_comes_next():
     assert "Don't repeat" in reply["note"] and "order_card" in reply["note"]
 
 
-def test_only_title_store_and_url_and_price_are_needed():
+def test_only_title_store_url_price_and_image_are_needed():
     bare = {"title": "Trail Runner 2", "store": "Example Outfitters", "url": "https://example.com/p/trail-runner-2",
-            "price": 129.99}
+            "price": 129.99, "image": "https://example.com/img/trail-runner-2.jpg"}
     assert shown(bare)["id"] == PRODUCT_ID
+    # `images` alone also satisfies the photo requirement.
+    with_list = {**bare, "image": None, "images": ["https://example.com/img/trail-runner-2.jpg"]}
+    assert shown(with_list)["id"] == PRODUCT_ID
     # Out of stock with no price on the page: shown without one.
     assert shown({**bare, "price": None, "stock": "out"})["products"] == "shown"
+    # Missing photo is refused.
+    no_photo = {k: v for k, v in bare.items() if k != "image"}
+    assert "`image` is missing" in refusal(shown(no_photo))
 
 
 def test_harmless_extras_pass():
@@ -147,6 +153,12 @@ def test_long_text_is_shown_and_cut_and_said_back():
     ({"url": "/p/trail-runner-2"}, "only a full https:// link"),
     ({"url": ""}, "`url` is missing"),
     ({"image": "https://"}, "`image`"),
+    ({"image": None}, "`image` is missing"),
+    ({"image": "https://example.com/p/trail-runner-2"}, "page link itself"),
+    ({"image": "https://example.com/img/shoe.svg"}, "SVG"),
+    ({"image": "https://example.com/favicon.ico"}, "site icon"),
+    ({"image": "https://cdn.example.com/assets/Instacart_Share_Banner_3.jpg"}, "generic placeholder or site share banner"),
+    ({"image": "https://example.com/assets/logo.png"}, "site logo"),
     ({"images": ["https://example.com/a.jpg", "ftp://example.com/b.jpg"]}, "`images[1]`"),
     ({"images": ["https://example.com/a.jpg"] * 9}, "`images` has 9"),
     ({"price": "$129.99"}, "no currency sign"),
@@ -363,7 +375,8 @@ def test_a_turn_outside_the_app_is_told_to_answer_in_its_reply(tmp_path):
     assert orders() == {}
 
 
-def test_the_handlers_take_hermes_arguments(tmp_path):
+def test_the_handlers_take_hermes_arguments(tmp_path, monkeypatch):
+    monkeypatch.setattr(shopping.card_images, "verify_and_hint", lambda *a, **kw: [])
     tools = registered(tmp_path)
     assert json.loads(tools["show_products"]["handler"]({"products": [SHOE]}, session_id="s1", task_id="t"))["id"] == PRODUCT_ID
     assert json.loads(tools["order_card"]["handler"](ORDER, session_id="s1", task_id="t"))["id"] == ORDER_ID

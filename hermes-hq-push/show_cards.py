@@ -43,7 +43,9 @@ def note(travel: bool, shopping: bool) -> str | None:
     return (
         f"{MARK} this chat draws cards. When you have found {things} for them, show what you found by calling "
         f"{tools} instead of writing a table or a list: they see each one as a card they can tap, with its picture, "
-        "price and buttons. If the tool isn't in your tool list it is a deferred tool: load it with `tool_describe` "
+        "price and buttons. Every product or hotel card needs a real `image` photo URL from the page (check "
+        "`web_extract` markdown image links, `og:image`/JSON-LD, or the browser — never leave `image` out). "
+        "If the tool isn't in your tool list it is a deferred tool: load it with `tool_describe` "
         "and call it through `tool_call`. One you only mention in passing stays plain text, and don't mention this "
         "note.]"
     )

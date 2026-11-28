@@ -29,15 +29,25 @@ a restart doesn't lift a block. Nothing about a product is logged.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import logging
 import math
 import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
 from typing import Callable
+
+if "hermes_hq_card_images" in sys.modules:
+    card_images = sys.modules["hermes_hq_card_images"]
+else:
+    _ci_spec = importlib.util.spec_from_file_location("hermes_hq_card_images", Path(__file__).with_name("card_images.py"))
+    card_images = importlib.util.module_from_spec(_ci_spec)
+    sys.modules["hermes_hq_card_images"] = card_images
+    _ci_spec.loader.exec_module(card_images)
 
 PRODUCTS_TOOL = "show_products"
 ORDER_TOOL = "order_card"
@@ -85,10 +95,12 @@ PRODUCTS_SCHEMA = {
         "products with real prices from store pages you have actually looked at (search, page extract or the "
         "browser). One call holds every product you recommend, best first (up to 12); a comparison of two products "
         "is one call with both. Once the cards are in the chat, answer questions about them (which is better, what "
-        "the difference is) in words; call it again only for new products or changed prices. Take every value from the store's own page and leave out any field the page doesn't "
+        "the difference is) in words; call it again only for new products or changed prices. Take every value from the store's own page and leave out any optional field the page doesn't "
         "show: never guess or invent a rating, a review count, a price, an old price, a photo or the stock. `url` is "
-        "the product's own page at that store (not a search or category page); `image` and `images` are the "
-        "product's own photos from that page. Your reasons go in `why` and downsides in `caution`, not in your "
+        "the product's own page at that store (not a search or category page); `image` is REQUIRED and must be a real, "
+        "direct https photo URL of the product from its page (check `web_extract` markdown image links, `og:image`/JSON-LD "
+        "`image`, or open the page in the browser — never omit `image` and never pass an SVG, store logo, favicon or "
+        "generic share banner); `images` are further photos from that page. Your reasons go in `why` and downsides in `caution`, not in your "
         "reply. Don't use it for products you haven't looked up, or when the question isn't about buying something. "
         "This tool buys nothing: it returns {products: \"shown\", ids} at once. Then don't repeat the products' "
         "names, prices or links in your reply: end it with one short line (your pick and why, or a question). The "
@@ -122,8 +134,10 @@ PRODUCTS_SCHEMA = {
                                 "description": "The struck-through old price, only when the page shows one higher "
                                                "than `price`; otherwise leave it out."},
                         "image": {"type": "string",
-                                  "description": "https link to the product's main photo, from its store page. Leave "
-                                                 "it out rather than use a logo, a placeholder or a guessed link."},
+                                  "description": "Required. Direct https link to the product's main photo (JPEG, PNG or "
+                                                 "WebP) from its store page — check web_extract markdown image links, "
+                                                 "og:image/JSON-LD, or open the page in the browser. Never use an SVG, "
+                                                 "logo, favicon, placeholder, generic banner or guessed link."},
                         "images": {"type": "array", "items": {"type": "string"},
                                    "description": f"Optional further photos of it from the page, up to {MAX_IMAGES}."},
                         "brand": {"type": "string", "description": "Optional. Who makes it."},
@@ -166,7 +180,7 @@ PRODUCTS_SCHEMA = {
                                                      "delivery": {"type": "string"}},
                                       "required": ["store", "url"]}},
                     },
-                    "required": ["title", "store", "url"],
+                    "required": ["title", "store", "url", "image"],
                 },
             },
             "follow_ups": {"type": "array", "items": {"type": "string"},
@@ -492,7 +506,7 @@ def _where(index: int, title: str, kind: str = "product") -> str:
     return f"{kind.capitalize()} {index + 1}" + (f" ({title[:40]})" if title else "") + ": "
 
 
-def check_products(args) -> tuple[list[str], list[str], list[str]]:
+def check_products(args, *, require_image: bool = True) -> tuple[list[str], list[str], list[str]]:
     """(problems, ids, long text) for a show_products call."""
     c = _Check()
     if not isinstance(args, dict):
@@ -503,7 +517,7 @@ def check_products(args) -> tuple[list[str], list[str], list[str]]:
     ids: list[str] = []
     for index, product in enumerate(products[:MAX_PRODUCTS + 1]):
         if not isinstance(product, dict):
-            c.problems.append(f"Product {index + 1} is an object with `title`, `store`, `url` and `price`.")
+            c.problems.append(f"Product {index + 1} is an object with `title`, `store`, `url`, `price` and `image`.")
             continue
         title = product.get("title") if isinstance(product.get("title"), str) else ""
         where = _where(index, title.strip())
@@ -517,17 +531,35 @@ def check_products(args) -> tuple[list[str], list[str], list[str]]:
             c.problems.append(f"{where}`price` is missing: give the price the store's page shows (leave it out only "
                               "for an out-of-stock product whose page shows none).")
         c.was(product, where, price)
+        has_image_input = False
+        valid_images: list[str] = []
         if product.get("image") not in (None, ""):
-            c.url(product, "image", where)
+            has_image_input = True
+            img = c.url(product, "image", where)
+            if img:
+                bad = card_images.bad_image_reason(img, url)
+                if bad:
+                    c.problems.append(f"{where}`image` {bad}.")
+                else:
+                    valid_images.append(img)
         images = product.get("images")
         if images not in (None, []):
+            has_image_input = True
             if not isinstance(images, list):
                 c.problems.append(f"{where}`images` is a list of https links.")
             else:
                 if len(images) > MAX_IMAGES:
                     c.problems.append(f"{where}`images` has {len(images)}; the page shows {MAX_IMAGES}.")
                 for i, image in enumerate(images[:MAX_IMAGES + 1]):
-                    c.link(image, f"{where}`images[{i}]`")
+                    img = c.link(image, f"{where}`images[{i}]`")
+                    if img:
+                        bad = card_images.bad_image_reason(img, url)
+                        if bad:
+                            c.problems.append(f"{where}`images[{i}]` {bad}.")
+                        elif img not in valid_images:
+                            valid_images.append(img)
+        if require_image and not has_image_input:
+            c.problems.append(card_images.missing_photo_message(where, "product"))
         c.text(product, "brand", where, "brand")
         if isinstance(product.get("badge"), list):
             c.problems.append(f"{where}`badge` is one short text (one badge per card).")
@@ -880,10 +912,54 @@ def blocked_message(data_dir: Path, tool_name, args, session_id="", now: float |
     return BLOCKED.format(store=order.get("store") or "the store", total=_money(order.get("total"), order.get("currency")))
 
 
+def _product_photo_items(args) -> list[dict]:
+    """Photo probe descriptors for valid-shaped products (skips items whose image already failed static checks)."""
+    if not isinstance(args, dict) or not isinstance(args.get("products"), list):
+        return []
+    out: list[dict] = []
+    for index, product in enumerate(args["products"][:MAX_PRODUCTS]):
+        if not isinstance(product, dict):
+            continue
+        title = product.get("title").strip() if isinstance(product.get("title"), str) else ""
+        where = _where(index, title)
+        url = product.get("url").strip() if isinstance(product.get("url"), str) else ""
+        has_input = product.get("image") not in (None, "") or product.get("images") not in (None, [])
+        imgs: list[str] = []
+        raw_img = product.get("image")
+        if isinstance(raw_img, str) and raw_img.strip():
+            imgs.append(raw_img.strip())
+        raw_imgs = product.get("images")
+        if isinstance(raw_imgs, list):
+            for entry in raw_imgs[:MAX_IMAGES]:
+                if isinstance(entry, str) and entry.strip() and entry.strip() not in imgs:
+                    imgs.append(entry.strip())
+        # Skip probing items whose provided image already failed syntax or static bad_image_reason.
+        if has_input:
+            valid = [u for u in imgs if re.match(r"^https://[^/\s?#]+\.[^/\s?#]+", u, re.IGNORECASE)
+                     and not re.search(r"\s", u) and not card_images.bad_image_reason(u, url)]
+            if not valid:
+                continue
+            imgs = valid
+        pages = [url] if url.lower().startswith("https://") else []
+        offers = product.get("offers")
+        if isinstance(offers, list):
+            for offer in offers[:MAX_OFFERS]:
+                if isinstance(offer, dict) and isinstance(offer.get("url"), str):
+                    ou = offer["url"].strip()
+                    if ou.lower().startswith("https://") and ou not in pages:
+                        pages.append(ou)
+        out.append({"where": where, "images": imgs, "pages": pages})
+    return out
+
+
 # MARK: The tools
 
-def show(args, session_id: str = "") -> str:
-    problems, ids, long = check_products(args)
+def show(args, session_id: str = "", *, probe: Callable[..., list[str]] | None = None) -> str:
+    problems, ids, long = check_products(args, require_image=(probe is None))
+    if probe is not None:
+        photo_items = _product_photo_items(args)
+        if photo_items:
+            problems.extend(probe(photo_items, kind="product"))
     if problems:
         return _failed(problems)
     return _reply({"products": "shown", "id": ids[0], "ids": ids, "note": SHOWN_NOTE + _long_words(long)})
@@ -905,7 +981,7 @@ def register_tool(ctx, data_dir: Callable[[], Path], serves: Callable[[], bool])
                                 "user's clear yes."})
 
     def handle_products(args, session_id="", **kwargs):
-        return show(args, session_id) if serves() else outside()
+        return show(args, session_id, probe=card_images.verify_and_hint) if serves() else outside()
 
     def handle_order(args, session_id="", **kwargs):
         return order(args, session_id, data_dir()) if serves() else outside()
