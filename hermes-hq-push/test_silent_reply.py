@@ -133,3 +133,25 @@ def test_an_unlabeled_request_hermes_recorded_as_a_bots(tmp_path):
     rows = [("user", ask, None, None), ("assistant", "Both are repaired.", "stop", None),
             ("user", "And the printer?", None, None), ("assistant", "Still offline.", "stop", None)]
     assert alerts_for(tmp_path, rows) == ["Still offline."]
+
+
+def test_local_source_bot_chats_send_reply_alerts(tmp_path):
+    """Canonical Bot Chats stored with sessions.source = 'local' must produce turnDone reply pushes (#529)."""
+    path = tmp_path / "hermes" / "profiles" / "otto" / "state.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute("create table sessions (id text primary key, source text, model_config text)")
+        db.execute("create table messages (id integer primary key, session_id text, role text,"
+                   " content text, finish_reason text, tool_calls text)")
+        db.execute("insert into sessions (id, source) values ('bot_chat', 'local')")
+        db.execute("insert into messages (session_id, role, content, finish_reason, tool_calls)"
+                   " values ('bot_chat', 'user', 'Check the build', null, null)")
+    sent = []
+    watcher = push.ReplyWatcher(tmp_path / "hermes", sent.append, sender=lambda p: p)
+    watcher.poll()
+    with sqlite3.connect(path) as db:
+        db.execute("insert into messages (session_id, role, content, finish_reason, tool_calls)"
+                   " values ('bot_chat', 'assistant', 'The build is green.', 'stop', null)")
+    watcher.poll()
+    assert len(sent) == 1
+    assert sent[0].kind == "turnDone" and sent[0].text == "The build is green." and sent[0].outside == ""

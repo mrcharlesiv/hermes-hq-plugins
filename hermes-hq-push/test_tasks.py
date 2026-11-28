@@ -1892,3 +1892,28 @@ def test_a_bots_own_task_finishes_as_before_and_says_nothing_of_being_asked(tmp_
         out = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "status": "done"}, session_id=session))
         assert "asked" not in out and (out.get("status") == "done" or "error" in out)
     assert s.get(task["id"])["status"] == "done"
+
+
+def test_main_chat_can_tick_and_untick_users_steps_and_background_reports_skipped(tmp_path):
+    s, ctx = _wired_typed(tmp_path, {"s_main"})
+    task = s.create(together(steps=[{"title": "Find flights", "who": "bot"},
+                                    {"title": "Book it", "who": "me"}]),
+                    created_by="otto", source={})
+    theirs = task["steps"][1]["id"]
+    # Background/job session cannot tick the user's step AND reports skipped_steps instead of silently ignoring it.
+    bg = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "done_steps": [theirs]}, session_id="s_job"))
+    assert "error" not in bg and bg["steps"][1]["done"] is False
+    assert len(bg.get("skipped_steps") or []) == 1 and bg["skipped_steps"][0]["id"] == theirs
+    # Main chat turn typed by the user can tick and untick their step on a shared task.
+    ticked = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "done_steps": [theirs]}, session_id="s_main"))
+    assert "error" not in ticked and ticked["steps"][1]["done"] is True
+    assert "skipped_steps" not in ticked
+    assert any("Ticked “Book it” (from chat)" in e["text"] for e in ticked["log"] if e.get("kind") == "change")
+    # Background run cannot untick it either, and reports skipped_steps.
+    bg_un = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "undone_steps": [theirs]}, session_id="s_job"))
+    assert bg_un["steps"][1]["done"] is True
+    assert len(bg_un.get("skipped_steps") or []) == 1 and bg_un["skipped_steps"][0]["id"] == theirs
+    # Main chat turn typed by the user can untick it too.
+    unticked = json.loads(ctx.tools["tasks_update"]({"id": task["id"], "undone_steps": [theirs]}, session_id="s_main"))
+    assert "error" not in unticked and unticked["steps"][1]["done"] is False
+    assert any("Unticked “Book it” (from chat)" in e["text"] for e in unticked["log"] if e.get("kind") == "change")
