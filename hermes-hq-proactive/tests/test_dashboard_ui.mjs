@@ -108,14 +108,17 @@ function overviewOff() {
     status: {
       plugin: "hermes-hq-proactive", version, beta: true, enabled: false, autonomy_mode: "prep",
       quiet_hours_active: false, timezone: "America/Chicago", local_time: "14:00",
-      budgets: { offers_used_24h: 0, offers_limit_24h: 6, interrupts_used_24h: 0, interrupts_limit_24h: 2 },
+      budgets: { offers_used_24h: 0, offers_limit_24h: 6, interrupts_used_24h: 0, interrupts_limit_24h: 2,
+        messages_used_24h: 1, messages_limit_24h: 3 },
       counts: { pending_offers: 0, open_loops: 0, snoozed_loops: 0, active_watches: 0 },
       last_check: null, brief_job: "off",
-      inbox: { state: "ok", to_ideas: true, note: "What it finds goes to Tasks › Ideas in the app." },
+      inbox: { goes_to: "chat", state: "chat", to_chat: true, to_ideas: false,
+        note: "The bot looks into what it finds and messages you in its chat." },
       settings: {
         enabled: false, autonomy_mode: "prep", quiet_start: "22:00", quiet_end: "08:00", brief_hour: 8,
         daily_offer_budget: 6, daily_interrupt_budget: 2, stale_waiting_days: 3, scan_lookback_hours: 72,
-        max_context_loops: 3, daily_brief_enabled: true, ideas_inbox: true, disabled_categories: [],
+        max_context_loops: 3, daily_brief_enabled: true, finds_go_to: "chat", chat_lookup: true,
+        daily_message_budget: 3, disabled_categories: [],
       },
     },
     check: { running: false, result: null, error: null },
@@ -139,6 +142,10 @@ function overviewOn() {
       draft_content: "", delivered_to: "ideas", idea_id: "idea1", confidence: 0.82, created_at: "2026-03-04T12:00:00Z" },
     { id: "of_2", category: "follow_up", tier: 2, title: "Gone quiet with Acme: the shelving quote", summary: "Nothing has moved on this for 4 day(s).",
       draft_content: "Hello, checking in on the shelving quote.", delivered_to: "page", confidence: 0.78, created_at: "2026-03-04T12:00:00Z" },
+    { id: "of_3", category: "next_step", tier: 1, title: "Check the train times for Saturday", summary: "You said you would look them up.",
+      draft_content: "", delivered_to: "chat", said_at: "2026-03-04T18:00:00Z", confidence: 0.8, created_at: "2026-03-04T17:00:00Z" },
+    { id: "of_4", category: "next_step", tier: 1, title: "Compare the two venue quotes", summary: "Both quotes are in.",
+      draft_content: "", delivered_to: "chat", said_at: null, confidence: 0.8, created_at: "2026-03-04T19:30:00Z" },
   ];
   data.loops = [
     { id: "lp_1", kind: "waiting_on", owner: "external", title: "Waiting on the shelving quote", status: "open", counterparty: "Acme",
@@ -178,7 +185,11 @@ test("on: every tab renders in plain words", () => {
     for (const word of JARGON) assert.doesNotMatch(pages[tab], word, `${tab}: ${word}`);
   }
   // Today: where finds go, the brief, the last check, and an honest label on each button.
-  assert.match(pages.today, /What it finds goes to Tasks › Ideas/);
+  assert.match(pages.today, /The bot looks into what it finds and messages you in its chat/);
+  assert.match(pages.today, /Said in the bot's chat/);
+  assert.match(pages.today, /Next message/);
+  assert.match(pages.today, /Messages in 24 hours\s*1 of 3/);
+  assert.match(pages.today, /Finds waiting\s*2\s*The bot messages you/);
   assert.match(pages.today, /posted in this bot's chat at 8:00/);
   assert.match(pages.today, /Last check just now: Checked: read 4 new messages/);
   assert.match(pages.today, /In Tasks › Ideas/);
@@ -199,9 +210,11 @@ test("on: every tab renders in plain words", () => {
   assert.match(pages.history, /Nothing yet for: /);                    // kinds with no answers are one line
   assert.doesNotMatch(pages.loops, /Said I would\s*The bot said it would/);   // one badge for whose it is
   assert.match(pages.history, /used 140 tokens/);
-  // Settings: the clock it uses, and the two switches for where finds go.
+  // Settings: the clock it uses, where finds go, and the limit on messages.
   assert.match(pages.settings, /America\/Chicago/);
-  assert.match(pages.settings, /Send suggestions to Tasks › Ideas/);
+  assert.match(pages.settings, /When it finds something\s*The bot messages me in its chat\s*Make it a card in Tasks › Ideas\s*Keep it on this page/);
+  assert.match(pages.settings, /Most messages a day/);
+  assert.match(pages.settings, /Look into it before messaging me/);
   assert.match(pages.settings, /Morning brief in the bot's chat/);
 });
 
@@ -214,6 +227,24 @@ test("a suggestion in Tasks › Ideas can only be dismissed here; one on the pag
   assert.deepEqual(all(inIdeas, (n) => n.type === "button").map((b) => text(b).trim()), ["Dismiss"]);
   assert.deepEqual(all(onPage, (n) => n.type === "button").map((b) => text(b).trim()),
     ["Mark Done", "Copy Draft & Mark Done", "Snooze a Day", "Dismiss"]);
+});
+
+test("something the bot said in its chat can be rated here; one still to be said can only be dismissed", () => {
+  const ui = harness();
+  const cards = all(ui.render(overviewOn()), (n) => n.props && n.props.className === "hq-pro-item");
+  const said = cards.find((c) => /train times/.test(text(c)));
+  const next = cards.find((c) => /venue quotes/.test(text(c)));
+  assert.match(text(said), /The bot messaged you about this/);
+  assert.deepEqual(all(said, (n) => n.type === "button").map((b) => text(b).trim()), ["It Helped", "Not Helpful"]);
+  assert.match(text(next), /will look into this and message you at the next check/);
+  assert.deepEqual(all(next, (n) => n.type === "button").map((b) => text(b).trim()), ["Dismiss"]);
+
+  // Where finds go elsewhere, the tiles say so and count finds, not messages.
+  const data = overviewOn();
+  data.status.inbox = { goes_to: "ideas", state: "ok", to_chat: false, to_ideas: true, note: "What it finds goes to Tasks › Ideas in the app." };
+  const page = text(harness().render(data));
+  assert.match(page, /Shown in Tasks › Ideas/);
+  assert.match(page, /Found in 24 hours\s*0 of 6/);
 });
 
 test("a closed item says who closed it and can be reopened", () => {
@@ -250,7 +281,7 @@ test("an emptied number is refused instead of being saved as 0", async () => {
   button(ui.render(data, "settings", [emptied]), "Save").props.onClick();
   await settle();
   assert.equal(ui.calls.filter((c) => c.method === "PATCH").length, 0);
-  assert.match(ui.toasts.at(-1).message, /Give a number for “Most suggestions a day”/);
+  assert.match(ui.toasts.at(-1).message, /Give a number for “Most finds a day”/);
 
   const typed = Object.assign({}, data.status.settings, { daily_offer_budget: "4", brief_hour: "99" });
   button(ui.render(data, "settings", [typed]), "Save").props.onClick();

@@ -1,9 +1,9 @@
 name: hermes-hq-proactive
-version: "0.3.0-beta.3"
+version: "0.4.0-beta.1"
 manifest_version: 2
 kind: standalone
 label: "Proactivity (Beta)"
-description: "Beta, off by default. Keeps track of what is left open in your own chats with a bot (things you said you would do, things you are waiting on, things the bot said it would come back to), closes them when the chat shows they got done, and suggests a next step when one is due or has gone quiet. Suggestions go to Tasks › Ideas in the Hermes HQ app and a short brief is posted in the bot's chat each morning. It only reads and suggests: nothing is sent, booked, paid, posted or deleted without you."
+description: "Beta, off by default. Keeps track of what is left open in your own chats with a bot (things you said you would do, things you are waiting on, things the bot said it would come back to), closes them when the chat shows they got done, and speaks up when one is due or has gone quiet: the bot looks into it, reading only, and messages you in its own chat with what it found. A short brief is posted there each morning too. Nothing is sent to anyone else, booked, paid, posted or deleted without you."
 author: Hermes HQ
 license: MIT
 requires_hermes: ">=0.22"
@@ -13,6 +13,7 @@ provides_tools:
   - proactive_loop_resolve
   - proactive_loop_list
   - proactive_offer
+  - proactive_feedback
   - proactive_watch_add
   - proactive_brief_get
 provides_hooks:
@@ -31,7 +32,7 @@ config_schema:
     default: "prep"
     choices: ["observe", "prep", "full"]
     label: "How much it does"
-    description: "observe = only keeps track and writes the brief. prep = also makes suggestions (recommended). full = the same as prep, and a suggestion that is past its date is marked Time-sensitive and listed first. No mode sends or changes anything by itself."
+    description: "observe = only keeps track and writes the brief. prep = also speaks up about what it finds (recommended). full = the same as prep, and something past its date is marked Time-sensitive and comes first. No mode sends anything to anyone else or changes anything by itself."
   in_turn_enabled:
     type: bool
     default: true
@@ -72,16 +73,32 @@ config_schema:
     default: 72
     label: "How far back to read the first time (hours)"
     description: "On the first check, how many hours of chats to read. After that each chat is read from where the last check stopped."
+  finds_go_to:
+    type: str
+    default: "chat"
+    choices: ["chat", "ideas", "page"]
+    label: "When it finds something"
+    description: "chat = the bot messages you in its own chat (recommended). ideas = it becomes a card in Tasks › Ideas in the Hermes HQ app, where Add & Start has the bot do it. page = it stays on the Proactivity page. A place that is not there falls back to the next one."
+  chat_lookup:
+    type: bool
+    default: true
+    label: "Look into it before messaging"
+    description: "The bot first looks the thing up, reading only (search, files, earlier chats), and tells you what it found. Off: it only tells you what is open and what it could do next."
+  daily_message_budget:
+    type: int
+    default: 3
+    label: "Most messages a day"
+    description: "The most messages the bot writes you on its own in any 24 hours. One message can cover up to three finds. The morning brief is separate."
   ideas_inbox:
     type: bool
     default: true
-    label: "Send suggestions to Tasks › Ideas"
-    description: "Suggestions appear in the Ideas tab of Tasks in the Hermes HQ app, where Add puts one on your list and Add & Start has the bot do it. Off, or without the Hermes HQ add-on: they stay on the Proactivity page."
+    label: "Older setting: send finds to Tasks › Ideas"
+    description: "From 0.3.0, replaced by \"When it finds something\". Only read when that has never been set: off here keeps finds on the Proactivity page."
   daily_offer_budget:
     type: int
     default: 6
-    label: "Most suggestions a day"
-    description: "The most new suggestions in any 24 hours."
+    label: "Most finds a day"
+    description: "The most new finds in any 24 hours, wherever they go."
   daily_interrupt_budget:
     type: int
     default: 2

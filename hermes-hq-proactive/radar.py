@@ -397,6 +397,7 @@ def build_pre_llm_context(
     pending_offers: Sequence[Mapping[str, Any]],
     calibration_rows: Sequence[Mapping[str, Any]],
     now: Optional[datetime] = None,
+    said_offers: Sequence[Mapping[str, Any]] = (),
 ) -> Optional[str]:
     """Compose a compact, tightly-bounded ``pre_llm_call`` context block, or None when off."""
     if not settings.get("enabled", False):
@@ -429,9 +430,22 @@ def build_pre_llm_context(
                 prep_tag = " [draft ready]" if lp.get("prep_artifact") else ""
                 lines.append(f"  * {lp['title']}{due_tag}{prep_tag} [id={lp['id']}]")
 
+    # What the bot brought up on its own and nobody has answered: the one place the person's
+    # reaction can be learned from, now that it is a chat message and not a card with buttons.
+    said_ids = {str(of.get("id")) for of in said_offers}
+    if said_offers:
+        lines.append(
+            "You brought these up with the user on your own (Proactivity). If this message shows whether one "
+            "was welcome, call proactive_feedback for it once; otherwise leave it be:"
+        )
+        for of in list(said_offers)[:4]:
+            lines.append(f"  * {of['title']} [id={of['id']}]")
+
     # Mention at most 1 relevant pending offer if the user's message clearly relates to it.
     msg_tokens = policy.significant_tokens(user_message or "")
     for of in pending_offers[:8]:
+        if str(of.get("id")) in said_ids:
+            continue
         of_tokens = policy.significant_tokens(f"{of.get('title', '')} {of.get('summary', '')}")
         if msg_tokens and len(msg_tokens & of_tokens) >= 2:
             lines.append(f"Already suggested to the user on this topic: {of['title']}.")

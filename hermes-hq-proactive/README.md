@@ -2,20 +2,21 @@
 
 > **Beta, off by default.** While it is off, nothing is added to your chats, the bot has none of its tools, nothing is written, and no checks run.
 
-A [Hermes](https://github.com/NousResearch/hermes-agent) plugin that keeps track of what is left open in your chats with a bot and suggests the next step. It has its own **Proactivity (Beta)** page in Hermes Desktop and in the Hermes HQ app (iPhone and Mac).
+A [Hermes](https://github.com/NousResearch/hermes-agent) plugin that keeps track of what is left open in your chats with a bot and has the bot speak up about it: it looks the thing up and messages you with what it found. It has its own **Proactivity (Beta)** page in Hermes Desktop and in the Hermes HQ app (iPhone and Mac).
 
-It only reads and suggests. Nothing is sent, booked, paid, posted or deleted without you.
+It only reads and tells you. Nothing is sent to anyone else, booked, paid, posted or deleted without you.
 
 ## What it does
 
 - **Keeps track of what is left open.** Things you say you will do ("I'll send the lease back by Friday"), things you are waiting on ("still waiting on the quote"), and things the bot says it will come back to ("I'll check again on Friday"). These are kept apart from your task list.
 - **Closes them when they get done.** The hourly check reads what is new in your chats and marks an item done when the chat shows it was. You can also close, snooze, edit, drop or reopen one on the page.
-- **Suggests the next step** when something is due, past its date, or has had no news for a few days.
-- **Puts suggestions where you already look.** They go to **Tasks › Ideas** in the Hermes HQ app. **Add** puts one on your task list, **Add & Start** has the bot do it, **Dismiss** drops it for good. Without the Hermes HQ add-on (`hermes-hq-push` 0.9.90 or newer), or with Ideas turned off, they stay on the Proactivity page.
-- **Posts a short brief each morning** in the bot's own chat: what is open and what was suggested. On a day with nothing to report, nothing is posted.
+- **Speaks up** when something is due, past its date, or has had no news for a few days, and when your chats show a next step the bot could take. The find is handed to the bot in its own chat. The bot looks into it, reading only (search, files, earlier chats), and writes you **one message** with what it found. When the next step would book, pay, send or change something, it says what it would do and asks.
+- **Stays out of the way.** One message per check at most, covering up to three finds. Three messages a day unless you change it. Nothing during quiet hours, nothing while you are in the middle of talking to the bot, and the same open item is brought up twice at most, days apart.
+- **Or files it instead, if you prefer.** "When it finds something" on the Settings tab has two other choices: a card in **Tasks › Ideas** in the Hermes HQ app (needs the `hermes-hq-push` add-on, 0.9.90 or newer), or only the Proactivity page. A place that is not there falls back to the next one.
+- **Posts a short brief each morning** in the bot's own chat: what is open and what it found. On a day with nothing to report, nothing is posted.
 - **Goes one step further in a chat.** When you are talking to the bot, it is asked to do the one obvious read-only check and tell you what it found, instead of only suggesting it.
 - **Notices requests you repeat** and suggests making one a skill or a scheduled job.
-- **Learns from your answers.** What you keep dismissing is suggested less, and a kind you dismiss three times in a row is paused for a week. A suggestion you never looked at counts for nothing, and a raised bar eases back down over time.
+- **Learns from how you take it.** When your next message shows a note was welcome, or was not, the bot records that (and you can say so on the page: It Helped, Not Helpful). A kind you keep turning down comes up less, and one you turn down three times in a row is paused for a week. One you never answered counts for nothing, and a raised bar eases back down over time.
 
 ## Which chats it reads
 
@@ -29,17 +30,17 @@ A chat it cannot place counts as a group on a messenger and as your own on your 
 
 ## What it costs
 
-The hourly check uses no model when nothing is new. When there are new chat messages it makes one small call to read them (two at most per check). A suggestion that goes to Tasks › Ideas has no draft written for it, because the bot does the work when you tap Add & Start. Limits are checked before anything is drafted, so a check never pays for a draft it then throws away. Turn "Let the check use a model" off and it runs on fixed rules alone, at no cost. You can point the check at a small model with the `proactive_sweep` auxiliary task.
+The hourly check uses no model when nothing is new. When there are new chat messages it makes one small call to read them (two at most per check). A message in the bot's chat is one ordinary turn of that bot, on its own model, with whatever looking-up it does: at most three a day by default ("Most messages a day"), and "Look into it before messaging me" off makes it a short note with no looking-up. No draft is written for a find that goes to the chat or to Ideas, and limits are checked before anything is drafted, so a check never pays for a draft it then throws away. Turn "Let the check use a model" off and it runs on fixed rules alone, at no cost. You can point the check at a small model with the `proactive_sweep` auxiliary task.
 
 ## The three modes
 
 | Mode | What it does |
 | :--- | :--- |
 | `observe` | Only keeps track and writes the brief. |
-| `prep` (default) | Also makes suggestions, within your daily limit. |
-| `full` | The same as `prep`, and a suggestion that is past its date is marked **Time-sensitive** and listed first. Never during quiet hours. |
+| `prep` (default) | Also speaks up about what it finds, within your daily limits. |
+| `full` | The same as `prep`, and something past its date is marked **Time-sensitive** and comes first. Never during quiet hours. |
 
-No mode sends or changes anything by itself, and none of them sends a phone alert of its own.
+No mode sends anything to anyone else or changes anything by itself. The only alert is the one your app already gives for a new message from the bot.
 
 ## Turning it on and off
 
@@ -53,8 +54,10 @@ Times (quiet hours, the brief hour, "by tonight") are read on the clock Hermes i
 
 ## Safety
 
-- The plugin's own checks read chats and write only to its own database and to Tasks › Ideas. They have no tools.
-- The morning brief is the one run where a bot has tools. That run is handed the brief ready-made and is held to reading: a tool that writes, sends, pays or deletes is refused in code.
+- The plugin's own checks read chats and write only to its own database (and to Tasks › Ideas, if you chose that). They have no tools.
+- A bot has tools in two runs of the plugin's own: the turn in which a find is handed to its chat, and the morning brief. Both are held to reading in code: the terminal, writing files, starting other agents, and any tool whose name says it sends, posts, pays, books, creates, changes or deletes are refused there. The bot may close an item it has just settled.
+- The hand-off is a turn nobody typed, marked the way a scheduled job's result is, so Hermes, the app and other plugins do not take it for you.
+- The limit of that fence: it sees the tool calls that go through Hermes. A bot whose model runs tools of its own (a coding agent's built-in shell, for one) is held in those two runs by the instruction it is given, not by code.
 - A suggestion whose wording claims it will act by itself ("sends it for you", "paid automatically") is refused.
 - On a turn you typed, the plugin never blocks or changes what the bot may do.
 
@@ -86,6 +89,16 @@ A pass over how the page looks, on an iPhone and a Mac, light and dark.
 ### 0.3.0-beta.3
 
 - An item that is done or dropped takes its suggestion with it, off the page and out of Tasks › Ideas. Found on the first live check: the chats closed an item a few seconds after a suggestion for it went to Ideas, and the suggestion stayed.
+
+## What changed in 0.4.0
+
+Asked for by the owner after a day of 0.3.0: every find had arrived as a card in Tasks › Ideas asking whether to check something, and every one was dismissed. A card that asks is one more thing to answer.
+
+- A find is now said in the bot's own chat. The bot looks into it first, reading only, and tells you what it found.
+- New settings: "When it finds something" (the chat, Tasks › Ideas, or this page), "Look into it before messaging me", and "Most messages a day" (3). 0.3.0's "Send suggestions to Tasks › Ideas", if you had turned it off, still keeps finds on the page until you choose.
+- The check's model is asked for less and better: things the bot can move forward by looking them up, not reminders of what only you can do.
+- A new tool, `proactive_feedback`, lets the bot record how you took a note, since a message has no Dismiss button. The page has It Helped and Not Helpful.
+- Needs a Hermes that can post a turn to a bot's own chat (`tools.bot_live_delivery`, the door `deliver: bot-chat` jobs use). Without it, finds go to Ideas or stay on the page, and the page says so.
 
 ## Testing
 

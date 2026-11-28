@@ -8,12 +8,14 @@ Off by default (``enabled: false``). While it is off:
 
 While it is on, it keeps track of what is left open in the person's own chats (things they said
 they would do, things they are waiting on, things the bot said it would come back to), closes
-them when the chat shows they got done, and turns the ones that are due or have gone quiet into
-suggestions. Suggestions go to Tasks > Ideas in the Hermes HQ app, where Add & Start acts on one,
-and a short brief is posted in the bot's chat each morning. It acts only on a turn the person
-typed in their own one-to-one chat: scheduled jobs, helper agents and group chats are left alone.
+them when the chat shows they got done, and speaks up about the ones that are due or have gone
+quiet: the find is handed to the bot in its own chat, the bot looks into it (reading only) and
+writes the person one message with what it found (``chat.py``). A short brief is posted there
+each morning. It acts only on a turn the person typed in their own one-to-one chat: scheduled
+jobs, helper agents and group chats are left alone.
 
-0.3.0 is a rework after a review of 0.2.0; README.md lists what changed and why.
+0.3.0 was a rework after a review of 0.2.0; 0.4.0 moved finds from cards in Tasks > Ideas to
+messages in the chat. README.md lists what changed and why.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 if __package__:
-    from . import brief_job, clock, inbox, origin, policy, radar, session_scan, sweep
+    from . import brief_job, chat, clock, inbox, origin, policy, radar, session_scan, sweep
     from .store import PLUGIN_ID, ProactiveStore
 else:  # pragma: no cover - loaded via spec_from_file_location / hyphenated dir
     def _load_sibling(mod_name: str, filename: str):
@@ -47,6 +49,7 @@ else:  # pragma: no cover - loaded via spec_from_file_location / hyphenated dir
     radar = _load_sibling("hermes_hq_proactive_radar", "radar.py")
     session_scan = _load_sibling("hermes_hq_proactive_session_scan", "session_scan.py")
     inbox = _load_sibling("hermes_hq_proactive_inbox", "inbox.py")
+    chat = _load_sibling("hermes_hq_proactive_chat", "chat.py")
     sweep = _load_sibling("hermes_hq_proactive_sweep", "sweep.py")
     brief_job = _load_sibling("hermes_hq_proactive_brief_job", "brief_job.py")
 
@@ -135,9 +138,10 @@ _TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "proactive_offer": {
         "name": "proactive_offer",
         "description": (
-            "Leave the user a suggestion for LATER: a next step, a draft, a follow-up. It goes to Tasks > Ideas "
-            "in their app, within their daily limit and quiet hours. When the user is here in the chat, just say "
-            "it in your reply instead. It never does anything by itself."
+            "Leave the user something for LATER: a next step, a draft, a follow-up. It is brought up in your own "
+            "chat with them at a good moment (or, if they chose so, filed in Tasks > Ideas), within their daily "
+            "limit and quiet hours. When the user is here in the chat, just say it in your reply instead. It never "
+            "does anything by itself."
         ),
         "parameters": {
             "type": "object",
@@ -148,11 +152,27 @@ _TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 "why": {"type": "string", "description": "Brief reason why this is timely."},
                 "draft_content": {"type": "string", "description": "Optional prepared draft, checklist, or message ready to review."},
                 "suggested_action": {"type": "string", "description": "Clear one-line next action if the user approves."},
-                "tier": {"type": "integer", "enum": [0, 1, 2], "default": 1, "description": "0 = keep quietly for the morning brief, 1 = a suggestion, 2 = time-sensitive."},
+                "tier": {"type": "integer", "enum": [0, 1, 2], "default": 1, "description": "0 = keep quietly for the morning brief, 1 = worth bringing up, 2 = time-sensitive."},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.75},
                 "loop_id": {"type": "string", "description": "Optional linked open loop ID."},
             },
             "required": ["title", "summary"],
+        },
+    },
+    "proactive_feedback": {
+        "name": "proactive_feedback",
+        "description": (
+            "Record how the user took something you brought up on your own (a Proactivity message). Call it "
+            "once, only when their message makes it clear: 'helpful' when it was welcome or they acted on it, "
+            "'not_wanted' when they did not want to hear about it. It tunes how often that kind comes up."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "offer_id": {"type": "string", "description": "The id given with the item (of_...)."},
+                "verdict": {"type": "string", "enum": ["helpful", "not_wanted"]},
+            },
+            "required": ["offer_id", "verdict"],
         },
     },
     "proactive_watch_add": {
@@ -198,6 +218,9 @@ def register(ctx) -> None:
         profile = "default"
     ideas_inbox = inbox.Inbox(profile)
     home = brief_job.bot_home()   # Hermes loads a plugin once per bot, inside that bot's home
+    chat_door = chat.Door(home)
+    # A find handed to the bot's chat is a turn of ours: session id -> that turn's id, while it runs.
+    fenced: Dict[str, str] = {}
 
     # An optional model slot, so the check can be pointed at a small, cheap model.
     try:
@@ -232,9 +255,9 @@ def register(ctx) -> None:
         )
 
     def _deliver(res: Dict[str, Any]) -> Dict[str, Any]:
-        """Show a suggestion that was just made (Ideas, or the page) and tell any listener."""
+        """Place a find that was just made (the bot's chat, Ideas, or the page) and tell any listener."""
         if res.get("ok"):
-            res["shown_in"] = inbox.deliver(store, res["offer"], ideas_inbox)
+            res["shown_in"] = inbox.deliver(store, res["offer"], ideas_inbox, chat_door)
             try:
                 ctx.emit("offer_created", {
                     "offer_id": res["offer"]["id"],
@@ -250,10 +273,18 @@ def register(ctx) -> None:
     # Hooks ---------------------------------------------------------------------
 
     def _on_pre_llm_call(user_message="", session_id="", **kwargs) -> Optional[Dict[str, str]]:
+        msg_text = _extract_text(user_message)
+        # Our own hand-off to this chat: note the turn, so its tool calls are kept to reading.
+        # Any other turn here ends that. (Before the on/off check: a turn already handed over
+        # stays fenced even if Proactivity is switched off while it runs.)
+        sid = str(session_id or "")
+        if chat.is_hand_off(msg_text):
+            fenced[sid] = str(kwargs.get("turn_id") or "")
+            return None
+        fenced.pop(sid, None)
         settings = store.get_settings()   # read once: this runs on every turn
         if not settings.get("enabled"):
             return None
-        msg_text = _extract_text(user_message)
         execution = _cron_execution()
         kind = _turn_kind(msg_text, session_id, kwargs, execution)
         if kind == origin.BACKGROUND:
@@ -271,6 +302,7 @@ def register(ctx) -> None:
             open_loops=store.list_loops(status="open", limit=40),
             pending_offers=store.list_offers(status="pending", limit=15),
             calibration_rows=store.list_calibration(),
+            said_offers=store.list_offers_said(hours=48),
         )
         return {"context": context} if context else None
 
@@ -353,20 +385,30 @@ def register(ctx) -> None:
                         store.mark_pattern_suggested(pat["id"], res["offer"]["id"])
 
     def _on_pre_tool_call(tool_name="", args=None, session_id="", **kwargs) -> Optional[Dict[str, str]]:
-        # The read-only fence. It applies to exactly one kind of run: this plugin's own
-        # "Proactivity brief" job, the only run of ours where a bot has tools. Every other turn,
-        # the person's own included, is none of its business. (0.2.0 keyed it to a flag that was
-        # only ever set while no tool could be called, so it could never fire.)
-        job_id = brief_job.run_job_id(str(session_id or ""), _cron_execution())
-        if not job_id or job_id != (store.get_meta(brief_job.META_JOB_ID) or ""):
-            return None
-        allowed, reason = policy.is_tool_allowed_in_sweep(str(tool_name or ""), args if isinstance(args, dict) else None)
+        # The read-only fence. It applies to exactly two kinds of run, both this plugin's own: the
+        # "Proactivity brief" job, and the turn in which a find is handed to the bot's chat to look
+        # into. Every other turn, the person's own included, is none of its business. (0.2.0 keyed
+        # it to a flag that was only ever set while no tool could be called, so it could never fire.)
+        sid = str(session_id or "")
+        turn = str(kwargs.get("turn_id") or "")
+        tool_args = args if isinstance(args, dict) else None
+        if sid in fenced and (not fenced[sid] or not turn or fenced[sid] == turn):
+            run = policy.CHAT_TURN_NAME
+            allowed, reason = policy.is_tool_allowed_in_sweep(
+                str(tool_name or ""), tool_args, run=run, also_allowed=policy.CHAT_TURN_ALSO_ALLOWED
+            )
+        else:
+            job_id = brief_job.run_job_id(sid, _cron_execution())
+            if not job_id or job_id != (store.get_meta(brief_job.META_JOB_ID) or ""):
+                return None
+            run = "the brief run"
+            allowed, reason = policy.is_tool_allowed_in_sweep(str(tool_name or ""), tool_args)
         if allowed:
             return None
         store.log_audit(
             event_type="fence_blocked_tool",
             trigger="pre_tool_call",
-            summary=f"Stopped '{tool_name}' in the brief run, which only reads.",
+            summary=f"Stopped '{tool_name}' in {run}, which only reads.",
             outcome="blocked",
             details={"reason": reason},
         )
@@ -462,11 +504,30 @@ def register(ctx) -> None:
             trigger="agent_tool",
         ))
         if res.get("ok"):
-            res["note"] = (
-                "The user will see this in Tasks > Ideas." if res.get("shown_in") == "ideas"
-                else "Kept on the Proactivity page and in the morning brief."
-            )
+            res["note"] = {
+                "chat": "You will be asked to bring this up in your chat with the user at the next check.",
+                "ideas": "The user will see this in Tasks > Ideas.",
+            }.get(str(res.get("shown_in")), "Kept on the Proactivity page and in the morning brief.")
         return _json(res)
+
+    def _handle_feedback(args: Dict[str, Any], **kwargs) -> str:
+        if not _enabled():
+            return _disabled_reply()
+        offer_id = str(args.get("offer_id") or "").strip()
+        verdict = str(args.get("verdict") or "").strip().lower()
+        if verdict not in ("helpful", "not_wanted"):
+            return _json({"ok": False, "error": "verdict must be helpful or not_wanted."})
+        offer = store.get_offer(offer_id)
+        if offer is None or not offer.get("said_at"):
+            return _json({"ok": False, "error": f"Nothing was brought up under {offer_id or 'that id'}."})
+        if offer.get("status") != "pending":
+            return _json({"ok": True, "note": "Already recorded."})
+        if verdict == "helpful":
+            # Welcome says nothing about whether the thing itself is done: the item stays as it is.
+            store.respond_to_offer(offer_id, "accept", actor="chat", keep_loop=True)
+        else:
+            store.respond_to_offer(offer_id, "dismiss", actor="chat", loop_outcome="not_wanted")
+        return _json({"ok": True, "recorded": verdict})
 
     def _handle_watch_add(args: Dict[str, Any], **kwargs) -> str:
         if not _enabled():
@@ -498,7 +559,7 @@ def register(ctx) -> None:
         brief, _ = sweep.refresh_brief(store)   # as things stand now, not as of this morning
         return _json({
             "ok": True,
-            "status": store.get_status(inbox=inbox.describe(store, ideas_inbox)),
+            "status": store.get_status(inbox=inbox.describe(store, ideas_inbox, chat_door)),
             "brief": brief,
             "pending_offers": store.list_offers(status="pending", limit=15),
         })
@@ -508,6 +569,7 @@ def register(ctx) -> None:
         "proactive_loop_resolve": (_handle_loop_resolve, "✅"),
         "proactive_loop_list": (_handle_loop_list, "📋"),
         "proactive_offer": (_handle_offer, "✨"),
+        "proactive_feedback": (_handle_feedback, "👍"),
         "proactive_watch_add": (_handle_watch_add, "👁️"),
         "proactive_brief_get": (_handle_brief_get, "☀️"),
     }
@@ -534,6 +596,7 @@ def register(ctx) -> None:
             force_brief=force_brief,
             trigger=trigger,
             inbox=ideas_inbox,
+            door=chat_door,
         )
 
     COMMANDS = "on | off | mode <observe|prep|full> | brief | loops | check | reset"
@@ -545,13 +608,13 @@ def register(ctx) -> None:
         if cmd in ("on", "enable"):
             store.update_settings({"enabled": True}, actor="slash_command")
             _reconcile_brief_job()
-            st = store.get_status(inbox=inbox.describe(store, ideas_inbox))
+            st = store.get_status(inbox=inbox.describe(store, ideas_inbox, chat_door))
             return (
                 "Proactivity (Beta) is ON.\n"
                 f"{st['inbox']['note']}\n"
                 f"Quiet hours {st['settings']['quiet_start']}–{st['settings']['quiet_end']} ({st['timezone']}), "
-                f"up to {st['budgets']['offers_limit_24h']} suggestions a day. "
-                "It only reads and suggests; nothing is sent, booked or paid without you."
+                f"up to {st['budgets']['messages_limit_24h']} messages a day. "
+                "It only reads and tells you; nothing is sent to anyone else, booked or paid without you."
             )
         if cmd in ("off", "disable"):
             store.update_settings({"enabled": False}, actor="slash_command")
@@ -590,15 +653,15 @@ def register(ctx) -> None:
             store.reset_calibration()
             return "Every kind of suggestion is back to its starting bar."
 
-        st = store.get_status(inbox=inbox.describe(store, ideas_inbox))
+        st = store.get_status(inbox=inbox.describe(store, ideas_inbox, chat_door))
         last = st.get("last_check") or {}
         return (
             f"Proactivity ({st['beta_label']} {st['version']}): {'ON' if st['enabled'] else 'OFF'}\n"
             f"Mode: {st['autonomy_mode']}. Quiet hours {st['settings']['quiet_start']}–{st['settings']['quiet_end']} "
             f"({st['timezone']}), {'on now' if st['quiet_hours_active'] else 'not now'}.\n"
-            f"{st['counts']['open_loops']} open, {st['counts']['pending_offers']} suggested, "
+            f"{st['counts']['open_loops']} open, {st['counts']['pending_offers']} found and waiting, "
             f"{st['counts']['active_watches']} watched. "
-            f"Today: {st['budgets']['offers_used_24h']} of {st['budgets']['offers_limit_24h']} suggestions used.\n"
+            f"Today: {st['budgets']['messages_used_24h']} of {st['budgets']['messages_limit_24h']} messages sent you.\n"
             f"{st['inbox']['note']}\n"
             + (f"Last check: {last.get('summary')}\n" if last.get("summary") else "")
             + f"Commands: {COMMANDS}"
