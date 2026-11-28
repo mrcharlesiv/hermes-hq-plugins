@@ -630,19 +630,32 @@ async def activity(ws: WebSocket):
 @router.websocket("/sessions/{ident}/watch")
 async def watch(ws: WebSocket, ident: str):
     global _viewers
+    # Work out a refusal BEFORE accepting, but send it AFTER accepting. A socket closed before accept() reaches the
+    # app as an opaque failed handshake (uvicorn logs "ASGI callable returned without completing handshake", the
+    # phone shows "Reconnecting…" forever), because a refused upgrade cannot carry a close code or reason.
+    # Accepting first and then closing with the code lets the phone say "this browser has closed" and stop retrying.
+    refusal = None
+    record = None
     if not _ws_allowed(ws):
-        await ws.close(code=4401)
+        refusal = (4401, "Not signed in")
+    else:
+        try:
+            record = await asyncio.to_thread(_record, ident)
+        except HTTPException:
+            refusal = (4404, "This browser has closed")
+        else:
+            missing = _missing()
+            if missing:
+                refusal = (1013, f"Try again shortly ({missing})")
+    if refusal is not None:
+        log.info("hermes-hq-browser: watch %s refused: %s %s", ident, refusal[0], refusal[1])
+        try:
+            await ws.accept()
+            await ws.close(code=refusal[0], reason=refusal[1])
+        except Exception:  # noqa: BLE001  the phone left before we could tell it
+            pass
         return
-    try:
-        record = await asyncio.to_thread(_record, ident)
-    except HTTPException:
-        log.info("hermes-hq-browser: watch %s refused: no such live browser", ident)
-        await ws.close(code=4404, reason="This browser has closed")
-        return
-    if _missing():
-        log.info("hermes-hq-browser: watch %s refused: %s", ident, _missing())
-        await ws.close(code=1013, reason="Try again shortly")
-        return
+    assert record is not None  # every refusal returned above; only a resolved record reaches the stream
     await ws.accept()
 
     async def receive():
