@@ -100,6 +100,14 @@ Asked for by the owner after a day of 0.3.0: every find had arrived as a card in
 - A new tool, `proactive_feedback`, lets the bot record how you took a note, since a message has no Dismiss button. The page has It Helped and Not Helpful. Not Helpful, either way, means the item is not brought up again.
 - Needs a Hermes that can post a turn to a bot's own chat (`tools.bot_live_delivery`, the door `deliver: bot-chat` jobs use). Without it, finds go to Ideas or stay on the page, and the page says so.
 
+## What changed in 0.5.0
+
+Upgraded Proactivity to Chief-of-Staff depth and interactive in-chat action cards:
+
+- **Cross-system read-only scouting**: Morning check-ins and on-demand `/proactivity scout` runs can read across the bot's own connected read-only tools (calendar, Notion, email, Slack, memory, and chats — strictly fenced to read-only in `pre_tool_call`) to connect upcoming meetings with real notes, numbers, and open promises.
+- **Native swipeable task deck (`proactive_task_deck`)**: After a crisp 1–3 sentence human check-in, the bot presents 1–4 concrete, pre-researched tasks rendered as a swipeable **Start / Hide** card stack right inside Hermes HQ's chat (enabled once Hermes HQ announces card support via `PUT /cards`).
+- **One-tap Start & silent Hide**: Tapping or swiping **Start** kicks off the full pre-researched execution plan immediately in chat (queuing seamlessly if you start multiple cards); **Hide** dismisses silently without chat clutter and feeds adaptive calibration across devices.
+
 ## Testing
 
 ```bash

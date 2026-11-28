@@ -1,9 +1,9 @@
 name: hermes-hq-proactive
-version: "0.4.0-beta.2"
+version: "0.5.0-beta.1"
 manifest_version: 2
 kind: standalone
 label: "Proactivity (Beta)"
-description: "Beta, off by default. Keeps track of what is left open in your own chats with a bot (things you said you would do, things you are waiting on, things the bot said it would come back to), closes them when the chat shows they got done, and speaks up when one is due or has gone quiet: the bot looks into it, reading only, and messages you in its own chat with what it found. A short brief is posted there each morning too. Nothing is sent to anyone else, booked, paid, posted or deleted without you."
+description: "Beta, off by default. Acts like a quiet Chief of Staff for your bot: reads across your connected read-only tools and chats (calendar, Notion, email, Slack, memory, open items), sends one crisp check-in in the bot's chat, and offers a swipeable deck of pre-researched tasks you can Start or Hide with one tap. Strictly read-only during check-ins — nothing is sent, booked, paid, posted or deleted without you."
 author: Hermes HQ
 license: MIT
 requires_hermes: ">=0.22"
@@ -16,6 +16,7 @@ provides_tools:
   - proactive_feedback
   - proactive_watch_add
   - proactive_brief_get
+  - proactive_task_deck
 provides_hooks:
   - pre_llm_call
   - post_llm_call
@@ -51,8 +52,13 @@ config_schema:
   daily_brief_enabled:
     type: bool
     default: true
-    label: "Morning brief in the bot's chat"
-    description: "Once a day, posts a few lines in this bot's chat: what is open and what was suggested. Says nothing on a day with nothing to report."
+    label: "Morning check-in in the bot's chat"
+    description: "Once a day, posts a Chief-of-Staff check-in and ready-to-start task deck in this bot's chat. Says nothing on a day with nothing timely to report."
+  scout_tools_enabled:
+    type: bool
+    default: true
+    label: "Read connected tools during check-ins (read-only)"
+    description: "Lets the morning check-in and Chief-of-Staff scout read across this bot's connected calendar, Notion, email, Slack, memory and docs (strictly read-only) so every task card cites real meetings, notes, and numbers."
   pattern_detection_enabled:
     type: bool
     default: true

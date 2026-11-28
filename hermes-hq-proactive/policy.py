@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional
 
-BETA_VERSION = "0.4.0-beta.2"   # keep in step with plugin.yaml and dashboard/manifest.json (test_versions_agree)
+BETA_VERSION = "0.5.0-beta.1"   # keep in step with plugin.yaml and dashboard/manifest.json (test_versions_agree)
 BETA_LABEL = "Beta"
 
 AUTONOMY_MODES = ("observe", "prep", "full")
@@ -63,6 +63,7 @@ SWEEP_ALWAYS_ALLOWED_TOOLS = frozenset({
     "proactive_feedback",
     "proactive_watch_add",
     "proactive_brief_get",
+    "proactive_task_deck",
     "read_file",
     "search_files",
     "session_search",
@@ -82,6 +83,7 @@ SWEEP_ALWAYS_BLOCKED_TOOLS = frozenset({
     "delegate_task",
     "schedule_cronjob",
     "manage_cronjob",
+    "composio_multi_execute_tool",
     "proactive_loop_resolve",  # sweeps never auto-close loops; they offer instead
 })
 
@@ -151,8 +153,9 @@ def is_tool_allowed_in_sweep(
     return True, ""
 
 
-# A find handed to the bot's chat (chat.py): the bot may also close the item it just settled.
-CHAT_TURN_ALSO_ALLOWED = frozenset({"proactive_loop_resolve"})
+# A find handed to the bot's chat (chat.py) or a Chief-of-Staff check-in (deck.py): the bot
+# may close an item it just settled and present a swipeable task deck for one-tap execution.
+CHAT_TURN_ALSO_ALLOWED = frozenset({"proactive_loop_resolve", "proactive_task_deck"})
 # ... and may not make new finds or new things to watch out of its own look-up: those would come
 # back as the next message, the plugin answering itself.
 CHAT_TURN_NOT_ALLOWED = frozenset({"proactive_offer", "proactive_loop_track", "proactive_watch_add"})

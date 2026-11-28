@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 if __package__:
-    from . import brief_job, chat, clock, inbox, origin, policy, radar, session_scan, sweep
+    from . import brief_job, chat, clock, deck, inbox, origin, policy, radar, session_scan, sweep
     from .store import PLUGIN_ID, ProactiveStore
 else:  # pragma: no cover - loaded via spec_from_file_location / hyphenated dir
     def _load_sibling(mod_name: str, filename: str):
@@ -43,6 +43,7 @@ else:  # pragma: no cover - loaded via spec_from_file_location / hyphenated dir
     policy = _load_sibling("hermes_hq_proactive_policy", "policy.py")
     clock = _load_sibling("hermes_hq_proactive_clock", "clock.py")
     origin = _load_sibling("hermes_hq_proactive_origin", "origin.py")
+    deck = _load_sibling("hermes_hq_proactive_deck", "deck.py")
     _store_mod = _load_sibling("hermes_hq_proactive_store", "store.py")
     PLUGIN_ID = _store_mod.PLUGIN_ID
     ProactiveStore = _store_mod.ProactiveStore
@@ -196,6 +197,45 @@ _TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": "Read the brief as things stand now: what is open, what was suggested, and today's limits.",
         "parameters": {"type": "object", "properties": {}},
     },
+    "proactive_task_deck": {
+        "name": "proactive_task_deck",
+        "description": (
+            "Show a swipeable deck of 1 to 4 concrete, pre-researched tasks the user can Start or Hide with one tap "
+            "right in this chat (rendered as native cards in Hermes HQ). Call this ONCE after reading across your "
+            "connected tools (calendar, Notion, email, Slack, memory, chats) so every card cites real dates, meetings, "
+            "numbers, or docs and states plainly what you will produce on Start. Keep each title crisp (<=70 chars), "
+            "pitch 2-3 sentences (<=260 chars), and put the full self-contained instructions to execute on tap in "
+            "`action_prompt`. Never propose auto-sending, paying, booking, or deleting without approval."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "intro": {
+                    "type": "string",
+                    "description": "Short label above the card stack (default: 'Tasks I could help with:').",
+                },
+                "tasks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Short imperative headline, e.g. 'Draft your ELT highlight and problem'."},
+                            "pitch": {"type": "string", "description": "2-3 sentences citing real dates/docs/numbers explaining why now and what you will produce."},
+                            "action_prompt": {"type": "string", "description": "Self-contained instructions to execute immediately when the user taps Start."},
+                            "icon": {"type": "string", "enum": list(deck.ICONS), "default": "lightbulb"},
+                            "category": {"type": "string", "enum": list(policy.OFFER_CATEGORIES), "default": "prepared_draft"},
+                            "loop_id": {"type": "string", "description": "Optional related open loop ID."},
+                            "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.85},
+                        },
+                        "required": ["title", "pitch", "action_prompt"],
+                    },
+                },
+            },
+            "required": ["tasks"],
+        },
+    },
 }
 
 
@@ -273,15 +313,23 @@ def register(ctx) -> None:
                 pass
         return res
 
+    def _suppressed_categories(settings: Dict[str, Any]) -> tuple[str, ...]:
+        now = policy.utc_now()
+        suppressed = set(settings.get("disabled_categories") or [])
+        for cal in store.list_calibration():
+            paused = policy.parse_iso(cal.get("auto_paused_until"))
+            if paused is not None and paused > now:
+                suppressed.add(str(cal.get("category")))
+        return tuple(sorted(suppressed))
+
     # Hooks ---------------------------------------------------------------------
 
     def _on_pre_llm_call(user_message="", session_id="", **kwargs) -> Optional[Dict[str, str]]:
         msg_text = _extract_text(user_message)
-        # Our own hand-off to this chat: note the turn, so its tool calls are kept to reading.
-        # Any other turn here ends that. (Before the on/off check: a turn already handed over
-        # stays fenced even if Proactivity is switched off while it runs.)
+        # Our own hand-off (find look-up or Chief-of-Staff scout) to this chat: note the turn so
+        # pre_tool_call keeps it to reading. Any other turn here ends that fence.
         sid = str(session_id or "")
-        if chat.is_hand_off(msg_text):
+        if chat.is_hand_off(msg_text) or deck.is_scout_hand_off(msg_text):
             turn_id = str(kwargs.get("turn_id") or "")
             fenced[sid] = turn_id
             if turn_id and turn_id not in fenced_turns:
@@ -292,14 +340,37 @@ def register(ctx) -> None:
         settings = store.get_settings()   # read once: this runs on every turn
         if not settings.get("enabled"):
             return None
+
+        # User tapped/swiped Start on a proactive task card: record acceptance + inject the full
+        # pre-researched execution plan so the bot begins immediately (un-fenced normal user turn).
+        card_action = deck.parse_card_action(msg_text)
+        if card_action is not None:
+            cid, act = card_action
+            if act == "start":
+                task_row = store.get_deck_task(cid)
+                try:
+                    store.respond_deck_task(cid, "start", actor="chat")
+                except Exception:
+                    pass
+                return {"context": deck.start_context(task_row, fallback_text=msg_text)}
+
         execution = _cron_execution()
         kind = _turn_kind(msg_text, session_id, kwargs, execution)
         if kind == origin.BACKGROUND:
-            # Our own morning job gets the brief to write up. No other job, helper or relayed
-            # notice gets anything: nobody typed those turns.
+            # Our own morning job gets the brief and Chief-of-Staff instructions. No other job,
+            # helper or relayed notice gets anything: nobody typed those turns.
             if brief_job.is_brief_run(store, session_id=str(session_id or ""), execution=execution):
                 brief, _ = sweep.refresh_brief(store)
-                return {"context": brief_job.context_for_run(brief)}
+                return {
+                    "context": brief_job.context_for_run(
+                        brief,
+                        scout_tools=bool(settings.get("scout_tools_enabled", True)),
+                        deck_cards=store.deck_cards_enabled(),
+                        focus_note=str(settings.get("focus_note") or ""),
+                        skip_note=str(settings.get("skip_note") or ""),
+                        suppressed_categories=_suppressed_categories(settings),
+                    )
+                }
             return None
         if kind != origin.PRIVATE:
             return None   # a group or channel: other people read the reply
@@ -340,7 +411,7 @@ def register(ctx) -> None:
         if not settings.get("enabled"):
             return
         msg_text = _extract_text(user_message)
-        if not msg_text:
+        if not msg_text or deck.parse_card_action(msg_text) is not None:
             return
         if _turn_kind(msg_text, session_id, kwargs, _cron_execution()) != origin.PRIVATE:
             return
@@ -576,6 +647,74 @@ def register(ctx) -> None:
             "pending_offers": store.list_offers(status="pending", limit=15),
         })
 
+    def _handle_task_deck(args: Dict[str, Any], session_id: str = "", **kwargs) -> str:
+        if not _enabled():
+            return _disabled_reply()
+        settings = store.get_settings()
+        suppressed = set(_suppressed_categories(settings))
+        valid, rejected = deck.validate_tasks(
+            args.get("tasks"),
+            validate_safety=policy.validate_offer_safety,
+            valid_categories=policy.OFFER_CATEGORIES,
+        )
+        admitted: List[Dict[str, Any]] = []
+        skipped: List[str] = list(rejected)
+        for item in valid:
+            if item["category"] in suppressed:
+                skipped.append(f"Skipped '{item['title']}': category '{item['category']}' is paused/disabled.")
+                continue
+            # Also save as a tracked offer when admitted by budget/dedupe, and always save into
+            # deck_tasks so tapping Start or Hide resolves its action_prompt & syncs across devices.
+            offer_id = None
+            res = store.create_offer(
+                category=item["category"],
+                title=item["title"],
+                summary=item["pitch"],
+                why="Chief-of-Staff task deck.",
+                suggested_action=item["action_prompt"][:240],
+                tier=1,
+                confidence=item["confidence"],
+                loop_id=item["loop_id"],
+                source_session=str(session_id or ""),
+                trigger="task_deck",
+            )
+            if res.get("ok"):
+                offer_id = str(res["offer"]["id"])
+                store.mark_offer_delivered(offer_id, delivered_to="deck")
+            saved = store.save_deck_task(
+                card_id=item["card_id"],
+                title=item["title"],
+                pitch=item["pitch"],
+                action_prompt=item["action_prompt"],
+                icon=item["icon"],
+                category=item["category"],
+                offer_id=offer_id,
+                loop_id=item["loop_id"],
+            )
+            admitted.append({
+                "card_id": saved["card_id"],
+                "title": saved["title"],
+                "icon": saved["icon"],
+                "category": saved["category"],
+            })
+        if not admitted:
+            return _json({"ok": False, "error": "No valid tasks to show.", "skipped": skipped})
+        store.log_audit(
+            event_type="deck_offered",
+            trigger="task_deck",
+            summary=f"Showed {len(admitted)} ready-to-start task card(s) in chat.",
+            outcome="shown",
+            details={"card_ids": [a["card_id"] for a in admitted]},
+        )
+        return _json({
+            "ok": True,
+            "intro": str(args.get("intro") or deck.DEFAULT_INTRO).strip()[:80] or deck.DEFAULT_INTRO,
+            "shown": len(admitted),
+            "tasks": admitted,
+            "skipped": skipped,
+            "note": "Cards are now visible in the user's chat with Start and Hide buttons. Do not repeat their full text.",
+        })
+
     handlers = {
         "proactive_loop_track": (_handle_loop_track, "🧲"),
         "proactive_loop_resolve": (_handle_loop_resolve, "✅"),
@@ -584,15 +723,17 @@ def register(ctx) -> None:
         "proactive_feedback": (_handle_feedback, "👍"),
         "proactive_watch_add": (_handle_watch_add, "👁️"),
         "proactive_brief_get": (_handle_brief_get, "☀️"),
+        "proactive_task_deck": (_handle_task_deck, "🃏"),
     }
     for name, (fn, emoji) in handlers.items():
         schema = _TOOL_SCHEMAS[name]
+        check = (lambda: _enabled() and store.deck_cards_enabled()) if name == deck.TOOL_NAME else _enabled
         ctx.register_tool(
             name=name,
             toolset="proactive",
             schema=schema,
             handler=fn,
-            check_fn=_enabled,
+            check_fn=check,
             description=schema["description"],
             emoji=emoji,
         )
@@ -611,7 +752,7 @@ def register(ctx) -> None:
             door=chat_door,
         )
 
-    COMMANDS = "on | off | mode <observe|prep|full> | brief | loops | check | reset"
+    COMMANDS = "on | off | mode <observe|prep|full> | brief | loops | check | scout | reset"
 
     def _slash_proactive(raw_args: str = "") -> str:
         parts = (raw_args or "").strip().split()
@@ -661,6 +802,37 @@ def register(ctx) -> None:
             if not res.get("ran"):
                 return str(res.get("reason") or "The check did not run.")
             return f"{res.get('summary', 'Checked.')} ({res.get('tokens_used', 0)} tokens)"
+        if cmd == "scout":
+            if not _enabled():
+                return "Proactivity (Beta) is OFF. `/proactivity on` turns it on."
+            settings = store.get_settings()
+            prompt = deck.scout_hand_off_text(
+                store.list_loops(status="open", limit=12),
+                store.list_offers(status="pending", limit=8),
+                deck_cards=store.deck_cards_enabled(),
+                morning=False,
+                focus_note=str(settings.get("focus_note") or ""),
+                skip_note=str(settings.get("skip_note") or ""),
+                suppressed_categories=_suppressed_categories(settings),
+                day_words=sweep._local_day,
+            )
+            res = chat_door.say(
+                prompt,
+                key=f"scout:{policy.iso_utc()}",
+                state_db_path=store.resolve_state_db_path(),
+                even_if_busy=True,
+            )
+            if not res.get("said"):
+                why = str(res.get("why") or "unavailable")
+                return chat.HELD.get(why, f"Could not start Chief-of-Staff check-in ({why}).")
+            store.log_audit(
+                event_type="scout_started",
+                trigger="slash_command",
+                summary="Started a Chief-of-Staff check-in in this bot's chat.",
+                outcome="said",
+                details={"delivery_id": res.get("delivery_id")},
+            )
+            return "Chief-of-Staff check-in started in this bot's chat (read-only across connected tools)."
         if cmd in ("reset", "reset-calibration"):
             store.reset_calibration()
             return "Every kind of suggestion is back to its starting bar."
@@ -682,8 +854,8 @@ def register(ctx) -> None:
     ctx.register_command(
         "proactivity",
         _slash_proactive,
-        description="Proactivity (Beta): status, on/off, mode, the brief, what is open, run a check.",
-        args_hint="[status|on|off|mode|brief|loops|check|reset]",
+        description="Proactivity (Beta): status, on/off, mode, the brief, what is open, run a check or scout.",
+        args_hint="[status|on|off|mode|brief|loops|check|scout|reset]",
         argument_mode="mixed",
     )
 
@@ -693,7 +865,7 @@ def register(ctx) -> None:
             nargs="?",
             default="status",
             choices=["status", "on", "off", "enable", "disable", "mode", "brief", "loops", "check", "sweep",
-                     "reset", "reset-calibration"],
+                     "scout", "reset", "reset-calibration"],
         )
         parser.add_argument("value", nargs="?", default="", help="for `mode`: observe, prep or full")
 
