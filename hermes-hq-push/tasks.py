@@ -1737,10 +1737,13 @@ class Store:
             filling = task["created_by"] == profile and not task.get("edited")
             mine = task["who"] in ("bot", "together") and task["bot"] == profile
             reopening = task["who"] == "bot" and task["bot"] == profile and status not in (None, "done")
-            # 0.9.81: "mark it done", typed in any chat. Only the finish itself (and its status_note) rides on it.
+            # 0.9.81/0.9.92: typed by the user in any chat. Lets the bot mark the task done and/or tick/untick the
+            # user's steps (with optional status_note) without loosening any other rule on `who == "me"` tasks.
             asked_done = bool(owner_asked) and not owner_said and status == "done" and task["who"] != "bot"
-            changing_else = (done_steps or add_steps or prep is not None or watch is not None or title is not None
-                             or undone_steps or next_check is not _UNSET or choices is not None)
+            asked_steps = bool(owner_asked) and not owner_said and bool(done_steps or undone_steps)
+            changing_else = (add_steps or prep is not None or watch is not None or title is not None
+                             or next_check is not _UNSET or choices is not None)
+            asked_only = (asked_done or asked_steps) and not (status is not None and not asked_done) and not changing_else
             if task["status"] == "done" and not owner_said and not taking_part and not reopening:
                 raise TaskError(403, DONE_RULE)
             if taking_part:
@@ -1759,7 +1762,7 @@ class Store:
                         task["who"] in ("bot", "together") and task["bot"] == profile):
                     raise TaskError(403, "Only the user can change the date of a task they added.")
                 if task["who"] == "me" and not taking_part and (
-                        (changing and not (asked_done and not changing_else)) or (fill and not filling)):
+                        (changing and not asked_only) or (fill and not filling)):
                     raise TaskError(403, MINE_RULE)
                 if (notes is not None or source is not None) and not (filling or mine):
                     raise TaskError(403, "Only the bot that added a task, before the user changes it, or the bot "
@@ -1771,21 +1774,40 @@ class Store:
                     raise TaskError(403, NOT_YOURS_TO_FINISH)
             patch: dict = {}
             changes: list[str] = []
+            skipped_steps: list[dict] = []
             if status is not None:
                 patch["status"] = status
             if status_note is not None:
                 patch["status_note"] = _text(status_note, STATUS_NOTE_MAX)
             if done_steps or undone_steps:
+                owner_steps = owner_said or bool(owner_asked)
                 tick = {str(s) for s in done_steps or ()}
-                untick = {str(s) for s in undone_steps or ()} if owner_said else set()
+                untick_requested = {str(s) for s in undone_steps or ()}
+                untick = untick_requested if owner_steps else set()
                 steps = []
                 for step in task["steps"]:
-                    if step["id"] in tick and not step["done"] and (owner_said or step["who"] == "bot"):
-                        step = dict(step, done=True)
-                        changes.append(f"Ticked \u201c{step['title']}\u201d")
-                    elif step["id"] in untick and step["done"]:
-                        step = dict(step, done=False)
-                        changes.append(f"Unticked \u201c{step['title']}\u201d")
+                    if step["id"] in tick and not step["done"]:
+                        if owner_steps or step["who"] == "bot":
+                            step = dict(step, done=True)
+                            suffix = " (from chat)" if owner_asked and not owner_said and step["who"] == "me" else ""
+                            changes.append(f"Ticked \u201c{step['title']}\u201d{suffix}")
+                        else:
+                            skipped_steps.append({
+                                "id": step["id"],
+                                "title": step["title"],
+                                "reason": "Only the user (or a turn where they tell you in chat) can tick their steps.",
+                            })
+                    elif step["id"] in untick_requested and step["done"]:
+                        if step["id"] in untick:
+                            step = dict(step, done=False)
+                            suffix = " (from chat)" if owner_asked and not owner_said and step["who"] == "me" else ""
+                            changes.append(f"Unticked \u201c{step['title']}\u201d{suffix}")
+                        else:
+                            skipped_steps.append({
+                                "id": step["id"],
+                                "title": step["title"],
+                                "reason": "Only the user (or a turn where they tell you in chat) can untick their steps.",
+                            })
                     steps.append(step)
                 patch["steps"] = steps
             if add_steps:
@@ -1852,6 +1874,8 @@ class Store:
             self._bump_rev(db)
         if page_notes:
             updated = dict(updated, page_notes=page_notes)
+        if skipped_steps:
+            updated = dict(updated, skipped_steps=skipped_steps)
         return updated
 
     # -- settings ------------------------------------------------------------------------------------------------
@@ -2960,9 +2984,9 @@ UPDATE_SCHEMA = _schema(
      "status": {"type": "string", "enum": list(STATUSES)},
      "status_note": {"type": "string", "description": "One short line, e.g. \"Number and a Dec 9 slot\"."},
      "done_steps": {"type": "array", "items": {"type": "string"}, "description": "ids of steps to tick: your own; "
-                    "in the task's own chat, theirs too."},
-     "undone_steps": {"type": "array", "items": {"type": "string"}, "description": "In the task's own chat only: "
-                      "ids of steps to untick."},
+                    "in the task's own chat or when the user tells you in chat, theirs too."},
+     "undone_steps": {"type": "array", "items": {"type": "string"}, "description": "In the task's own chat or when the "
+                      "user tells you in chat: ids of steps to untick."},
      "title": {"type": "string", "description": "In the task's own chat only, when they ask: its new name."},
      "next_check": {"type": "string", "description": "When you'll look at it again by yourself (a reply you're "
                     "waiting for, a date): words with a time, like \"wed 9am\", or YYYY-MM-DDTHH:MM. A run comes "
@@ -3179,8 +3203,9 @@ def register_tools(ctx, store_for: Callable[[], Store], profile: Callable[[], st
         before = store.get(task_id) or {}
         own_chat = store.task_for_chat(str(session_id or ""))
         owner_said = bool(own_chat) and own_chat["id"] == task_id
-        owner_asked = False   # 0.9.81: "mark it done", typed in this chat's turn (never a job's run or a helper's)
-        if person_in is not None and session_id and args.get("status") == "done":
+        owner_asked = False   # 0.9.81/0.9.92: typed by the user in any chat (never a job's run or a helper's)
+        if person_in is not None and session_id and (
+                args.get("status") == "done" or args.get("done_steps") or args.get("undone_steps")):
             try:
                 owner_asked = bool(person_in(str(session_id)))
             except Exception:

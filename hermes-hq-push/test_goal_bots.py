@@ -1171,7 +1171,7 @@ def test_the_manifest_lists_the_goals_tools_and_the_skill_is_there():
     manifest = (HERE / "plugin.yaml").read_text()
     for name in ("goals_list", "goals_offer", "goals_update", "goals_next_review"):
         assert name in manifest
-    assert 'version: "0.9.91"' in manifest and push.PLUGIN_VERSION == "0.9.91"
+    assert 'version: "0.9.92"' in manifest and push.PLUGIN_VERSION == "0.9.92"
     skill = (HERE / "skills" / "goal-page" / "SKILL.md").read_text()
     assert skill.startswith("---\nname: goal-page\n") and "stands" in skill and "summary" in skill
     for bot in ("otto", "herald", "ivy", "wren", "juno"):
