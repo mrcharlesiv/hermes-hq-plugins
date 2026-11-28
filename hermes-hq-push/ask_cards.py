@@ -11,6 +11,7 @@ plugin checks): a card from a turn the messaging gateway runs comes back undeliv
 ``clarify`` in app chats (a Finance-style bot), a helper (subagent) run, a turn nobody typed (a job's hand-off,
 another bot's message), or a message with pictures (Hermes keeps that note as part of the message itself).
 """
+import re
 import time
 from pathlib import Path
 
@@ -19,13 +20,32 @@ MARK = "[Hermes HQ app note, not from the person:"
 NOTE = (
     MARK + " here a question asked with the `clarify` tool appears as a card they answer with one tap. When you "
     "need their answer before you can carry on (which of two things they meant, a choice that changes what you do "
-    "next, a detail you can't look up), ask it with `clarify` instead of ending your reply with the question in text, "
-    "with the options in `choices`, your pick first. When the answer lets you act for them (reply to someone, book, "
-    "file, change something), ask with `ask_to_act` instead if you have it: it shows who asked and their words. "
-    "A closing offer after finished work "
+    "next, a detail you can't look up), first write any needed background, findings or trade-offs in your normal "
+    "reply so they can read the context above the card, then ask the short question with `clarify` and the options "
+    "in `choices`, your pick first (never put 'Explain to me' as a choice). If they skip a card or ask for context "
+    "or an explanation, reply in plain chat text first instead of opening another `clarify` card. When the answer "
+    "lets you act for them (reply to someone, book, file, change something), ask with `ask_to_act` instead if you "
+    "have it: it shows who asked and their words. A closing offer after finished work "
     "(\"Want me to also…?\") stays a normal line at the end of your reply. Keep deciding low-stakes things yourself, "
     "and don't mention this note.]"
 )
+EXPLAIN_NOTE = (
+    MARK + " they need context before choosing. Answer in plain chat text first, explaining the background and "
+    "what each option means, and do not open a `clarify` card until after you have explained it.]"
+)
+_CONTEXT_RE = re.compile(
+    r"\b("
+    r"give me (?:the |some |more )?context|"
+    r"need (?:more )?context|"
+    r"more context|"
+    r"what(?:'s| is| are) the (?:context|options|choices|difference|trade-?offs?)|"
+    r"explain (?:both|each|them|the options|the choices|the context|it|first|what)|"
+    r"can you explain|"
+    r"don'?t (?:have (?:the )?context|know how to answer|understand what you'?re asking)"
+    r")\b",
+    re.IGNORECASE,
+)
+_FOLLOWUP_ASK_RE = re.compile(r"(\?|\b(?:explain|context|what|why|how|mean|options|choices)\b)", re.IGNORECASE)
 RESEND_AFTER = 12
 _TTL = 300.0
 _clarify_cache: dict = {}
@@ -97,11 +117,39 @@ def recently_noted(history) -> bool:
     return any(MARK in _text(m) for m in list(history or [])[-RESEND_AFTER:])
 
 
+def _recent_unexplained_skip(history) -> bool:
+    for m in reversed(list(history or [])[-8:]):
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        text = _text(m).strip()
+        if role == "assistant" and len(text) >= 40:
+            return False
+        if role == "tool" and ('"outcome": "cancelled"' in text or '"outcome":"cancelled"' in text):
+            return True
+    return False
+
+
+def asks_for_context(user_message, conversation_history=None) -> bool:
+    if not isinstance(user_message, str):
+        return False
+    text = user_message.strip()
+    if not text or not_typed(text):
+        return False
+    if _CONTEXT_RE.search(text):
+        return True
+    return _recent_unexplained_skip(conversation_history) and bool(_FOLLOWUP_ASK_RE.search(text))
+
+
 def context_for(*, data_dir: Path, platform: str = "", parent_session_id: str = "", user_message=None,
                 conversation_history=None, clarify=has_clarify):
     """The note for this turn, or None."""
     if platform != "desktop" or parent_session_id or not isinstance(user_message, str) or not_typed(user_message):
         return None
-    if not switched_on(data_dir) or recently_noted(conversation_history) or not clarify():
+    if not switched_on(data_dir) or not clarify():
+        return None
+    if asks_for_context(user_message, conversation_history):
+        return EXPLAIN_NOTE
+    if recently_noted(conversation_history):
         return None
     return NOTE

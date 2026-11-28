@@ -109,3 +109,99 @@ def test_other_tools_and_bad_args_never_raise():
     assert show_first.check("vision_analyze", {"image_url": 7}, None) is None
     show_first.note_text(None, None)
     assert show_first.check("clarify", "junk", None) is None
+
+
+def test_clarify_after_bot_exchange_requires_context_first():
+    history = [
+        {"role": "user", "content": "Can we put the rollout on a faster runner?"},
+        {"role": "user", "content": "Message from 🤖 Otto (@otto): Dedicated workers halve cold-start latency."},
+    ]
+    show_first.note_turn("s", user_message="Message from 🤖 Otto (@otto): Dedicated workers halve cold-start latency.",
+                         conversation_history=history)
+    verdict = show_first.check("clarify", _ask(), "s")
+    assert verdict and verdict["action"] == "block" and "Context not shown yet" in verdict["message"]
+
+    # Once the bot writes the context in chat, clarify passes right through.
+    show_first.note_turn("s", user_message="Can we put the rollout on a faster runner?", conversation_history=history)
+    show_first.note_text("s", "Otto checked the runners: Option A keeps the shared pool, while Option B adds a fast worker.")
+    assert show_first.check("clarify", _ask(), "s") is None
+
+    # Same-turn message_agent / delegate_task also requires context before clarify.
+    show_first.note_turn("s", user_message="Check with Otto", conversation_history=[])
+    assert show_first.check("message_agent", {"target": "otto", "message": "status?"}, "s") is None
+    assert show_first.check("clarify", _ask(), "s")["action"] == "block"
+
+
+def test_cold_explain_choice_or_disagreement_is_held_once():
+    show_first.note_turn("s", user_message="Set up the runner", conversation_history=[])
+    explain_choice_args = {
+        "questions": [{
+            "question": "Otto and I disagree on how to run it.",
+            "choices": ["Use Otto's way", "Explain both to me"],
+        }]
+    }
+    verdict = show_first.check("clarify", explain_choice_args, "s")
+    assert verdict and verdict["action"] == "block"
+    # Never wedges if the bot asks a second time in the same step.
+    assert show_first.check("clarify", explain_choice_args, "s") is None
+
+
+def test_skipped_or_explain_clarify_result_blocks_chained_clarify_across_turns():
+    import json
+
+    show_first.note_turn("s", user_message="Configure the runner", conversation_history=[])
+    explain_result = json.dumps({
+        "questions": [],
+        "responses": [{
+            "qid": "q0",
+            "question": "Which runner setup do you want?",
+            "status": "answered",
+            "user_response": "Please explain the context and options in chat first before asking me to choose.",
+        }],
+        "answered_count": 1,
+        "outcome": "submitted",
+    })
+    transformed = show_first.note_clarify_result("s", explain_result)
+    assert transformed is not None
+    parsed = json.loads(transformed)
+    assert parsed["outcome"] == "submitted" and len(parsed["responses"]) == 1
+    assert "plain chat text" in parsed["assistant_note"].lower()
+
+    # Immediate chained clarify without writing explanation in chat is blocked — and stays blocked for the whole turn
+    # (no second-try loophole) so the bot finishes with a plain-text explanation in chat.
+    chained = show_first.check("clarify", _ask(), "s")
+    assert chained and chained["action"] == "block" and "Do not open a clarify card in this turn" in chained["message"]
+    assert show_first.check("clarify", _ask(), "s")["action"] == "block"
+    show_first.note_text("s", "Option A reuses your existing shared pool with zero setup; Option B runs a dedicated fast worker.")
+    assert show_first.check("clarify", _ask(), "s")["action"] == "block"
+
+    # On the next normal turn (once the user has read the explanation and answers), clarify works normally again.
+    show_first.note_turn("s", user_message="Let's go ahead and pick one", conversation_history=[])
+    assert show_first.check("clarify", _ask(), "s") is None
+
+    # Skipping a card also blocks clarify for the rest of that turn and carries needs_explanation into the next turn;
+    # and if the user's next message explicitly asks for context, clarify is blocked for that whole turn too.
+    cancelled_result = json.dumps({"questions": [], "responses": [{"qid": "q0", "status": "unanswered"}], "outcome": "cancelled"})
+    updated_cancel = show_first.note_clarify_result("s", cancelled_result)
+    assert "skipped" in json.loads(updated_cancel)["assistant_note"]
+    assert show_first.check("clarify", _ask(), "s")["action"] == "block"
+    show_first.note_turn("s", user_message="Give me the context", conversation_history=[])
+    assert show_first.check("clarify", _ask(), "s")["action"] == "block"
+    show_first.note_text("s", "Here is the full context on the two runner setups before you pick one.")
+    assert show_first.check("clarify", _ask(), "s")["action"] == "block"
+
+
+def test_background_handoff_turn_and_gateway_context_attach():
+    # Exact shape of a gateway background-process hand-off turn where conversation_history ended with an earlier reply:
+    earlier = [{"role": "assistant", "content": "That works, but there is one blocker on the server; asking Otto now."}]
+    handoff = "[IMPORTANT: Background process proc_123 completed normally (exit code 0).\nCommand: python3 dm.py]"
+    show_first.note_turn("s", user_message=handoff, conversation_history=earlier)
+    # Cold clarify on step 1 is held even though `earlier` ended with >= 40 chars of assistant prose.
+    first = show_first.check("clarify", _ask(), "s")
+    assert first and first["action"] == "block" and "Context not shown yet" in first["message"]
+    # Once the bot writes the explanation, clarify passes AND take_gateway_context returns those words for the card.
+    explanation = "Otto recommends a route-table code fix; I can also set a one-line override with a 30-second restart."
+    show_first.note_text("s", explanation)
+    assert show_first.check("clarify", _ask(), "s") is None
+    assert show_first.take_gateway_context("s") == explanation
+    assert show_first.take_gateway_context("s") == ""
