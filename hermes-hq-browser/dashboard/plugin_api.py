@@ -381,21 +381,28 @@ def _record(ident):
 
     def live(found):
         return found is not None and found.get("id") == ident and spool.live(found) and cdp.usable(found.get("endpoint"))
-    record = spool.read(spool.folder("browsers") / f"{ident}.json")
+    def refreshed(found):
+        # A Chrome found through its discovery root (browser.cdp_url) gets a new browser id when it restarts on the
+        # same port, so ask it now rather than trust an endpoint the bot side published before that restart. This runs
+        # BEFORE the liveness test: a record whose endpoint went stale on a restart would otherwise fail `live`, get a
+        # refused watch ("This browser has closed"), and never reach the refresh that would have fixed it.
+        if not found:
+            return found
+        source = found.get("source") or []
+        if len(source) == 2 and source[0] == "cdp" and str(source[1]).startswith(LOCAL_CDP) and "/devtools/browser/" not in str(source[1]):
+            fresh = _debugger_url(str(source[1]))
+            if fresh and fresh != found.get("endpoint"):
+                return {**found, "endpoint": fresh}
+        return found
+
+    record = refreshed(spool.read(spool.folder("browsers") / f"{ident}.json"))
     if not live(record):
         # Not listed (or not lately): ask every bot's Chrome now. A listed one skips that (it costs an HTTP round trip
         # to each bot's Chrome, two seconds for a frozen one) on the phone's way back to its view.
         _publish_standing(force=True)  # blocking: watch() calls this from a thread
-        record = spool.read(spool.folder("browsers") / f"{ident}.json")
+        record = refreshed(spool.read(spool.folder("browsers") / f"{ident}.json"))
     if not live(record):
         raise HTTPException(404, "This browser has closed")
-    # A Chrome found through its discovery root (browser.cdp_url) gets a new browser id when it restarts on the same
-    # port; ask it now rather than trust an endpoint the bot side published before the restart.
-    source = record.get("source") or []
-    if len(source) == 2 and source[0] == "cdp" and str(source[1]).startswith(LOCAL_CDP) and "/devtools/browser/" not in str(source[1]):
-        fresh = _debugger_url(str(source[1]))
-        if fresh:
-            record = {**record, "endpoint": fresh}
     return record
 
 
@@ -630,19 +637,32 @@ async def activity(ws: WebSocket):
 @router.websocket("/sessions/{ident}/watch")
 async def watch(ws: WebSocket, ident: str):
     global _viewers
+    # Work out a refusal BEFORE accepting, but send it AFTER accepting. A socket closed before accept() reaches the
+    # app as an opaque failed handshake (uvicorn logs "ASGI callable returned without completing handshake", the
+    # phone shows "Reconnecting…" forever), because a refused upgrade cannot carry a close code or reason.
+    # Accepting first and then closing with the code lets the phone say "this browser has closed" and stop retrying.
+    refusal = None
+    record = None
     if not _ws_allowed(ws):
-        await ws.close(code=4401)
+        refusal = (4401, "Not signed in")
+    else:
+        try:
+            record = await asyncio.to_thread(_record, ident)
+        except HTTPException:
+            refusal = (4404, "This browser has closed")
+        else:
+            missing = _missing()
+            if missing:
+                refusal = (1013, f"Try again shortly ({missing})")
+    if refusal is not None:
+        log.info("hermes-hq-browser: watch %s refused: %s %s", ident, refusal[0], refusal[1])
+        try:
+            await ws.accept()
+            await ws.close(code=refusal[0], reason=refusal[1])
+        except Exception:  # noqa: BLE001  the phone left before we could tell it
+            pass
         return
-    try:
-        record = await asyncio.to_thread(_record, ident)
-    except HTTPException:
-        log.info("hermes-hq-browser: watch %s refused: no such live browser", ident)
-        await ws.close(code=4404, reason="This browser has closed")
-        return
-    if _missing():
-        log.info("hermes-hq-browser: watch %s refused: %s", ident, _missing())
-        await ws.close(code=1013, reason="Try again shortly")
-        return
+    assert record is not None  # every refusal returned above; only a resolved record reaches the stream
     await ws.accept()
 
     async def receive():
