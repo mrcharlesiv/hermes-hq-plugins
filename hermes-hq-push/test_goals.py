@@ -275,7 +275,7 @@ def test_status_says_goals():
 
 
 def test_the_version_is_this_release():
-    assert push.PLUGIN_VERSION == "0.9.90"
+    assert push.PLUGIN_VERSION == "0.9.91"
 
 
 # ---------------------------------------------------------------------------

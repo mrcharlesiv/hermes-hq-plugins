@@ -856,6 +856,14 @@ _adapters: "weakref.WeakSet" = weakref.WeakSet()   # Hermes's LocalSessionAdapte
 _noted: dict[str, tuple[dict, frozenset, float]] = {}   # session key → (where, kinds, when): the turn's own context
 _noted_lock = threading.Lock()
 _forwarded: set[str] = set()
+_context_reader = None
+
+
+def set_context_reader(reader) -> None:
+    """Register ``show_first.take_gateway_context`` so a clarify forwarded from a gateway producer turn (which never
+    streams interim assistant bubbles to the app) includes the explanation the bot wrote just before calling clarify."""
+    global _context_reader
+    _context_reader = reader
 NOTE_TTL = 600.0
 # Kept as short as Hermes keeps them: an approval card as long as the approval waits, a question as long as clarify.
 LONGEST = 86400.0
@@ -1176,10 +1184,18 @@ def _forward_clarify(adapter, path, chat_id, question, choices, clarify_id, sess
     except Exception:
         timeout = 300.0
     timeout = LONGEST if timeout <= 0 else min(timeout, LONGEST)
-    params = {"clarify_id": str(clarify_id), "question": str(question or ""),
+    where = kept[0]
+    qtext = str(question or "")
+    if callable(_context_reader):
+        try:
+            extra = str(_context_reader(where["session_id"]) or "").strip()
+            if extra and extra not in qtext and len(extra) + 2 + len(qtext) <= 15500:
+                qtext = f"{extra}\n\n{qtext}" if qtext else extra
+        except Exception:
+            pass
+    params = {"clarify_id": str(clarify_id), "question": qtext,
               "choices": [str(c) for c in choices] if choices else None,
               "multi_select": bool(getattr(pending, "multi_select", False))}
-    where = kept[0]
     threading.Thread(target=_clarify_turn, args=(path, str(clarify_id), params, where, timeout),
                      name="hermes-hq-job-clarify", daemon=True).start()
     log.info("hermes-hq-push: question %s for %s sent to the app", clarify_id, where["session_id"])

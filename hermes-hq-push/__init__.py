@@ -61,6 +61,8 @@ through Hermes's own approval before a tool set to ask runs (last, so every refu
 tools instead of a table (Hermes's tool search keeps add-on tools out of a busy bot's tool list).
 0.9.90: ideas.offer() takes one idea from another add-on (hermes-hq-proactive 0.3.0+) into the Ideas tab, with the
 same checks as a run's ideas; ideas.OUTSIDE_API says it is there.
+0.9.91: ask_cards.py and show_first.py make sure a bot writes needed context in chat before opening a clarify card,
+and replies in plain chat text first whenever the person skips a card or asks to explain.
 """
 import importlib.util
 import logging
@@ -306,8 +308,8 @@ def on_human_input_resolved(**kwargs):
 
 def pre_llm_call(platform="", parent_session_id="", user_message=None, conversation_history=None, session_id="",
                  turn_id="", **kwargs):
-    try:  # [show-first] each turn starts with nothing made in it
-        show_first.note_turn(session_id)
+    try:  # [show-first] each turn starts clean and notes whether the person asked for context or unseen bot work ran
+        show_first.note_turn(session_id, user_message=user_message, conversation_history=conversation_history)
     except Exception:
         pass
     try:  # [cron-media] every process: a Bot Chat job's hand-off can run in the messaging gateway too
@@ -453,14 +455,15 @@ def _connector_level(tool_name, args):
 
 
 def _show_first(tool_name, args, kwargs):
-    """[show-first] A clarify while a picture the bot made this turn is still unseen is held once (show_first.py)."""
+    """[show-first] A clarify while a picture or context it depends on is still unseen is held once (show_first.py)."""
     try:
         verdict = show_first.check(tool_name, args, kwargs.get("session_id"))
     except Exception:
         log.debug("hermes-hq-push: show-first check failed", exc_info=True)
         return None
     if verdict:
-        log.info("hermes-hq-push: clarify held: the picture it asks about isn't in the chat yet")
+        log.info("hermes-hq-push: clarify held: %s",
+                 "picture isn't in the chat yet" if "MEDIA:" in str(verdict.get("message") or "") else "context isn't in the chat yet")
     return verdict
 
 
@@ -535,7 +538,14 @@ def _draft_veto(tool_name, args, session_id):
 
 def transform_tool_result(tool_name="", result=None, task_id="", **kwargs):
     """[0.9.62] A browser_vault call is over: a sign-in frame it used is let go, and "no code field" says the person
-    can't type into the page (gateway_logins.vault_result). [0.9.89] Ending browser_ask_user settles its push alert."""
+    can't type into the page (gateway_logins.vault_result). [0.9.89] Ending browser_ask_user settles its push alert.
+    [0.9.91] A skipped or 'explain first' clarify result arms show_first so the bot writes context before asking again."""
+    if tool_name == "clarify":
+        try:
+            return show_first.note_clarify_result(kwargs.get("session_id") or task_id, result)
+        except Exception:
+            log.debug("hermes-hq-push: clarify result note skipped", exc_info=True)
+            return None
     if tool_name == "browser_ask_user":
         _browser_ask_settle(kwargs)
         return None
@@ -727,6 +737,7 @@ def _gateway_logins():
     except Exception:
         log.debug("hermes-hq-push: moved logins not installed", exc_info=True)
     try:  # [job-asks] the gateway's local chats; in the server it steps aside at each call (gateway_logins._serving)
+        gateway_logins.set_context_reader(show_first.take_gateway_context)
         log.info("hermes-hq-push: questions in job turns %s", gateway_logins.install_job_asks(push.data_dir()))
     except Exception:
         log.debug("hermes-hq-push: questions in job turns not installed", exc_info=True)

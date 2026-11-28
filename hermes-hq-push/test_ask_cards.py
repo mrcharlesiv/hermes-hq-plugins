@@ -100,3 +100,30 @@ def test_plugin_hook_returns_context(tmp_path, monkeypatch):
     assert plugin.pre_llm_call(platform="desktop", user_message="hi", conversation_history=[]) is None
     (tmp_path / ask_cards.SWITCH).unlink()
     assert plugin.pre_llm_call(platform="telegram", user_message="hi") is None
+
+
+def test_explain_note_rides_context_requests_and_post_skip_questions(tmp_path):
+    d = switched(tmp_path)
+    assert "context above the card" in ask_cards.NOTE
+    assert "Explain to me" in ask_cards.NOTE
+    sent = {"role": "user", "content": "hi", "api_content": "hi\n\n" + ask_cards.NOTE}
+    # Even when NOTE was just sent, asking for context or an explanation triggers EXPLAIN_NOTE.
+    for text in (
+        "Can you give me the context first?",
+        "Explain both options to me",
+        "I don't know how to answer that",
+        "What are the trade-offs?",
+    ):
+        assert note(d, user_message=text, conversation_history=[sent]) == ask_cards.EXPLAIN_NOTE
+
+    # Right after a skipped clarify card, a short follow-up question also gets EXPLAIN_NOTE.
+    skipped_history = [
+        sent,
+        {"role": "tool", "content": '{"outcome": "cancelled", "responses": [{"status": "unanswered"}]}'},
+    ]
+    assert note(d, user_message="Wait, what?", conversation_history=skipped_history) == ask_cards.EXPLAIN_NOTE
+    # Once the assistant has written a real explanation, normal resend rules apply again.
+    explained_history = skipped_history + [
+        {"role": "assistant", "content": "Option A keeps the shared queue; Option B spins up a dedicated fast worker."}
+    ]
+    assert note(d, user_message="Wait, what?", conversation_history=explained_history) is None
